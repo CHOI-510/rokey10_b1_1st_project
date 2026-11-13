@@ -1,0 +1,7 @@
+ClassSpec[] specs      # reference values for A~D
+---
+bool success
+string result_class    # "A" / "B" / "C" / "D"
+string error_code
+---
+string stage           # "measuring" / "judging"

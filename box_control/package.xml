@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>box_control</name>
+  <version>0.2.0</version>
+  <description>관제 노드 + 관제 테스트용 fake 노드</description>
+  <maintainer email="todo@todo.todo">TODO</maintainer>
+  <license>TODO</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>box_interfaces</exec_depend>
+  <exec_depend>box_comm</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

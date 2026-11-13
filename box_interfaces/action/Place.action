@@ -1,0 +1,8 @@
+string result_class
+Inventory inventory    # inventory before placing
+---
+bool success
+Inventory inventory    # inventory after placing
+string error_code
+---
+string stage           # "moving" / "placing"

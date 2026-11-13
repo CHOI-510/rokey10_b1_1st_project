@@ -1,0 +1,6 @@
+# Called by control after each place result (same box_id is applied only once)
+string box_id
+Inventory inventory    # full inventory after placing
+---
+bool success
+string message

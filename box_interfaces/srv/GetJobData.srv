@@ -1,0 +1,6 @@
+# Called by control at job start
+---
+bool success
+ClassSpec[] specs
+Inventory inventory
+string message

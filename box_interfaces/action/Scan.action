@@ -1,0 +1,7 @@
+# Goal: none (start command only)
+---
+bool success
+bool found             # false = no more items
+string error_code
+---
+string stage           # "scanning" / "picking" / "moving"
