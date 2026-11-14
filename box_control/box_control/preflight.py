@@ -7,7 +7,8 @@ control.py가 GetJobData 직후, 시작 대기(STANDBY) 전에 run_all()을 한 
 
 점검 목록
   1. 분류 기준(specs)  : A~D가 모두 있고 값이 양수인지
-  2. 고정 좌표          : DB 사본이 box_comm/common.py의 FIXED_POSES(원본)와 같은지
+  2. 고정 좌표          : DB에서 받은 HOME·측정존 좌표가 있고 형식이 맞는지 (기준은 DB, v0.3)
+                         관제는 DB 값으로 이미 덮어쓴 상태 → common.py와 비교하지 않음
   (추가 예정) safety 항목들
 
 점검 추가하는 법
@@ -16,7 +17,7 @@ control.py가 GetJobData 직후, 시작 대기(STANDBY) 전에 run_all()을 한 
 ================================================================
 """
 
-from box_comm.common import FIXED_POSES, POSE_TOLERANCE, VALID_CLASSES
+from box_comm.common import POSE_TOLERANCE, VALID_CLASSES
 
 OK, WARN, FAIL = 'OK', 'WARN', 'FAIL'
 
@@ -40,29 +41,26 @@ def check_specs(ctrl):
 
 
 # ----------------------------------------------------------------------
-# 점검 2: 고정 좌표 (common.py 원본 vs DB 사본)
+# 점검 2: 고정 좌표 (기준 = DB)
+#   DB 값이 없으면 파트에 보낼 좌표가 없으므로 FAIL
+#   측정존이 (0, 0, 0)이면 WARN (아직 설정 안 한 값으로 봄)
 # ----------------------------------------------------------------------
 def check_fixed_poses(ctrl):
-    db = ctrl.db_poses
+    db = ctrl.poses
     if db is None:
-        return [(WARN, 'DB에 고정 좌표 사본 없음 → 비교 건너뜀')]
+        return [(FAIL, 'DB에 고정 좌표가 없습니다. DB에 HOME·측정존 좌표를 설정한 뒤 실행해 주세요.')]
 
     results = []
+    expected_len = {'home_j': 6, 'measure_zone': 3}
     for key, label in _POSE_LABEL.items():
-        ref = FIXED_POSES.get(key)
-        if ref is None:
-            results.append((WARN, f'{label}: common.py 값 미설정 → 비교 건너뜀'))
-            continue
         got = db.get(key)
-        if got is None or len(got) != len(ref):
+        if got is None or len(got) != expected_len[key]:
             results.append((FAIL, f'{label}: DB 값 형식 오류 ({got})'))
             continue
-        diff = max(abs(a - b) for a, b in zip(ref, got))
-        if diff > POSE_TOLERANCE:
-            results.append((FAIL, f'{label} 설정값이 DB와 다릅니다. 재설정 후 실행해 주세요. '
-                                  f'(common={ref}, DB={got})'))
-        else:
-            results.append((OK, f'{label} 일치'))
+        if key == 'measure_zone' and all(abs(v) < POSE_TOLERANCE for v in got):
+            results.append((WARN, f'{label}: DB 값이 (0, 0, 0) — 아직 설정하지 않은 값으로 보입니다'))
+            continue
+        results.append((OK, f'{label}: DB 값 사용 {got}'))
     return results
 
 

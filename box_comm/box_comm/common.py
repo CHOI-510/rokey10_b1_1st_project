@@ -10,15 +10,15 @@ common.py — box_comm 공통 정의
   - STAGES        : 파트별 Feedback stage 목록
   - ROBOT         : 로봇 ID, 두산 서비스 네임스페이스
   - TCP, TOOL     : 기본 TCP·툴 (각 Goal 시작 전에 box_comm/robot.py가 확인·적용)
-  - FIXED_POSES   : 파트 공통 고정 좌표 (원본. DB는 사본, 관제가 시작 전에 비교)
+  - FIXED_POSES   : 고정 좌표 기본값 (실제 작업은 DB 값을 관제가 Goal로 보내 줌)
   - PartError     : 파트가 실패를 알릴 때 raise하는 예외
 
 새 error_code·stage·좌표가 필요하면 관제에게 요청한다.
 
 팀원 코드에서 쓰는 법
   from box_comm.scan_interface import start, PartError
-  from box_comm.common import FIXED_POSES
-  HOME_J = FIXED_POSES['home_j']
+  고정 좌표는 run() 안에서 self.poses로 읽는다 (interface가 Goal마다 넣어 줌)
+    self.poses['home_j'], self.poses['measure_zone']
 ================================================================
 """
 
@@ -91,9 +91,12 @@ TOOL = {
 }
 
 # ----------------------------------------------------------------------
-# 고정 좌표 — 파트 공통 (원본은 여기, DB에는 사본)
-# 관제가 작업 시작 전(preflight)에 DB 사본과 비교하고, 다르면 시작하지 않는다.
-# None은 아직 미설정 (비교를 건너뛰고 경고만 남김)
+# 고정 좌표 — 기준은 DB (인터페이스 v0.3)
+#   관제가 GetJobData로 DB 값을 받아 자기 값을 무조건 덮어쓰고, 모든 Action Goal에 실어 보낸다.
+#   파트 interface가 Goal의 값으로 작업 클래스의 self.poses를 덮어쓴다 (Goal마다).
+# 아래 FIXED_POSES는 '기본값'이다. 다르다고 멈추거나 경고하지 않는다.
+#   - Goal에 좌표가 없을 때(팀원 단독 send_goal 테스트 등)만 쓰인다 (경고 로그).
+# None은 아직 미설정
 # ----------------------------------------------------------------------
 FIXED_POSES = {
     'home_j': [0.0, 0.0, 90.0, 0.0, 90.0, 0.0],   # HOME 관절 각도 [deg]
@@ -101,6 +104,21 @@ FIXED_POSES = {
 }
 
 POSE_TOLERANCE = 0.01   # 좌표 비교 허용 오차 (mm 또는 deg)
+
+
+def default_poses() -> dict:
+    """FIXED_POSES 기본값의 복사본 {'home_j': [6], 'measure_zone': [3] 또는 None}"""
+    zone = FIXED_POSES['measure_zone']
+    return {'home_j': list(FIXED_POSES['home_j']),
+            'measure_zone': list(zone) if zone is not None else None}
+
+
+def poses_from_msg(msg):
+    """FixedPoses 메시지 → dict. available=False면 None"""
+    if not getattr(msg, 'available', False):
+        return None
+    return {'home_j': [float(v) for v in msg.home_j],
+            'measure_zone': [float(v) for v in msg.measure_zone]}
 
 
 class PartError(Exception):

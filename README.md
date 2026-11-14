@@ -93,9 +93,11 @@ box_project/
 
 | 이름 | Goal | Result | Feedback |
 | --- | --- | --- | --- |
-| `/scan` | 없음 (시작명령) | `success`, `found`, `error_code` | `stage` |
-| `/judge` | `specs: ClassSpec[]` | `success`, `result_class`, `error_code` | `stage` |
-| `/place` | `result_class`, `inventory` | `success`, `inventory`(적재 후), `error_code` | `stage` |
+| `/scan` | `poses` (시작명령) | `success`, `found`, `error_code` | `stage` |
+| `/judge` | `specs: ClassSpec[]`, `poses` | `success`, `result_class`, `error_code` | `stage` |
+| `/place` | `result_class`, `inventory`, `poses` | `success`, `inventory`(적재 후), `error_code` | `stage` |
+
+모든 Goal의 `poses`(`FixedPoses`)는 관제가 DB에서 받은 고정 좌표(HOME, 측정존)입니다. 파트는 이 값으로 움직입니다.
 
 `/scan`의 `found=False`는 "더 이상 물품 없음"이며 실패가 아닙니다(`success=True`).
 
@@ -126,7 +128,7 @@ box_project/
 | --- | --- |
 | `Inventory` | `a`, `b`, `c`, `d`: int32 — 분류별 재고 수 |
 | `ClassSpec` | `class_id`: string, `width_mm`, `depth_mm`, `height_mm`, `weight_g`: float32 |
-| `FixedPoses` | `available`: bool, `home_j`: float64[6] (deg), `measure_zone`: float64[3] (x, y, z mm) — DB에 저장된 고정 좌표 사본 |
+| `FixedPoses` | `available`: bool, `home_j`: float64[6] (deg), `measure_zone`: float64[3] (x, y, z mm) — 고정 좌표. **기준은 DB**. `GetJobData`로 받아 모든 Action Goal에 실어 보냄 |
 
 ### 공통 값
 
@@ -142,8 +144,8 @@ box_project/
 ## 5. 관제 흐름
 
 ```
-BEFORE        GetJobData로 분류 기준(specs), 재고, 고정 좌표 사본(poses) 수신
-PREFLIGHT     시작 전 점검 (분류 기준, 고정 좌표 common.py vs DB) → FAIL이면 시작 안 함
+BEFORE        GetJobData로 분류 기준(specs), 재고, 고정 좌표(poses, DB 기준) 수신
+PREFLIGHT     시작 전 점검 (분류 기준, DB 고정 좌표 유무·형식) → FAIL이면 시작 안 함
 STANDBY       시작 대기 카운트다운 (작업공간 안전 확인, q: 취소 / s: 바로 시작)
 RUNNING       SetJobStatus(RUNNING)
   ┌─ SCANNING    /scan Goal ──▶ found=False(물품 없음)면 관제가 작업완료로 판단
@@ -184,9 +186,9 @@ DONE          SetJobStatus(DONE)
 | 점검 | FAIL (시작 안 함) | WARN (진행) |
 | --- | --- | --- |
 | 분류 기준 | A~D 중 빠진 것, 0 이하 값 | |
-| 고정 좌표 | `common.py` 원본과 DB 사본이 다름 → "측정존 설정값이 DB와 다릅니다. 재설정 후 실행해 주세요." | DB에 사본 없음, `common.py` 값 미설정 |
+| 고정 좌표 | DB에 좌표 없음 → "DB에 고정 좌표가 없습니다. DB에 HOME·측정존 좌표를 설정한 뒤 실행해 주세요.", 형식 오류 | 측정존이 (0, 0, 0) |
 
-고정 좌표는 `box_comm/common.py`의 `FIXED_POSES`가 **원본**(로봇은 항상 이 값으로 움직임)이고, DB는 값 보호와 UI 표시를 위한 **사본**입니다. 둘을 비교해서 어느 한쪽이 실수로 바뀌어도 로봇이 움직이기 전에 잡습니다.
+고정 좌표(HOME, 측정존)는 **DB가 기준**입니다(v0.3). 관제는 `GetJobData`로 받은 DB 값으로 자기 좌표를 **무조건 덮어쓰고**(비교·중단 없음, 로그만 남김), 그 값을 `/scan`, `/judge`, `/place` Goal에 매번 실어 보내고, 각 파트는 그 값(`self.poses`)으로 움직입니다. `box_comm/common.py`의 `FIXED_POSES`는 **기본값**으로, Goal에 좌표가 없을 때(팀원이 혼자 `send_goal`로 테스트할 때)만 쓰입니다.
 점검을 추가할 때는 `preflight.py`에 함수를 만들고 `CHECKS`에 넣습니다.
 
 ---
@@ -290,7 +292,7 @@ ros2 run box_control control --ros-args -p start_delay_sec:=3.0     # 테스트�
 | `fake_scan` | `box_count` (박스 개수, 기본 3), `fake_delay_sec` |
 | `fake_judge` | `class_sequence` (`"A,B,B,D"`처럼 주면 그 순서로 판별, 비우면 무작위), `fake_delay_sec` |
 | `fake_place` | `fake_delay_sec`, `miscount_at` (N번째 적재에서 일부러 틀린 재고 반환 — 관제 재고 검증 테스트용, 기본 0=끔) |
-| `fake_database` | `pose_offset` (고정 좌표에 값을 더해 불일치 테스트), `poses_available` (False면 사본 없음) |
+| `fake_database` | `pose_offset` (고정 좌표에 값을 더해서 반환 → DB 값이 Goal로 전달되는지 확인), `poses_available` (False면 좌표 없음 → 사전 점검 FAIL) |
 
 fake와 실제 노드는 같은 Action/Service 이름을 쓰므로 **동시에 띄우지 않습니다.**
 파트 하나만 실제로 붙여 보려면 그 파트만 실제 노드로, 나머지는 fake로 띄웁니다.

@@ -15,9 +15,10 @@ control_interface.py — 관제 통신 계층
 관제 시퀀스(control.py)에서 쓰는 함수 — 모두 (값..., err) 형태로 반환
   err가 None이면 성공. 아니면 파트 error_code 또는 관제 내부 코드.
 
-  scan()                         -> (found: bool, err)
-  judge(specs)                   -> (result_class: str, err)
-  place(result_class, inventory) -> (inventory_after: dict, err)
+  scan(poses)                         -> (found: bool, err)
+  judge(specs, poses)                 -> (result_class: str, err)
+  place(result_class, inventory, poses) -> (inventory_after: dict, err)
+    poses = {'home_j': [6], 'measure_zone': [3]} (DB 값). 모든 Goal에 실어 보낸다.
   get_job_data()                 -> (specs: list, inventory: dict, poses: dict|None, err)
     poses = {'home_j': [6], 'measure_zone': [3]} (DB 사본), DB에 없으면 None
   update_inventory(box_id, inv)  -> err
@@ -50,7 +51,7 @@ from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 
 from box_interfaces.action import Judge, Place, Scan
-from box_interfaces.msg import ClassSpec, Inventory
+from box_interfaces.msg import ClassSpec, FixedPoses, Inventory
 from box_interfaces.srv import GetJobData, SetJobStatus, UpdateInventory
 
 NODE_NAME = 'control'
@@ -72,6 +73,17 @@ def _spec_to_dict(s: ClassSpec) -> dict:
     return {'class_id': s.class_id, 'width_mm': float(s.width_mm),
             'depth_mm': float(s.depth_mm), 'height_mm': float(s.height_mm),
             'weight_g': float(s.weight_g)}
+
+
+def _dict_to_poses(d) -> FixedPoses:
+    msg = FixedPoses()
+    if not d or d.get('measure_zone') is None:
+        msg.available = False
+        return msg
+    msg.available = True
+    msg.home_j = [float(v) for v in d['home_j']]
+    msg.measure_zone = [float(v) for v in d['measure_zone']]
+    return msg
 
 
 def _dict_to_spec(d: dict) -> ClassSpec:
@@ -102,16 +114,16 @@ class ControlInterface(Node):
     # ==================================================================
     # 파트 (Action)
     # ==================================================================
-    def scan(self, timeout=None):
-        res, err = self._call_action(self._scan, Scan.Goal(), 'scan', timeout)
+    def scan(self, poses=None, timeout=None):
+        res, err = self._call_action(self._scan, Scan.Goal(poses=_dict_to_poses(poses)), 'scan', timeout)
         if err:
             return False, err
         if not res.success:
             return False, res.error_code or 'NO_ERROR_CODE'
         return res.found, None
 
-    def judge(self, specs, timeout=None):
-        goal = Judge.Goal(specs=[_dict_to_spec(s) for s in specs])
+    def judge(self, specs, poses=None, timeout=None):
+        goal = Judge.Goal(specs=[_dict_to_spec(s) for s in specs], poses=_dict_to_poses(poses))
         res, err = self._call_action(self._judge, goal, 'judge', timeout)
         if err:
             return '', err
@@ -119,8 +131,9 @@ class ControlInterface(Node):
             return '', res.error_code or 'NO_ERROR_CODE'
         return res.result_class, None
 
-    def place(self, result_class, inventory, timeout=None):
-        goal = Place.Goal(result_class=result_class, inventory=_dict_to_inv(inventory))
+    def place(self, result_class, inventory, poses=None, timeout=None):
+        goal = Place.Goal(result_class=result_class, inventory=_dict_to_inv(inventory),
+                          poses=_dict_to_poses(poses))
         res, err = self._call_action(self._place, goal, 'place', timeout)
         if err:
             return dict(inventory), err

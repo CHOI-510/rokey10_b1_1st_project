@@ -216,7 +216,7 @@ def connect_dsr(node_name: str):
     사용 (파트 작업 클래스의 __init__에서):
         from box_comm.robot import connect_dsr
         self.dr, self.dsr_node = connect_dsr('scan_dsr')
-        self.dr.movej(HOME_J)
+        self.dr.movej(self.poses['home_j'])   # 고정 좌표는 Goal로 받은 self.poses
         self.dr.movel([0, 0, 50, 0, 0, 0], mod=1)
 
     왜 함수로 감쌌나

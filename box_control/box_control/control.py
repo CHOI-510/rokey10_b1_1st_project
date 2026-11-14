@@ -12,6 +12,8 @@ control.py — 관제 메인 (예시: 정상 경로만)
   - "-ING" 상태는 Goal 보내기 직전, "_DONE" 상태는 Result 받은 직후에 바꾼다.
   - 단계 상태는 관제 내부에만 둔다 (DB에는 BEFORE/RUNNING/DONE만).
   - 상태 값은 영어(State), 로그에는 한글 표시를 함께 붙인다.
+  - 고정 좌표(HOME, 측정존)는 DB가 기준이다. GetJobData로 받은 값을
+    모든 Action Goal(/scan, /judge, /place)에 실어 보내고, 파트는 그 값으로 움직인다.
   - box_id는 '<작업 시작 시각>_<순번>' (예: 20261114_130512_001).
     관제를 다시 실행해도 이전 작업의 box_id와 겹치지 않는다.
   - 재고 검증: 적재 Result의 inventory를 관제 기대값(적재 전 재고에서
@@ -20,7 +22,7 @@ control.py — 관제 메인 (예시: 정상 경로만)
   - 진행 추적: 중단 시 해당 파트의 마지막 Feedback stage와 경과 시간을 함께 기록한다.
 
 사전 점검 (PREFLIGHT) — box_control/preflight.py
-  분류 기준, 고정 좌표(common.py 원본 vs DB 사본) 등을 점검한다.
+  분류 기준, 고정 좌표(DB 값이 있는지, 형식이 맞는지) 등을 점검한다.
   하나라도 FAIL이면 작업을 시작하지 않는다.
 
 시작 대기 (STANDBY)
@@ -52,6 +54,7 @@ try:                       # 한 글자 입력(q/s)을 Enter 없이 받기 위�
 except ImportError:        # pragma: no cover
     termios = tty = None
 
+from box_comm.common import default_poses
 from box_comm.control_interface import start
 from box_control import preflight
 
@@ -105,13 +108,27 @@ class Control:
         self.log = io.get_logger()
         self.state = None
         self.specs = []
-        self.db_poses = None               # DB에 저장된 고정 좌표 사본 (preflight에서 비교)
+        self.poses = default_poses()       # 고정 좌표. GetJobData 후 DB 값으로 무조건 덮어씀 → 모든 Goal에 실어 보냄
         self.inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
         self.box_seq = 0
         self.job_id = time.strftime('%Y%m%d_%H%M%S')   # 실행마다 고유한 작업 ID
         self.count_mismatches = []         # 재고 불일치 기록 (box_id, 기대값, 받은 값)
         self.start_delay = float(
             io.declare_parameter('start_delay_sec', 10.0).value)   # 시작 대기 시간(초)
+
+    def apply_db_poses(self, db_poses):
+        """관제가 가진 고정 좌표를 DB 값으로 무조건 덮어쓴다 (비교해서 멈추지 않음).
+        DB에 좌표가 없으면 None → 사전 점검에서 FAIL (파트에 보낼 좌표가 없으므로)."""
+        old = self.poses
+        self.poses = db_poses
+        if db_poses is None:
+            self.log.error('[control] DB에 고정 좌표 없음')
+            return
+        for key in ('home_j', 'measure_zone'):
+            before = old.get(key) if old else None
+            after = db_poses.get(key)
+            mark = '' if before == after else f'  (덮어씀, 이전 {before})'
+            self.log.info(f'[control] 고정 좌표 {key} = {after} ← DB{mark}')
 
     def set_state(self, state: State):
         self.state = state
@@ -124,10 +141,11 @@ class Control:
         # BEFORE: 물품값과 재고 받아오기
         self.set_state(State.BEFORE)
         self.log.info(f'[control] job_id={self.job_id}')
-        self.specs, self.inventory, self.db_poses, err = self.io.get_job_data()
+        self.specs, self.inventory, db_poses, err = self.io.get_job_data()
         if err:
             return self.cancel_start(f'작업 데이터를 받지 못함 ({err})')
         self.log.info(f'[control] specs {len(self.specs)}개, inventory={self.inventory}')
+        self.apply_db_poses(db_poses)
 
         # PREFLIGHT: 시작 전 점검 (box_control/preflight.py)
         self.set_state(State.PREFLIGHT)
@@ -146,7 +164,7 @@ class Control:
         while True:
             # ---- 탐지 ----
             self.set_state(State.SCANNING)
-            found, err = self.io.scan()
+            found, err = self.io.scan(self.poses)
             if err:
                 return self.stop(err)
             if not found:
@@ -155,7 +173,7 @@ class Control:
 
             # ---- 판별 ----
             self.set_state(State.JUDGING)
-            result_class, err = self.io.judge(self.specs)
+            result_class, err = self.io.judge(self.specs, self.poses)
             if err:
                 return self.stop(err)
             self.set_state(State.JUDGE_DONE)
@@ -163,7 +181,7 @@ class Control:
 
             # ---- 적재 ----
             self.set_state(State.PLACING)
-            inventory_after, err = self.io.place(result_class, self.inventory)
+            inventory_after, err = self.io.place(result_class, self.inventory, self.poses)
             if err:
                 return self.stop(err)
             self.set_state(State.PLACE_DONE)

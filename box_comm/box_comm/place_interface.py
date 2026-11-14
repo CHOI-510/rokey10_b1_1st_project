@@ -7,6 +7,8 @@ place_interface.py — 적재 파트 통신 계층
 하는 일
   - Action 서버 /place (box_interfaces/action/Place)를 띄운다.
   - Goal의 result_class와 inventory를 파이썬 값으로 바꿔 작업 클래스의 run()에 넘긴다.
+  - Goal의 고정 좌표(poses, DB 값)를 작업 클래스의 self.poses에 넣는다.
+    Goal에 좌표가 없으면(단독 테스트) common.py 기본값을 쓰고 경고를 남긴다.
   - run() 직전에 기본 TCP·툴을 확인·적용한다 (box_comm/robot.py, stage 'robot_setup').
     실패하면 run()을 부르지 않고 ROBOT_SETUP_FAILED로 끝낸다. 파라미터 robot_setup=auto/on/off
   - run()의 반환값/예외를 Result로 바꿔 관제에 보낸다.
@@ -15,6 +17,7 @@ place_interface.py — 적재 파트 통신 계층
 작업 클래스 약속 (box_place/place.py에서 작성)
   class PlaceWork:
       def __init__(self, node): ...
+      # self.poses = {'home_j': [6], 'measure_zone': [x, y, z]}  ← interface가 Goal마다 넣어 줌 (DB 값)
       def run(self, result_class, inventory, report) -> dict:
           # result_class = 'A' / 'B' / 'C' / 'D'
           # inventory    = {'A': 1, 'B': 0, 'C': 2, 'D': 0}   (적재 전)
@@ -37,7 +40,7 @@ from box_interfaces.action import Place
 from box_interfaces.msg import Inventory
 
 from box_comm.robot import RobotSetup
-from box_comm.common import SETUP_STAGE, ERROR_CODES, PartError, STAGES, VALID_CLASSES  # noqa: F401
+from box_comm.common import SETUP_STAGE, ERROR_CODES, PartError, STAGES, default_poses, poses_from_msg, VALID_CLASSES  # noqa: F401
 
 NODE_NAME = 'place'
 ACTION_NAME = '/place'
@@ -59,6 +62,7 @@ class PlaceInterface(Node):
         super().__init__(NODE_NAME)
         self.robot = RobotSetup(self, NODE_NAME)   # 기본 TCP·툴 확인 (box_comm/robot.py)
         self.work = work_cls(self)
+        self.work.poses = default_poses()      # Goal을 받으면 Goal의 좌표(DB 값)로 바뀜
         self._server = ActionServer(self, Place, ACTION_NAME, self._execute)
         self.get_logger().info(f'[place] Action 서버 {ACTION_NAME} 준비')
 
@@ -81,6 +85,13 @@ class PlaceInterface(Node):
         try:
             if result_class not in VALID_CLASSES:
                 raise PartError('PLACE_FAILED', f'알 수 없는 result_class: "{result_class}"')
+            # 고정 좌표: 관제가 Goal에 실어 보낸 DB 값 → 작업 클래스의 self.poses
+            poses = poses_from_msg(goal_handle.request.poses)
+            if poses is None:
+                poses = default_poses()
+                self.get_logger().warn('[place] Goal에 고정 좌표 없음 → common.py 기본값 사용 (단독 테스트용)')
+            self.work.poses = poses
+
             # 기본 TCP·툴 확인·적용 → 실패하면 run()을 부르지 않고 Result로 끝냄
             report(SETUP_STAGE)
             ok, setup_msg = self.robot.ensure_defaults()

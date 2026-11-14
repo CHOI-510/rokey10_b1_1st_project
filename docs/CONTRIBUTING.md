@@ -121,9 +121,9 @@ def run(self, result_class, inventory, report) -> dict:
 def get_job_data(self) -> tuple:           # (specs, inventory) 반환
 def update_inventory(self, box_id, inventory) -> None:
 def set_job_status(self, status) -> None:  # 'BEFORE' / 'RUNNING' / 'DONE'
-def get_fixed_poses(self) -> dict:         # DB에 저장된 고정 좌표 사본, 없으면 None
+def get_fixed_poses(self) -> dict:         # DB에 저장된 고정 좌표 (기준값), 없으면 None
     # {'home_j': [6개, deg], 'measure_zone': [x, y, z, mm]}
-    # 원본은 box_comm/common.py. 관제가 시작 전에 비교해서 다르면 시작하지 않음
+    # 관제가 이 값을 모든 파트 Goal에 실어 보낸다. 없으면 관제가 작업을 시작하지 않음
 ```
 
 ### 2-2-1. Feedback stage (필수)
@@ -189,13 +189,19 @@ raise PartError('GRASP_FAILED', '두 번 시도했지만 못 집음')
 - 자기 동작 안에서 다른 TCP가 필요하면 바꿔도 됩니다. (예: 무게 측정용 기준점) 다음 Goal에서 기본값으로 돌아갑니다.
   단, **로봇에 등록된 이름**이어야 합니다. 등록되지 않은 이름은 조용히 실패해서 플랜지 기준으로 움직입니다. 새 TCP가 필요하면 관제에게 요청하세요.
 
-**공통 좌표는 `common.py`에서 가져옵니다.** 직접 숫자를 적지 않습니다.
+**공통 좌표(HOME, 측정존)는 `self.poses`로 읽습니다.** 직접 숫자를 적지 않습니다.
+관제가 DB 값을 Goal에 실어 보내면, `box_comm`이 Goal을 받을 때마다 작업 클래스의 `self.poses`에 넣어 줍니다.
 
 ```python
-from box_comm.common import FIXED_POSES
-HOME_J = FIXED_POSES['home_j']            # HOME 관절 각도
-MEASURE_ZONE = FIXED_POSES['measure_zone'] # 측정존 x, y, z (mm)
+def run(self, report):
+    home = self.poses['home_j']          # HOME 관절 각도 [deg]
+    zone = self.poses['measure_zone']    # 측정존 x, y, z [mm] (None 또는 (0,0,0)이면 미설정 → 움직이지 말 것)
+    self.dr.movej(home)
 ```
+
+- 혼자 `send_goal`로 테스트하면 Goal에 좌표가 없어서 `common.py` 기본값이 들어옵니다(경고 로그).
+- 템플릿의 `_measure_zone_xyz()`가 미설정 여부까지 확인해 줍니다.
+- 좌표를 `__init__`에서 변수에 저장해 두지 마세요. Goal마다 DB 값으로 덮어써지므로 `run()` 안에서 매번 `self.poses`로 읽습니다.
 
 - `run()` 안에서 `DSR_ROBOT2` 함수(`movej`, `movel` 등)를 **그대로 호출해도 됩니다.** `box_comm`이 파트 노드를 전용 executor로 돌리기 때문에, 두산 함수가 내부에서 응답을 기다려도 충돌(`Executor is already spinning`)하지 않습니다.
 - 두산 로봇 연결은 **`box_comm.robot.connect_dsr()`로** 합니다. 두산 전용 노드를 따로 만들어 연결해 줍니다.
@@ -219,6 +225,7 @@ MEASURE_ZONE = FIXED_POSES['measure_zone'] # 측정존 x, y, z (mm)
 ### 2-6. 단독 테스트
 
 관제 없이 내 노드만 띄워서 직접 Goal/Request를 보냅니다. Result가 돌아오면 통신은 정상입니다.
+아래 명령은 Goal에 `poses`를 넣지 않으므로 `common.py` 기본 좌표가 쓰입니다. 특정 좌표로 시험하려면 Goal에 `poses: {available: true, home_j: [...], measure_zone: [x, y, z]}`를 추가합니다.
 
 ```bash
 # 탐지

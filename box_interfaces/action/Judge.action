@@ -1,7 +1,8 @@
 ClassSpec[] specs      # reference values for A~D
+FixedPoses poses       # home_j, measure_zone (from DB via control)
 ---
 bool success
 string result_class    # "A" / "B" / "C" / "D"
 string error_code
 ---
-string stage           # "measuring" / "judging"
+string stage           # see box_comm/common.py STAGES['judge']

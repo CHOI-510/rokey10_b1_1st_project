@@ -27,11 +27,9 @@ test_scan_motion.py — 실제 두산 동작을 넣은 '/scan' 테스트 노드 
 """
 
 
-from box_comm.common import FIXED_POSES
 from box_comm.robot import connect_dsr
 from box_comm.scan_interface import PartError, start
 
-HOME_J = FIXED_POSES['home_j']
 DR_MV_MOD_REL = 1        # DRL 상수 (gear_test_v2.py와 같은 매핑)
 LIFT_MM = 50.0           # HOME에서 위로 올렸다 내리는 거리
 
@@ -58,8 +56,9 @@ class ScanMotionTest:
             set_accx(300.0, 120.0)
 
             report('space_scan')
-            self.log.info(f'[test_scan_motion] #{self.count} movej HOME {HOME_J}')
-            self.movej(HOME_J)
+            home = self.poses['home_j']          # Goal로 받은 DB 값 (단독 실행이면 common.py 기본값)
+            self.log.info(f'[test_scan_motion] #{self.count} movej HOME {home} | 측정존 {self.poses["measure_zone"]}')
+            self.movej(home)
             pos = self.get_current_posx()
             self.log.info(f'[test_scan_motion] TCP 기준 현재 위치(posx): {pos}')
 
@@ -70,7 +69,7 @@ class ScanMotionTest:
             self.movel([0.0, 0.0, -LIFT_MM, 0.0, 0.0, 0.0], mod=DR_MV_MOD_REL)
 
             report('placing')
-            self.movej(HOME_J)
+            self.movej(home)
         except Exception as e:
             raise PartError('GRASP_FAILED', f'DSR 동작 실패: {type(e).__name__}: {e}')
 

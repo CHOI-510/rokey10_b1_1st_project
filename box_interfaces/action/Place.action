@@ -1,8 +1,9 @@
 string result_class
 Inventory inventory    # inventory before placing
+FixedPoses poses       # home_j, measure_zone (from DB via control)
 ---
 bool success
 Inventory inventory    # inventory after placing
 string error_code
 ---
-string stage           # "moving" / "placing"
+string stage           # see box_comm/common.py STAGES['place']
