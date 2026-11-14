@@ -61,7 +61,7 @@
 | 11 | **집기 최종 실패 처리**: 파트 내부 재시도 후에도 실패하면 `GRASP_FAILED`. 같은 박스를 계속 다시 찾는 무한 루프 방지 필요 (연속 실패 상한, 해당 위치 건너뛰기 여부) | 관제, 탐지 | 탐지 담당과 협의 |
 | 12 | **Feedback 기반 진행 감시**: stage 목록·필수화·관제 추적은 적용 완료. 일정 시간 소식이 없을 때의 **개입 로직**(cancel, 두산 정지) | 관제 | `common`의 safety 항목으로 추가 예정 |
 | 13 | 작업 통계 로그 (작업완료 물품 수, 재시도 횟수 등) 형식 | 관제, DB | DB·UI 담당과 협의 |
-| 14 | **TCP·툴 자동 확인** 구현 완료(`box_comm/robot.py`). 실제 로봇에서 확인할 것: ① `dsr_msgs2` 서비스 필드 이름(`ros2 interface show dsr_msgs2/srv/GetCurrentTcp`) ② 자동 모드에서 `set_current_tcp` 가능 여부 ③ 툴 이름이 펜던트의 `Tool Weight`가 맞는지 (기어 코드는 `Tool Weight_1`) | 관제 | 실제 로봇 테스트 |
+| 14 | **TCP·툴 자동 확인** 구현·가상·실제 로봇 테스트 완료(`box_comm/robot.py`). 응답 필드 `info` 확인, 툴 이름 `Tool Weight` 확인, 가상·실제 모두 자동 모드 적용 불가 → 수동 모드 경로로 적용됨 | 관제 | 완료 |
 | 16 | **측정존 좌표 실측** → `common.py`의 `FIXED_POSES['measure_zone']` 입력 (지금 `None`) | 관제, 탐지, 판별, 적재 | 실측 필요 |
 | 17 | DB: `get_fixed_poses()` 구현 (DB에 고정 좌표 사본 저장). 인터페이스 v0.3이라 전원 `git pull` 후 **다시 빌드** 필요 | DB, 전체 | 공지 필요 |
 | 15 | (옵션) **UI 작업 시작 버튼**: 누르면 시작 대기 팝업(실제 10분, 데모 10초) 후 자동 시작. 사실상 원격 시작이라 UI↔DB↔관제 경로가 필요 → 아이디어 단계 | 관제, DB | 아이디어 |
@@ -111,6 +111,8 @@
 
 ### 11/14
 
+- **실제 로봇 테스트 통과** (`reapply_test:=false`): TCP는 펜던트 설정(`GripperDA_v1`)이 걸려 있었으나 **툴은 미적용(`''`) 상태였음** → 관제가 수동 모드 경로로 `Tool Weight` 적용. 이후 Goal은 `TCP OK, TOOL OK`. `test_scan_motion` 동작(HOME → ±50mm) 오류 없음, HOME posx z≈214.9 (가상 216.6과 일치)
+- 실제 로봇도 자동 모드에서는 툴 적용이 바로 반영되지 않음 (수동 모드 경로로 적용됨)
 - **가상 모드 `robot_test` 전체 통과**: TCP·툴 자동 적용, 같은 Goal 재전송 시 OK, 다른 TCP·툴에서 기본값 복귀, `run()` 안 `movej`/`movel` 정상(executor 충돌 없음). TCP 적용 후 HOME에서 posx z=216.6 (플랜지 기준이면 약 425 → TCP 208.4 반영 확인)
 - 가상 모드에서는 자동 모드에서 `set_current_tcp/tool`이 반영되지 않음 → 기본값이 아닐 때는 항상 수동 모드 경로로 적용됨 (로그 문구 수정). 실제 로봇은 미확인
 - 클래스 안에서 `DR_init.__dsr__node` 설정 시 파이썬 name mangling으로 두산 연결 실패 발견 → `box_comm.robot.connect_dsr()` 추가, 템플릿·CONTRIBUTING 예시 교체
