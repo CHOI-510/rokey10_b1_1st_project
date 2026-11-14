@@ -29,23 +29,11 @@ from rclpy.node import Node
 
 from box_interfaces.action import Judge
 
+from box_comm.common import ERROR_CODES, PartError, VALID_CLASSES  # noqa: F401
+
 NODE_NAME = 'judge'
 ACTION_NAME = '/judge'
-
-ERROR_CODES = ('NOT_FOUND', 'GRASP_FAILED', 'OVER_FORCE',
-               'MEASURE_FAILED', 'NO_SLOT', 'PLACE_FAILED')
-DEFAULT_ERROR = 'MEASURE_FAILED'
-VALID_CLASSES = ('A', 'B', 'C', 'D')
-
-
-class PartError(Exception):
-    """작업 실패를 관제에 알릴 때 사용. 등록된 코드만 허용."""
-
-    def __init__(self, code: str, message: str = ''):
-        if code not in ERROR_CODES:
-            raise ValueError(f'등록되지 않은 error_code: "{code}" (사용 가능: {ERROR_CODES})')
-        super().__init__(message or code)
-        self.code = code
+DEFAULT_ERROR = 'MEASURE_FAILED'   # 예상 못 한 예외일 때 보내는 코드
 
 
 def _spec_to_dict(s) -> dict:

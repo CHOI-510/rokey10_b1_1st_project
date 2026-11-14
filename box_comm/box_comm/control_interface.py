@@ -47,7 +47,6 @@ from box_interfaces.srv import GetJobData, SetJobStatus, UpdateInventory
 
 NODE_NAME = 'control'
 SERVER_WAIT_SEC = 3.0        # 서버가 떠 있는지 기다리는 시간
-VALID_CLASSES = ('A', 'B', 'C', 'D')
 
 
 # ----------------------------------------------------------------------

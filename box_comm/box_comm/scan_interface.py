@@ -29,23 +29,11 @@ from rclpy.node import Node
 
 from box_interfaces.action import Scan
 
+from box_comm.common import ERROR_CODES, PartError  # noqa: F401  (PartError는 scan.py가 여기서 import)
+
 NODE_NAME = 'scan'
 ACTION_NAME = '/scan'
-
-# 인터페이스 계약 2.4 — 새 코드는 관제가 등록 후 배포
-ERROR_CODES = ('NOT_FOUND', 'GRASP_FAILED', 'OVER_FORCE',
-               'MEASURE_FAILED', 'NO_SLOT', 'PLACE_FAILED')
 DEFAULT_ERROR = 'GRASP_FAILED'   # 예상 못 한 예외일 때 보내는 코드
-
-
-class PartError(Exception):
-    """작업 실패를 관제에 알릴 때 사용. 등록된 코드만 허용."""
-
-    def __init__(self, code: str, message: str = ''):
-        if code not in ERROR_CODES:
-            raise ValueError(f'등록되지 않은 error_code: "{code}" (사용 가능: {ERROR_CODES})')
-        super().__init__(message or code)
-        self.code = code
 
 
 class ScanInterface(Node):

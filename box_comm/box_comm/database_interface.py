@@ -39,12 +39,13 @@ from rclpy.node import Node
 from box_interfaces.msg import ClassSpec, Inventory
 from box_interfaces.srv import GetJobData, SetJobStatus, UpdateInventory
 
+from box_comm.common import VALID_CLASSES
+
 NODE_NAME = 'database'
 SRV_GET_JOB_DATA = '/get_job_data'
 SRV_UPDATE_INVENTORY = '/update_inventory'
 SRV_SET_JOB_STATUS = '/set_job_status'
 
-VALID_CLASSES = ('A', 'B', 'C', 'D')
 VALID_STATUS = ('BEFORE', 'RUNNING', 'DONE')
 
 

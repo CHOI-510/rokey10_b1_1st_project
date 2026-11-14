@@ -62,7 +62,8 @@
 box_project/
 ├─ box_interfaces/   메시지 정의 (.msg .srv .action)
 ├─ box_comm/         공용 통신 라이브러리 (노드 아님)
-│  └─ control_interface.py, scan_interface.py, judge_interface.py,
+│  └─ common.py (에러 코드·PartError 공통 정의),
+│     control_interface.py, scan_interface.py, judge_interface.py,
 │     place_interface.py, database_interface.py
 ├─ box_control/      관제: control.py + 테스트용 fake_*.py 4개
 ├─ box_scan/         탐지: scan.py
@@ -139,7 +140,8 @@ box_project/
 
 - "-중" 상태는 Goal을 보내기 직전, "-완료" 상태는 Result를 받은 직후에 바뀝니다.
 - 단계 상태는 관제 내부에만 있고, DB에는 작업전·작업중·작업완료와 재고만 기록합니다.
-- `box_id`는 관제가 물품마다 `box_001`, `box_002` 순번으로 붙입니다.
+- `box_id`는 관제가 `<작업 시작 시각>_<순번>` 형식으로 붙입니다. (예: `20261114_130512_001`)
+  관제를 다시 실행해도 이전 작업과 겹치지 않으므로, DB 노드를 켜 둔 채 관제만 재실행해도 됩니다.
 
 ---
 

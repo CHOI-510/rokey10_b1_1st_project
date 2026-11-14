@@ -10,13 +10,16 @@ control.py — 관제 메인 (예시: 정상 경로만)
 규칙
   - "-중" 상태는 Goal 보내기 직전, "-완료" 상태는 Result 받은 직후에 바꾼다.
   - 단계 상태는 관제 내부에만 둔다 (DB에는 BEFORE/RUNNING/DONE만).
-  - box_id는 물품마다 관제가 순번으로 붙인다.
+  - box_id는 '<작업 시작 시각>_<순번>' (예: 20261114_130512_001).
+    관제를 다시 실행해도 이전 작업의 box_id와 겹치지 않는다.
 
 TODO(나중에): 시작 버튼 연동, error_code별 정책, ERROR 상태, 정지
 
 실행: ros2 run box_control control
 ================================================================
 """
+
+import time
 
 from box_comm.control_interface import start
 
@@ -29,6 +32,7 @@ class Control:
         self.specs = []
         self.inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
         self.box_seq = 0
+        self.job_id = time.strftime('%Y%m%d_%H%M%S')   # 실행마다 고유한 작업 ID
 
     def set_state(self, state: str):
         self.state = state
@@ -40,6 +44,7 @@ class Control:
     def run(self):
         # 작업전: 물품값과 재고 받아오기
         self.set_state('작업전')
+        self.log.info(f'[control] job_id={self.job_id}')
         self.specs, self.inventory, err = self.io.get_job_data()
         if err:
             return self.stop(err)
@@ -77,7 +82,7 @@ class Control:
 
             # ---- 재고 반영 (Place Result를 받은 뒤에만) ----
             self.box_seq += 1
-            box_id = f'box_{self.box_seq:03d}'
+            box_id = f'{self.job_id}_{self.box_seq:03d}'
             if err := self.io.update_inventory(box_id, inventory_after):
                 return self.stop(err)
             self.inventory = inventory_after
