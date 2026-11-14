@@ -139,6 +139,7 @@ box_project/
 
 ```
 BEFORE        GetJobData로 분류 기준(specs)과 재고 수신
+STANDBY       시작 대기 카운트다운 (작업공간 안전 확인, q: 취소 / s: 바로 시작)
 RUNNING       SetJobStatus(RUNNING)
   ┌─ SCANNING    /scan Goal ──▶ found=False(물품 없음)면 관제가 작업완료로 판단
   │  SCAN_DONE
@@ -153,6 +154,7 @@ DONE          SetJobStatus(DONE)
 | 상태 | 한글 | DB 기록 |
 | --- | --- | :-: |
 | `BEFORE` | 작업전 | ✓ |
+| `STANDBY` | 시작대기 | |
 | `RUNNING` | 작업중 | ✓ |
 | `SCANNING` / `SCAN_DONE` | 스캔중 / 스캔완료 | |
 | `JUDGING` / `JUDGE_DONE` | 판별중 / 판별완료 | |
@@ -199,6 +201,26 @@ ros2 run box_place place
 ros2 run box_control control
 ```
 
+관제는 실행되면 **시작 대기(STANDBY)** 카운트다운을 띄웁니다. 로봇이 움직이기 전에 작업공간에 사람이나 파손 위험이 있는 물품이 없는지 확인하는 시간입니다.
+
+```
+  ⚠ 10초 후에 작업을 시작합니다.
+  ⚠ 작업공간 안에 사람이나 파손 위험이 있는 물품이 없는지 확인하세요.
+  중단하려면 q, 바로 시작하려면 s 를 누르세요. 10초 동안 입력이 없으면 자동으로 시작합니다.
+  시작까지 7초 ...  (q: 중단 / s: 바로 시작)
+```
+
+| 키 | 동작 |
+| --- | --- |
+| `q` | 작업 시작 취소 (DB 상태는 `BEFORE` 유지, 관제 종료) |
+| `s` | 바로 시작 |
+| 입력 없음 | 시간이 지나면 자동 시작 |
+
+- 대기 시간은 `start_delay_sec` 파라미터로 바꿉니다. 기본 10초(테스트용), 실제 운용은 10분을 상정합니다.
+  `ros2 run box_control control --ros-args -p start_delay_sec:=600.0`
+- `0`으로 주면 대기 없이 바로 시작합니다.
+- 관제가 터미널 입력을 받을 수 없는 환경(launch 등)에서는 취소 기능 없이 대기 후 시작합니다.
+
 ### 로봇 없이 실행 (fake)
 
 `box_control`의 fake 노드로 전체 흐름을 로봇 없이 확인할 수 있습니다.
@@ -208,7 +230,7 @@ ros2 run box_control fake_database
 ros2 run box_control fake_scan --ros-args -p box_count:=4 -p fake_delay_sec:=0.3
 ros2 run box_control fake_judge --ros-args -p class_sequence:="A,B,B,D"
 ros2 run box_control fake_place
-ros2 run box_control control
+ros2 run box_control control --ros-args -p start_delay_sec:=3.0     # 테스트할 때는 대기를 짧게
 ```
 
 | 노드 | 파라미터 |
