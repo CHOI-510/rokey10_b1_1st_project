@@ -227,8 +227,8 @@ fake와 실제 노드는 같은 Action/Service 이름을 쓰므로 **동시에 �
 
 | 역할 | 담당 | 패키지 |
 | --- | --- | --- |
-| 관제·통합 (팀장) | <!-- 이름 --> | `box_interfaces`, `box_comm`, `box_control` |
-| 탐지 | <!-- 이름 --> | `box_scan` |
-| 판별 | <!-- 이름 --> | `box_judge` |
-| 적재 | <!-- 이름 --> | `box_place` |
-| DB·UI | <!-- 이름 --> | `box_database` |
+| 관제·통합 (팀장) | 최은정 | `box_interfaces`, `box_comm`, `box_control` |
+| 탐지 | 김창균 | `box_scan` |
+| 판별 | 송현석 | `box_judge` |
+| 적재 | 정수현 | `box_place` |
+| DB·UI | 이승재 | `box_database` |
