@@ -46,7 +46,13 @@ class PlaceWork:
         self.node = node
         self.log = node.get_logger()
 
-        # ---- 두산 로봇 사용 시: scan.py의 DR_init 예시 참고 (노드 이름만 'place_dsr') ----
+        # ---- 두산 로봇 사용 시 ----
+        # 반드시 box_comm의 connect_dsr()로 연결한다. (클래스 안에서 DR_init.__dsr__node = ...를
+        # 직접 쓰면 파이썬 이름 변경 규칙 때문에 두산 쪽이 노드를 못 찾는다)
+        # from box_comm.robot import connect_dsr      ← 파일 맨 위 import에 추가
+        # self.dr, self.dsr_node = connect_dsr('place_dsr')
+        # 이후 self.dr.movej(HOME_J), self.dr.movel([...], mod=1) 처럼 사용
+        # TCP·툴(set_tcp/set_tool)은 box_comm이 Goal마다 자동으로 맞추므로 부르지 않아도 된다.
 
         # [FAKE 전용] 실제 구현 시 삭제
         node.declare_parameter('fake_delay_sec', 1.0)

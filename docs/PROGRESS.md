@@ -111,6 +111,10 @@
 
 ### 11/14
 
+- **가상 모드 `robot_test` 전체 통과**: TCP·툴 자동 적용, 같은 Goal 재전송 시 OK, 다른 TCP·툴에서 기본값 복귀, `run()` 안 `movej`/`movel` 정상(executor 충돌 없음). TCP 적용 후 HOME에서 posx z=216.6 (플랜지 기준이면 약 425 → TCP 208.4 반영 확인)
+- 가상 모드에서는 자동 모드에서 `set_current_tcp/tool`이 반영되지 않음 → 기본값이 아닐 때는 항상 수동 모드 경로로 적용됨 (로그 문구 수정). 실제 로봇은 미확인
+- 클래스 안에서 `DR_init.__dsr__node` 설정 시 파이썬 name mangling으로 두산 연결 실패 발견 → `box_comm.robot.connect_dsr()` 추가, 템플릿·CONTRIBUTING 예시 교체
+- 관제 테스트 도구 추가: `test_scan_motion`(scan_interface + 실제 DSR 동작), `robot_test`(TCP·툴 자동 확인 PASS/FAIL 점검)
 - 실제 bringup(가상 모드) 테스트에서 `Executor is already spinning` 발견 → 파트·DB 노드를 전용 executor로 spin, `robot.py`도 전용 executor 사용. (그대로 두면 팀원이 `run()`에서 `movej` 호출 시 같은 오류)
 - `-p robot_setup:=on`이 YAML에서 bool로 읽혀 노드가 죽던 문제 수정
 - 확인: `GetCurrentTcp`/`GetCurrentTool` 응답 필드는 `info`. 가상 모드 기본 상태는 TCP·툴 모두 `''`(미설정)

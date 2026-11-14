@@ -42,14 +42,13 @@ class ScanWork:
         self.node = node                   # 로그, 파라미터 등에 사용
         self.log = node.get_logger()
 
-        # ---- 두산 로봇 사용 시 (예시 — 기어 조립 프로젝트 방식과 맞춰 확인) ----
-        # Action 서버 노드(self.node)와 로봇 제어 노드를 분리한다.
-        # import rclpy, DR_init
-        # DR_init.__dsr__id = 'dsr01'
-        # DR_init.__dsr__model = 'm0609'
-        # self.dsr_node = rclpy.create_node('scan_dsr', namespace='dsr01')
-        # DR_init.__dsr__node = self.dsr_node
-        # from DSR_ROBOT2 import movej, movel, ...    # 노드 등록 후 import
+        # ---- 두산 로봇 사용 시 ----
+        # 반드시 box_comm의 connect_dsr()로 연결한다. (클래스 안에서 DR_init.__dsr__node = ...를
+        # 직접 쓰면 파이썬 이름 변경 규칙 때문에 두산 쪽이 노드를 못 찾는다)
+        # from box_comm.robot import connect_dsr      ← 파일 맨 위 import에 추가
+        # self.dr, self.dsr_node = connect_dsr('scan_dsr')
+        # 이후 self.dr.movej(HOME_J), self.dr.movel([...], mod=1) 처럼 사용
+        # TCP·툴(set_tcp/set_tool)은 box_comm이 Goal마다 자동으로 맞추므로 부르지 않아도 된다.
 
         # [FAKE 전용] 실제 구현 시 삭제
         #   box_count: "작업공간에 박스가 N개 있다"고 가정 (인터페이스와 무관)

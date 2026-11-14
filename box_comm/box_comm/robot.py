@@ -18,7 +18,8 @@ robot.py — 기본 TCP·툴 확인·적용 (두산 서비스 직접 호출)
 동작 (TCP, 툴 각각)
   1) 현재 이름 조회 → 기본값(common.TCP / common.TOOL)과 같으면 끝
   2) 다르면 적용(set_current_*) → 다시 조회해서 확인
-  3) 그래도 다르면 (미등록으로 판단) 수동 모드 → 등록(config_create_*) → 적용 → 자동 모드 → 확인
+  3) 그래도 다르면 수동 모드 → 등록(config_create_*, 이미 있으면 실패해도 무시) → 적용 → 자동 모드 → 확인
+     (가상 모드에서는 자동 모드에서 set_current_*가 반영되지 않아 항상 이 경로를 탐 — 2026-11-14 확인)
   4) 최종 확인 실패 → (False, 사유) → interface가 ROBOT_SETUP_FAILED로 Goal을 끝낸다
 
 파라미터 (파트 노드에 선언됨)
@@ -185,7 +186,8 @@ class RobotSetup:
             return f'{label} 재적용({name})'
 
         # 3) 등록부터 (수동 모드 필요)
-        self.log.warn(f'[{self.part}] {label} "{name}" 미등록으로 판단 → 등록 후 적용')
+        self.log.warn(f'[{self.part}] {label} "{name}" 자동 모드에서 바로 적용 안 됨 '
+                      f'→ 수동 모드에서 등록(없으면)·적용')
         self._call('set_mode', robot_mode=ROBOT_MODE_MANUAL)
         try:
             if kind == 'tcp':
@@ -201,5 +203,34 @@ class RobotSetup:
         current = self._current(kind)
         if current != name:
             raise RobotSetupError(f'{label} 적용 실패: 기대 "{name}", 현재 "{current}"')
-        self.log.info(f'[{self.part}] {label} 등록·적용 완료: {name}')
-        return f'{label} 등록·적용({name})'
+        self.log.info(f'[{self.part}] {label} 수동 모드 경로로 적용 완료: {name}')
+        return f'{label} 수동모드 적용({name})'
+
+
+# ----------------------------------------------------------------------
+# 두산 로봇 연결 (파트 코드용)
+# ----------------------------------------------------------------------
+def connect_dsr(node_name: str):
+    """DSR_ROBOT2를 쓸 수 있게 연결하고 (DSR_ROBOT2 모듈, 두산 전용 노드)를 돌려준다.
+
+    사용 (파트 작업 클래스의 __init__에서):
+        from box_comm.robot import connect_dsr
+        self.dr, self.dsr_node = connect_dsr('scan_dsr')
+        self.dr.movej(HOME_J)
+        self.dr.movel([0, 0, 50, 0, 0, 0], mod=1)
+
+    왜 함수로 감쌌나
+      - 클래스 안에서 DR_init.__dsr__node = ... 라고 쓰면 파이썬이 이름을
+        DR_init._클래스명__dsr__node 로 바꿔 버려서(name mangling) 두산 쪽이 노드를 못 찾는다.
+        (g_node가 None → 'NoneType' object has no attribute 'create_client')
+        이 함수는 클래스 밖에 있어서 그 문제가 없다.
+      - 두산 전용 노드를 파트 노드와 분리한다 (같은 노드를 쓰면 executor 충돌).
+      - DSR_ROBOT2는 import될 때 DR_init 값을 읽으므로, 반드시 이 함수 안에서 처음 import한다.
+    """
+    import DR_init
+    DR_init.__dsr__id = ROBOT['id']
+    DR_init.__dsr__model = ROBOT['model']
+    dsr_node = rclpy.create_node(node_name, namespace=ROBOT['id'])
+    DR_init.__dsr__node = dsr_node
+    import DSR_ROBOT2
+    return DSR_ROBOT2, dsr_node

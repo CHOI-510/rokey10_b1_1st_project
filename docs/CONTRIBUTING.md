@@ -197,9 +197,22 @@ MEASURE_ZONE = FIXED_POSES['measure_zone'] # 측정존 x, y, z (mm)
 ```
 
 - `run()` 안에서 `DSR_ROBOT2` 함수(`movej`, `movel` 등)를 **그대로 호출해도 됩니다.** `box_comm`이 파트 노드를 전용 executor로 돌리기 때문에, 두산 함수가 내부에서 응답을 기다려도 충돌(`Executor is already spinning`)하지 않습니다.
-- `box_comm`이 만든 노드(`self.node`)와 **로봇 제어용 노드를 분리**합니다.
+- 두산 로봇 연결은 **`box_comm.robot.connect_dsr()`로** 합니다. 두산 전용 노드를 따로 만들어 연결해 줍니다.
+  ```python
+  from box_comm.robot import connect_dsr
+
+  class ScanWork:
+      def __init__(self, node):
+          self.dr, self.dsr_node = connect_dsr('scan_dsr')   # 판별 'judge_dsr', 적재 'place_dsr'
+
+      def run(self, report):
+          self.dr.movej(HOME_J)
+          self.dr.movel([0, 0, 50, 0, 0, 0], mod=1)
+  ```
+  ⚠ 클래스 안에서 `DR_init.__dsr__node = ...`를 직접 쓰지 마세요. 파이썬이 `__`로 시작하는 이름을 클래스 이름이 붙은 다른 이름으로 바꿔 버려서, 두산 쪽이 노드를 찾지 못합니다(`'NoneType' object has no attribute 'create_client'`).
+- `box_comm`이 만든 노드(`self.node`)와 **로봇 제어용 노드를 분리**합니다. (`connect_dsr()`가 해 줍니다)
   `DSR_ROBOT2` 함수는 등록된 노드를 내부에서 spin하므로, 같은 노드를 쓰면 충돌할 수 있습니다.
-- 예시는 `scan.py`의 `DR_init` 주석을 참고합니다. 노드 이름은 파트별로 다르게 합니다. (`scan_dsr`, `judge_dsr`, `place_dsr`)
+- 노드 이름은 파트별로 다르게 합니다. (`scan_dsr`, `judge_dsr`, `place_dsr`)
 
 ### 2-6. 단독 테스트
 
