@@ -168,6 +168,7 @@ raise PartError('GRASP_FAILED', '두 번 시도했지만 못 집음')
 | `MEASURE_FAILED` | 측정 실패 |
 | `NO_SLOT` | 적재할 칸 없음 |
 | `PLACE_FAILED` | 적재 실패 |
+| `ROBOT_SETUP_FAILED` | 기본 TCP·툴 적용 실패 (`box_comm`이 `run()` 전에 보냄, 파트 코드에서는 쓰지 않음) |
 
 - **등록된 코드만** 쓸 수 있습니다. 새 코드가 필요하면 관제에게 요청합니다.
 - 예상하지 못한 예외가 나도 `box_comm`이 잡아서 Result를 보냅니다. 관제가 멈추지 않습니다.
@@ -213,6 +214,7 @@ MEASURE_ZONE = FIXED_POSES['measure_zone'] # 측정존 x, y, z (mm)
 - `box_comm`이 만든 노드(`self.node`)와 **로봇 제어용 노드를 분리**합니다. (`connect_dsr()`가 해 줍니다)
   `DSR_ROBOT2` 함수는 등록된 노드를 내부에서 spin하므로, 같은 노드를 쓰면 충돌할 수 있습니다.
 - 노드 이름은 파트별로 다르게 합니다. (`scan_dsr`, `judge_dsr`, `place_dsr`)
+- **실제로 움직이는 완성 예시**: `box_control/box_control/test_scan_motion.py` — 가상·실제 로봇에서 검증된 코드입니다. 이 파일의 구조(`connect_dsr` → `run()` 안에서 `movej`/`movel` → `report()`)를 그대로 따라 하면 됩니다.
 
 ### 2-6. 단독 테스트
 

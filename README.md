@@ -66,7 +66,8 @@ box_project/
 │  ├─ robot.py        기본 TCP·툴 확인·적용 (파트 Goal 시작 전 자동 실행)
 │  └─ control_interface.py, scan_interface.py, judge_interface.py,
 │     place_interface.py, database_interface.py
-├─ box_control/      관제: control.py (순서) + preflight.py (시작 전 점검) + 테스트용 fake_*.py 4개
+├─ box_control/      관제: control.py (순서) + preflight.py (시작 전 점검)
+│                    + 테스트용 fake_*.py 4개, test_scan_motion.py, robot_test.py
 ├─ box_scan/         탐지: scan.py
 ├─ box_judge/        판별: judge.py
 ├─ box_place/        적재: place.py
@@ -293,6 +294,27 @@ ros2 run box_control control --ros-args -p start_delay_sec:=3.0     # 테스트�
 
 fake와 실제 노드는 같은 Action/Service 이름을 쓰므로 **동시에 띄우지 않습니다.**
 파트 하나만 실제로 붙여 보려면 그 파트만 실제 노드로, 나머지는 fake로 띄웁니다.
+
+### 로봇 연동 점검 (관제 테스트 도구)
+
+두산 bringup(가상 또는 실제)을 띄운 상태에서 TCP·툴 자동 확인과 로봇 동작 구조를 점검합니다.
+
+| 도구 | 내용 |
+| --- | --- |
+| `test_scan_motion` | `scan_interface` + 실제 두산 동작(`connect_dsr`, `movej`/`movel`)이 들어간 `/scan` 노드. Goal마다 HOME → 위로 50mm → 아래로 → HOME. **팀원이 실제 동작을 넣을 때 참고할 예시 코드** |
+| `robot_test` | `/scan` Goal을 반복해서 보내며 TCP·툴 적용을 점검하고 PASS/FAIL 표 출력. `-p reapply_test:=false`면 컨트롤러 설정을 바꾸는 3번 항목을 건너뜀 |
+
+```bash
+# 로봇을 움직이지 않고 TCP·툴만 점검
+ros2 run box_scan scan --ros-args -p robot_setup:=on -p fake_delay_sec:=0.3 &
+sleep 3; ros2 run box_control robot_test --ros-args -p reapply_test:=false; pkill -f box_scan
+
+# 실제 동작 포함 (로봇이 움직임 — 작업공간 비우고 펜던트 속도 낮게)
+ros2 run box_control test_scan_motion --ros-args -p robot_setup:=on &
+sleep 3; ros2 run box_control robot_test --ros-args -p reapply_test:=false; pkill -f test_scan_motion
+```
+
+검증 결과 (11/14): 가상·실제 로봇 모두 통과. HOME에서 TCP 기준 z=214.9, 플랜지 기준 z=423.3 → 차이 208.4 (TCP 오프셋과 일치)
 
 ---
 
