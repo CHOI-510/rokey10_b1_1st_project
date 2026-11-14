@@ -19,6 +19,7 @@ place_interface.py — 적재 파트 통신 계층
           # 적재 후 inventory dict를 같은 형식으로 반환
           # 슬롯 배정·좌표는 이 안에서만 처리 (인터페이스에 나오지 않음)
           # 실패하면 raise PartError('PLACE_FAILED', '이유')
+          # 단계가 바뀔 때마다 report(stage) 호출 (필수, stage 목록은 common.STAGES['place'])
 
 실행
   box_place/place.py의 main()에서 start(PlaceWork) 호출
@@ -32,7 +33,7 @@ from rclpy.node import Node
 from box_interfaces.action import Place
 from box_interfaces.msg import Inventory
 
-from box_comm.common import ERROR_CODES, PartError, VALID_CLASSES  # noqa: F401
+from box_comm.common import ERROR_CODES, PartError, STAGES, VALID_CLASSES  # noqa: F401
 
 NODE_NAME = 'place'
 ACTION_NAME = '/place'
@@ -65,7 +66,11 @@ class PlaceInterface(Node):
         result = Place.Result()
 
         def report(stage: str):
-            goal_handle.publish_feedback(Place.Feedback(stage=str(stage)))
+            stage = str(stage)
+            if stage not in STAGES['place']:
+                self.get_logger().warn(
+                    f'[place] 등록되지 않은 stage: "{stage}" (사용 가능: {STAGES["place"]})')
+            goal_handle.publish_feedback(Place.Feedback(stage=stage))
             self.get_logger().info(f'[place] stage={stage}')
 
         try:

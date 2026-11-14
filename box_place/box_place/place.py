@@ -11,7 +11,9 @@ place.py — 적재 파트 메인 (예시: fake 동작)
     - 적재 후 inventory를 같은 형식의 dict로 반환
     - 슬롯 배정·좌표는 이 파일 안에서만 처리 (관제·인터페이스는 모름)
     - 실패하면 raise PartError('PLACE_FAILED' 또는 'NO_SLOT', '이유')
-    - report('단계명')은 진행 알림 (선택)
+    - 단계가 바뀔 때마다 report(stage)를 반드시 호출 (관제가 진행 상황을 추적)
+      stage: 'picking' → 'moving' → 'placing'  (box_comm/common.py STAGES)
+    - 반환한 재고는 관제가 검증한다 (적재 전 재고에서 result_class 칸만 +1이어야 함)
 
 [FAKE] 표시된 부분을 실제 로봇 동작으로 바꾸면 된다.
 
@@ -47,9 +49,13 @@ class PlaceWork:
         # 3-4 슬롯 배정 (내부 전용)
         slot = self.assign_slot(result_class, inventory)
 
-        # 3-1 측정존 물품 픽업, 3-2 적재 공간 이동
-        report('moving')
+        # 3-1 측정존 물품 픽업
+        report('picking')
         self.pick_from_measure_zone()
+
+        # 3-2 적재 위치로 이동
+        report('moving')
+        self.move_to_slot(result_class, slot)
 
         # 3-3 적재
         report('placing')
@@ -77,8 +83,11 @@ class PlaceWork:
     def pick_from_measure_zone(self):
         time.sleep(self._delay)
 
-    def place_to_slot(self, result_class, slot):
+    def move_to_slot(self, result_class, slot):
         time.sleep(self._delay)
+
+    def place_to_slot(self, result_class, slot):
+        time.sleep(self._delay * 0.5)
 
     def go_home(self):
         time.sleep(self._delay * 0.5)

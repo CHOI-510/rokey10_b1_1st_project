@@ -29,6 +29,33 @@ ERROR_CODES = (
 
 VALID_CLASSES = ('A', 'B', 'C', 'D')
 
+# ----------------------------------------------------------------------
+# Feedback stage 목록 — 각 파트는 단계가 바뀔 때마다 report(stage)를 반드시 호출
+# 관제는 마지막 stage와 받은 시각으로 진행 상황을 추적한다.
+# 목록에 없는 stage를 보내면 경고 로그가 남는다 (전송은 됨).
+# ----------------------------------------------------------------------
+STAGES = {
+    'scan': (
+        'space_scan',            # 작업공간 스캔·물품 감지
+        'picking',               # 감지한 물품 집기
+        'moving',                # 측정존으로 이동
+        'placing',               # 측정존에 내려놓기
+    ),
+    'judge': (
+        'measuring_length1',     # 첫 번째 길이 측정 (물품 방향에 따라 가로/세로/높이가 달라질 수 있어 번호로 구분)
+        'measuring_length2',
+        'measuring_length3',
+        'measuring_weight',      # 무게 측정
+        'measuring_materiality', # 강성 추정 (옵션)
+        'judging',               # 분류 판별
+    ),
+    'place': (
+        'picking',               # 측정존 물품 집기
+        'moving',                # 적재 위치로 이동
+        'placing',               # 적재
+    ),
+}
+
 
 class PartError(Exception):
     """작업 실패를 관제에 알릴 때 사용. 등록된 코드만 허용.

@@ -17,6 +17,7 @@ judge_interface.py — 판별 파트 통신 계층
           #           'height_mm': 40.0, 'weight_g': 100.0}, ...]
           # 판별 결과 'A' / 'B' / 'C' / 'D' 중 하나를 반환
           # 실패하면 raise PartError('MEASURE_FAILED', '이유')
+          # 단계가 바뀔 때마다 report(stage) 호출 (필수, stage 목록은 common.STAGES['judge'])
 
 실행
   box_judge/judge.py의 main()에서 start(JudgeWork) 호출
@@ -29,7 +30,7 @@ from rclpy.node import Node
 
 from box_interfaces.action import Judge
 
-from box_comm.common import ERROR_CODES, PartError, VALID_CLASSES  # noqa: F401
+from box_comm.common import ERROR_CODES, PartError, STAGES, VALID_CLASSES  # noqa: F401
 
 NODE_NAME = 'judge'
 ACTION_NAME = '/judge'
@@ -61,7 +62,11 @@ class JudgeInterface(Node):
         result = Judge.Result()
 
         def report(stage: str):
-            goal_handle.publish_feedback(Judge.Feedback(stage=str(stage)))
+            stage = str(stage)
+            if stage not in STAGES['judge']:
+                self.get_logger().warn(
+                    f'[judge] 등록되지 않은 stage: "{stage}" (사용 가능: {STAGES["judge"]})')
+            goal_handle.publish_feedback(Judge.Feedback(stage=stage))
             self.get_logger().info(f'[judge] stage={stage}')
 
         try:

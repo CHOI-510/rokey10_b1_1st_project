@@ -40,8 +40,10 @@ class FakeJudge:
                 f'[fake_judge] 기준 {s["class_id"]}: {s["width_mm"]}x{s["depth_mm"]}x'
                 f'{s["height_mm"]} mm, {s["weight_g"]} g')
 
-        report('measuring')
-        time.sleep(self.delay)
+        for stage in ('measuring_length1', 'measuring_length2', 'measuring_length3',
+                      'measuring_weight'):
+            report(stage)
+            time.sleep(self.delay * 0.25)
         report('judging')
         time.sleep(self.delay * 0.5)
 

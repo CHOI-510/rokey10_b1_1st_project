@@ -30,7 +30,7 @@ class FakeScan:
         self.log.info(f'[fake_scan] box_count={self.remaining}, delay={self.delay}s')
 
     def run(self, report) -> bool:
-        report('scanning')
+        report('space_scan')
         time.sleep(self.delay)
         if self.remaining <= 0:
             self.log.info('[fake_scan] 남은 박스 없음 → found=False')
@@ -40,6 +40,8 @@ class FakeScan:
         time.sleep(self.delay)
         report('moving')
         time.sleep(self.delay)
+        report('placing')
+        time.sleep(self.delay * 0.5)
 
         self.remaining -= 1
         self.log.info(f'[fake_scan] 측정존에 놓음 (남은 박스 {self.remaining})')

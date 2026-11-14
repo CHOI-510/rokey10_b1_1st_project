@@ -10,7 +10,10 @@ judge.py — 판별 파트 메인 (예시: fake 동작)
                'height_mm': 40.0, 'weight_g': 100.0}, ...]   (DB의 물품값)
     - 측정존 물품을 측정하고 'A' / 'B' / 'C' / 'D' 중 하나를 반환
     - 실패하면 raise PartError('MEASURE_FAILED', '이유')  (등록된 코드만)
-    - report('단계명')은 진행 알림 (선택)
+    - 단계가 바뀔 때마다 report(stage)를 반드시 호출 (관제가 진행 상황을 추적)
+      stage: 'measuring_length1' → 'measuring_length2' → 'measuring_length3'
+             → 'measuring_weight' → ('measuring_materiality', 옵션) → 'judging'
+      (box_comm/common.py STAGES)
 
 [FAKE] 표시된 부분을 실제 측정으로 바꾸면 된다.
 classify()는 예시 로직 — 분류 기준·오차 범위가 정해지면 수정.
@@ -44,15 +47,26 @@ class JudgeWork:
     # 약속된 함수
     # ------------------------------------------------------------------
     def run(self, specs, report) -> str:
-        # 2-1 W·D·H 측정, 2-2 무게 측정
-        report('measuring')
-        w, d, h = self.measure_size(specs)
+        # 2-1 길이 측정 3회 (물품 방향에 따라 가로/세로/높이가 달라질 수 있어 번호로 구분)
+        lengths = []
+        for i in (1, 2, 3):
+            report(f'measuring_length{i}')
+            lengths.append(self.measure_length(i, specs))
+
+        # 2-2 무게 측정
+        report('measuring_weight')
         weight = self.measure_weight(specs)
-        self.log.info(f'[judge] 측정값 W={w:.1f} D={d:.1f} H={h:.1f} mm, {weight:.1f} g')
+
+        # 2-3 강성 추정 (옵션) — 구현하면 아래 주석 해제
+        # report('measuring_materiality')
+        # stiffness = self.measure_materiality()
+
+        self.log.info(f'[judge] 측정값 L1={lengths[0]:.1f} L2={lengths[1]:.1f} '
+                      f'L3={lengths[2]:.1f} mm, {weight:.1f} g')
 
         # 2-4 판별
         report('judging')
-        result_class = self.classify(specs, w, d, h, weight)
+        result_class = self.classify(specs, lengths, weight)
 
         self.go_home()
         return result_class
@@ -60,25 +74,36 @@ class JudgeWork:
     # ------------------------------------------------------------------
     # 판별 로직 (예시) — 기준이 정해지면 수정
     # ------------------------------------------------------------------
-    def classify(self, specs, w, d, h, weight) -> str:
-        """각 기준과의 상대 오차 합이 가장 작은 class_id 선택"""
+    def classify(self, specs, lengths, weight) -> str:
+        """각 기준과의 상대 오차 합이 가장 작은 class_id 선택
+
+        측정 순서가 물품 방향에 따라 달라질 수 있으므로, 측정한 길이 3개와
+        기준의 W·D·H를 각각 크기순으로 정렬해서 비교한다.
+        """
         def rel(a, b):
             return abs(a - b) / b if b > 0 else 0.0
 
-        best = min(specs, key=lambda s: rel(w, s['width_mm']) + rel(d, s['depth_mm'])
-                   + rel(h, s['height_mm']) + rel(weight, s['weight_g']))
-        return best['class_id']
+        measured = sorted(lengths)
+
+        def score(s):
+            ref = sorted([s['width_mm'], s['depth_mm'], s['height_mm']])
+            return sum(rel(m, r) for m, r in zip(measured, ref)) + rel(weight, s['weight_g'])
+
+        return min(specs, key=score)['class_id']
 
     # ------------------------------------------------------------------
     # [FAKE] 아래를 실제 측정으로 교체
     # ------------------------------------------------------------------
-    def measure_size(self, specs):
-        """그리퍼로 W·D·H 측정 (fake: 기준 하나를 골라 ±3% 노이즈)"""
-        time.sleep(self._delay)
-        self._fake_target = random.choice(specs)
-        t = self._fake_target
-        n = lambda v: v * random.uniform(0.97, 1.03)
-        return n(t['width_mm']), n(t['depth_mm']), n(t['height_mm'])
+    def measure_length(self, i, specs):
+        """그리퍼로 i번째 길이 측정 (fake: 기준 하나를 골라 ±3% 노이즈, 순서는 섞음)"""
+        time.sleep(self._delay * 0.5)
+        if i == 1:
+            self._fake_target = random.choice(specs)
+            t = self._fake_target
+            dims = [t['width_mm'], t['depth_mm'], t['height_mm']]
+            random.shuffle(dims)                 # 물품 방향이 매번 다르다고 가정
+            self._fake_dims = dims
+        return self._fake_dims[i - 1] * random.uniform(0.97, 1.03)
 
     def measure_weight(self, specs):
         """토크센서로 무게 측정 (fake: ±5% 노이즈)"""

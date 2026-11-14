@@ -14,7 +14,7 @@ scan_interface.py — 탐지 파트 통신 계층
   class ScanWork:
       def __init__(self, node): ...
       def run(self, report) -> bool:
-          # report('scanning') 처럼 진행 단계 알림 (선택)
+          # 단계가 바뀔 때마다 report(stage) 호출 (필수, stage 목록은 common.STAGES['scan'])
           # 물품을 측정존에 두었으면 True, 물품이 없으면 False
           # 실패하면 raise PartError('GRASP_FAILED', '이유')
 
@@ -29,7 +29,7 @@ from rclpy.node import Node
 
 from box_interfaces.action import Scan
 
-from box_comm.common import ERROR_CODES, PartError  # noqa: F401  (PartError는 scan.py가 여기서 import)
+from box_comm.common import ERROR_CODES, PartError, STAGES  # noqa: F401  (PartError는 scan.py가 여기서 import)
 
 NODE_NAME = 'scan'
 ACTION_NAME = '/scan'
@@ -48,7 +48,11 @@ class ScanInterface(Node):
         result = Scan.Result()
 
         def report(stage: str):
-            goal_handle.publish_feedback(Scan.Feedback(stage=str(stage)))
+            stage = str(stage)
+            if stage not in STAGES['scan']:
+                self.get_logger().warn(
+                    f'[scan] 등록되지 않은 stage: "{stage}" (사용 가능: {STAGES["scan"]})')
+            goal_handle.publish_feedback(Scan.Feedback(stage=stage))
             self.get_logger().info(f'[scan] stage={stage}')
 
         try:

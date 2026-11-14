@@ -122,6 +122,32 @@ def update_inventory(self, box_id, inventory) -> None:
 def set_job_status(self, status) -> None:  # 'BEFORE' / 'RUNNING' / 'DONE'
 ```
 
+### 2-2-1. Feedback stage (필수)
+
+`run()` 안에서 단계가 바뀔 때마다 `report('stage')`를 호출합니다. 값은 아래 목록에서만 씁니다. (`box_comm/common.py`의 `STAGES`)
+목록에 없는 값을 보내면 경고 로그가 남습니다. 새 stage가 필요하면 관제에게 요청합니다.
+
+| 파트 | stage 순서 |
+| --- | --- |
+| 탐지 | `space_scan` → `picking` → `moving` → `placing` |
+| 판별 | `measuring_length1` → `measuring_length2` → `measuring_length3` → `measuring_weight` → (`measuring_materiality`, 옵션) → `judging` |
+| 적재 | `picking` → `moving` → `placing` |
+
+```python
+def run(self, report) -> bool:
+    report('space_scan')
+    ...                      # 스캔
+    report('picking')
+    ...                      # 집기 (재시도도 이 단계 안에서)
+    report('moving')
+    ...
+    report('placing')
+    ...
+```
+
+- 판별의 길이 측정은 물품 방향에 따라 가로·세로·높이가 달라질 수 있어 번호로 구분합니다. 템플릿의 `classify()`는 측정한 길이 3개와 기준 W·D·H를 각각 **크기순으로 정렬해서** 비교하므로, 측정 순서가 바뀌어도 판별에는 영향이 없습니다.
+- 적재가 반환한 재고는 관제가 검증합니다. **적재 전 재고에서 `result_class` 칸만 +1**이어야 하며, 다르면 관제가 자기 계산값으로 DB에 반영하고 경고를 남깁니다.
+
 ### 2-3. 실패 처리
 
 실패하면 `PartError`를 raise합니다. `box_comm`이 Result(`success=False`, `error_code`)로 바꿔 관제에 보냅니다.
@@ -147,7 +173,7 @@ raise PartError('GRASP_FAILED', '두 번 시도했지만 못 집음')
 
 - 로봇 동작과 **홈 복귀까지 끝난 뒤에** 반환합니다.
 - 좌표는 로봇 base 기준, 단위는 mm입니다.
-- `report('단계명')`은 진행 알림입니다. 쓰지 않아도 됩니다.
+- **단계가 바뀔 때마다 `report(stage)`를 반드시 호출합니다.** 관제가 이 값으로 진행 상황을 추적하고, 멈췄을 때 어느 단계였는지 기록합니다. (위 2-2-1)
 - DB의 같은 `box_id` 중복 무시, `status` 값 검사는 `box_comm`이 이미 처리합니다.
 
 ### 2-5. 두산 로봇 연동

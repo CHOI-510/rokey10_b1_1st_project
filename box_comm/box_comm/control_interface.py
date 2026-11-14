@@ -22,6 +22,12 @@ control_interface.py — 관제 통신 계층
   update_inventory(box_id, inv)  -> err
   set_job_status(status)         -> err
 
+  진행 추적 (Feedback 기반)
+  progress(name)                 -> (last_stage: str, seconds_since: float)
+    name = 'scan' / 'judge' / 'place'
+    Goal을 보내면 stage='goal_sent'로 초기화, Feedback이 올 때마다 갱신.
+    → "어느 단계에서 몇 초째 멈춰 있는지" 확인용. (개입 로직은 safety에서 추가 예정)
+
   관제 내부 코드 (파트가 보내는 코드가 아님)
     SERVER_DOWN  서버가 떠 있지 않음
     REJECTED     Goal 거절됨
@@ -34,6 +40,7 @@ control_interface.py — 관제 통신 계층
 """
 
 import threading
+import time
 
 import rclpy
 from rclpy.action import ActionClient
@@ -84,6 +91,10 @@ class ControlInterface(Node):
         self._get_job = self.create_client(GetJobData, '/get_job_data', callback_group=cb)
         self._update_inv = self.create_client(UpdateInventory, '/update_inventory', callback_group=cb)
         self._set_status = self.create_client(SetJobStatus, '/set_job_status', callback_group=cb)
+
+        # Feedback 진행 추적: name -> (stage, 받은 시각)
+        self._progress_lock = threading.Lock()
+        self._progress = {}
 
         self.get_logger().info('[control] 클라이언트 준비 (Action 3, Service 3)')
 
@@ -148,6 +159,19 @@ class ControlInterface(Node):
         return None
 
     # ==================================================================
+    # 진행 추적
+    # ==================================================================
+    def progress(self, name):
+        """(마지막 stage, 그 뒤로 지난 초). 아직 Goal을 보낸 적이 없으면 ('', 0.0)."""
+        with self._progress_lock:
+            stage, t = self._progress.get(name, ('', None))
+        return stage, (time.monotonic() - t) if t is not None else 0.0
+
+    def _set_progress(self, name, stage):
+        with self._progress_lock:
+            self._progress[name] = (stage, time.monotonic())
+
+    # ==================================================================
     # 공통 호출 (call_skill) — 타임아웃/재시도/cancel은 나중에 여기에만 추가
     # ==================================================================
     def _call_action(self, client, goal, name, timeout):
@@ -155,6 +179,7 @@ class ControlInterface(Node):
             self.get_logger().error(f'[control] /{name} 서버 없음')
             return None, 'SERVER_DOWN'
 
+        self._set_progress(name, 'goal_sent')
         send_fut = client.send_goal_async(
             goal, feedback_callback=lambda fb: self._on_feedback(name, fb))
         if not self._wait(send_fut, SERVER_WAIT_SEC):
@@ -183,7 +208,9 @@ class ControlInterface(Node):
         return fut.result(), None
 
     def _on_feedback(self, name, feedback_msg):
-        self.get_logger().info(f'[control] /{name} feedback: {feedback_msg.feedback.stage}')
+        stage = feedback_msg.feedback.stage
+        self._set_progress(name, stage)
+        self.get_logger().info(f'[control] /{name} feedback: {stage}')
 
     @staticmethod
     def _wait(fut, timeout):

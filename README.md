@@ -97,6 +97,18 @@ box_project/
 
 `/scan`의 `found=False`는 "더 이상 물품 없음"이며 실패가 아닙니다(`success=True`).
 
+### Feedback stage
+
+각 파트는 단계가 바뀔 때마다 Feedback `stage`를 **반드시** 보냅니다. 관제는 마지막 stage와 받은 시각으로 진행 상황을 추적하고, 중단될 때 어느 단계에서 멈췄는지 기록합니다. 목록은 `box_comm/common.py`의 `STAGES`에 있으며, 목록에 없는 값을 보내면 경고 로그가 남습니다.
+
+| Action | stage 순서 |
+| --- | --- |
+| `/scan` | `space_scan` → `picking` → `moving` → `placing` |
+| `/judge` | `measuring_length1` → `measuring_length2` → `measuring_length3` → `measuring_weight` → (`measuring_materiality`, 옵션) → `judging` |
+| `/place` | `picking` → `moving` → `placing` |
+
+판별의 길이 측정은 물품 방향에 따라 가로·세로·높이가 달라질 수 있어 번호로 구분합니다.
+
 ### Service (관제 → DB)
 
 | 이름 | Request | Response | 호출 시점 |
@@ -151,6 +163,8 @@ DONE          SetJobStatus(DONE)
 - 단계 상태는 관제 내부에만 있고, DB에는 `BEFORE` / `RUNNING` / `DONE`과 재고만 기록합니다.
 - 상태 값은 영어(`State` Enum)이고, 로그에는 `===== SCANNING (스캔중) =====`처럼 한글을 함께 표시합니다.
 - 스캔은 물품 유무(`found`)만 알리고, 작업완료 여부는 관제가 판단합니다.
+- **재고 검증**: 관제는 적재 Result의 재고를 기대값(적재 전 재고에서 `result_class` 칸만 +1)과 비교합니다. 다르면 기대값으로 DB에 반영하고 `재고 카운팅 오류` 경고 로그를 남긴 뒤 작업을 계속하며, 작업이 끝나면 불일치 건수를 요약해서 출력합니다.
+- **중단 기록**: 오류로 중단되면 해당 파트의 마지막 Feedback stage와 경과 시간을 함께 로그로 남깁니다. (예: `SCANNING (스캔중) 단계에서 중단: GRASP_FAILED | /scan 마지막 stage="picking" (4.2초 전)`)
 - `box_id`는 관제가 `<작업 시작 시각>_<순번>` 형식으로 붙입니다. (예: `20261114_130512_001`)
   관제를 다시 실행해도 이전 작업과 겹치지 않으므로, DB 노드를 켜 둔 채 관제만 재실행해도 됩니다.
 
@@ -201,7 +215,7 @@ ros2 run box_control control
 | --- | --- |
 | `fake_scan` | `box_count` (박스 개수, 기본 3), `fake_delay_sec` |
 | `fake_judge` | `class_sequence` (`"A,B,B,D"`처럼 주면 그 순서로 판별, 비우면 무작위), `fake_delay_sec` |
-| `fake_place` | `fake_delay_sec` |
+| `fake_place` | `fake_delay_sec`, `miscount_at` (N번째 적재에서 일부러 틀린 재고 반환 — 관제 재고 검증 테스트용, 기본 0=끔) |
 | `fake_database` | 없음 (상태·재고 변화를 로그로 출력) |
 
 fake와 실제 노드는 같은 Action/Service 이름을 쓰므로 **동시에 띄우지 않습니다.**

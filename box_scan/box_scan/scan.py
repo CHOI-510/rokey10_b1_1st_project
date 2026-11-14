@@ -9,7 +9,8 @@ scan.py — 탐지 파트 메인 (예시: fake 동작)
     - 물품을 측정존에 두고 홈 복귀까지 끝났으면 True
     - 작업공간에 물품이 없으면 False
     - 실패하면 raise PartError('GRASP_FAILED', '이유')  (등록된 코드만)
-    - report('단계명')은 진행 알림 (선택)
+    - 단계가 바뀔 때마다 report(stage)를 반드시 호출 (관제가 진행 상황을 추적)
+      stage: 'space_scan' → 'picking' → 'moving' → 'placing'  (box_comm/common.py STAGES)
 
 [FAKE] 표시된 부분을 실제 로봇 동작으로 바꾸면 된다.
 필요하면 모션·감지 함수를 다른 파일로 나눠 import해도 된다.
@@ -53,7 +54,7 @@ class ScanWork:
     # ------------------------------------------------------------------
     def run(self, report) -> bool:
         # 1-1 작업공간 스캔, 1-2 물품 감지
-        report('scanning')
+        report('space_scan')
         if not self.detect_box():
             self.go_home()
             return False
@@ -62,8 +63,12 @@ class ScanWork:
         report('picking')
         self.pick()
 
-        # 1-4 측정존 이동 후 내려놓기
+        # 1-4 측정존 이동
         report('moving')
+        self.move_to_measure_zone()
+
+        # 1-4 측정존에 내려놓기
+        report('placing')
         self.place_on_measure_zone()
 
         self.go_home()
@@ -83,8 +88,11 @@ class ScanWork:
     def pick(self):
         time.sleep(self._delay)
 
-    def place_on_measure_zone(self):
+    def move_to_measure_zone(self):
         time.sleep(self._delay)
+
+    def place_on_measure_zone(self):
+        time.sleep(self._delay * 0.5)
 
     def go_home(self):
         time.sleep(self._delay * 0.5)
