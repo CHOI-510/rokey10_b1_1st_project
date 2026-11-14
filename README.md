@@ -126,20 +126,31 @@ box_project/
 ## 5. 관제 흐름
 
 ```
-작업전   GetJobData로 분류 기준(specs)과 재고 수신
-작업중   SetJobStatus(RUNNING)
-  ┌─ 스캔중   /scan Goal ──▶ found=False면 루프 종료
-  │  스캔완료
-  │  판별중   /judge Goal(specs)
-  │  판별완료  result_class 수신
-  │  적재중   /place Goal(result_class, inventory)
-  │  적재완료  적재 후 inventory 수신 → UpdateInventory(box_id, inventory)
+BEFORE        GetJobData로 분류 기준(specs)과 재고 수신
+RUNNING       SetJobStatus(RUNNING)
+  ┌─ SCANNING    /scan Goal ──▶ found=False(물품 없음)면 관제가 작업완료로 판단
+  │  SCAN_DONE
+  │  JUDGING     /judge Goal(specs)
+  │  JUDGE_DONE  result_class 수신
+  │  PLACING     /place Goal(result_class, inventory)
+  │  PLACE_DONE  적재 후 inventory 수신 → UpdateInventory(box_id, inventory)
   └─ 반복
-작업완료  SetJobStatus(DONE)
+DONE          SetJobStatus(DONE)
 ```
 
-- "-중" 상태는 Goal을 보내기 직전, "-완료" 상태는 Result를 받은 직후에 바뀝니다.
-- 단계 상태는 관제 내부에만 있고, DB에는 작업전·작업중·작업완료와 재고만 기록합니다.
+| 상태 | 한글 | DB 기록 |
+| --- | --- | :-: |
+| `BEFORE` | 작업전 | ✓ |
+| `RUNNING` | 작업중 | ✓ |
+| `SCANNING` / `SCAN_DONE` | 스캔중 / 스캔완료 | |
+| `JUDGING` / `JUDGE_DONE` | 판별중 / 판별완료 | |
+| `PLACING` / `PLACE_DONE` | 적재중 / 적재완료 | |
+| `DONE` | 작업완료 | ✓ |
+
+- `-ING` 상태는 Goal을 보내기 직전, `_DONE` 상태는 Result를 받은 직후에 바뀝니다.
+- 단계 상태는 관제 내부에만 있고, DB에는 `BEFORE` / `RUNNING` / `DONE`과 재고만 기록합니다.
+- 상태 값은 영어(`State` Enum)이고, 로그에는 `===== SCANNING (스캔중) =====`처럼 한글을 함께 표시합니다.
+- 스캔은 물품 유무(`found`)만 알리고, 작업완료 여부는 관제가 판단합니다.
 - `box_id`는 관제가 `<작업 시작 시각>_<순번>` 형식으로 붙입니다. (예: `20261114_130512_001`)
   관제를 다시 실행해도 이전 작업과 겹치지 않으므로, DB 노드를 켜 둔 채 관제만 재실행해도 됩니다.
 

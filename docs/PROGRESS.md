@@ -29,6 +29,8 @@
 | 11/14 | UI 범위: 상태·재고 조회 + 비상정지 버튼. UI에서 작업 시작은 하지 않음 | 원격 시작은 이번 범위에서 제외 |
 | 11/14 | 에러 코드·`PartError`를 `box_comm/common.py`로 통합 | 코드 추가 시 한 곳만 수정, 파트마다 `PartError` 클래스가 달라지는 문제 방지 |
 | 11/14 | `box_id`를 `<작업 시작 시각>_<순번>`으로 변경 | 관제 재실행 시 DB가 새 박스를 중복으로 보고 재고를 반영하지 않던 문제 해결 |
+| 11/14 | 관제 상태 이름을 영어로 변경 (`SCANNING`, `SCAN_DONE` …), 로그에만 한글 병기 | DB status·Feedback stage와 표기 통일, 코드 호환성 |
+| 11/14 | 스캔은 물품 유무(`found`)만 알리고, 작업완료 판단은 관제가 함 | 시작·완료 판단은 관제의 역할 |
 
 ---
 
@@ -45,6 +47,33 @@
 | 7 | 측정존 비우기, 상태 확인·환경 세팅 (WBS 0-2, 0-3) 위치 | 관제 | 미정 |
 | 8 | 탐지·판별·적재 3개 프로세스의 두산 로봇 동시 연결 확인 | 탐지, 판별, 적재 | 실제 로봇 연동 시 |
 | 9 | DB 방식(SQLite 권장)과 UI 방식(웹 / PyQt) — PyQt를 노드 안에 띄우면 `box_comm` 수정 필요 | DB | 미정 |
+| 10 | **재고 검증**: 관제가 기대값(적재 전 재고 + `result_class` 칸 +1)과 적재 Result를 비교. 불일치 시 관제 계산값으로 DB 반영 + 경고 로그(시각, `box_id`, 두 값) 남기고 작업 계속 | 관제, 적재, DB | 방식 결정(아래 메모), 담당자 협의 필요 |
+| 11 | **집기 최종 실패 처리**: 파트 내부 재시도 후에도 실패하면 `GRASP_FAILED`. 같은 박스를 계속 다시 찾는 무한 루프 방지 필요 (연속 실패 상한, 해당 위치 건너뛰기 여부) | 관제, 탐지 | 탐지 담당과 협의 |
+| 12 | **Feedback 기반 진행 감시**: `report()`를 의무화하고, 마지막 Feedback 이후 일정 시간 소식이 없으면 관제가 개입. stage 목록은 아래 메모 | 전체 | stage 목록 협의 필요, 개입 방법은 `common`의 safety 항목으로 |
+
+### 메모: 이슈 10 재고 검증 (안)
+
+```
+보낸 값:  inventory = {A:1, B:0, C:2, D:0},  result_class = 'C'
+기대값:   {A:1, B:0, C:3, D:0}          ← result_class 칸만 +1
+받은 값:  적재 Result의 inventory
+일치   → 그대로 DB 반영
+불일치 → 기대값으로 DB 반영 + 경고 로그 "HH:MM box_id 카운팅 오류, 확인 필요 (기대 …, 받음 …)", 작업 계속
+```
+
+- 미분류(`X`)가 생기면 `result_class == 'X'`일 때만 변화 0을 허용
+- 경고 로그를 DB에 남길지(UI 표시 여부)는 DB 담당과 협의
+
+### 메모: 이슈 12 Feedback stage 목록 (안)
+
+| 파트 | stage 순서 |
+| --- | --- |
+| 탐지 | `space_scan` → `picking` → `moving` → `placing` |
+| 판별 | `measuring_length1` → `measuring_length2` → `measuring_length3` → `measuring_weight` → (`measuring_materiality`) → `judging` |
+| 적재 | `picking` → `moving` → `placing` |
+
+- 판별의 길이 측정은 물품 방향에 따라 가로·세로·높이가 달라질 수 있어 번호로 구분
+- 목록이 확정되면 `box_comm/common.py`에 상수로 정리 검토
 
 ---
 
@@ -54,6 +83,8 @@
 
 ### 11/14
 
+- 관제 상태 이름 영어화(`State` Enum), 로그에 한글 병기
+- 재고 검증 방식(이슈 10), 집기 실패 처리(이슈 11), Feedback 감시와 stage 목록(이슈 12) 논의 내용 기록
 - `box_comm/common.py` 추가 (에러 코드 통합), `box_id`에 작업 시작 시각 추가
 - 실제 ROS 2 Jazzy에서 빌드·fake 전체 루프·단독 테스트·오류 경로(SERVER_DOWN, NO_SLOT) 확인
 - 인터페이스 v0.2 기반 패키지 7개 구조 구성, GitHub 저장소 생성
