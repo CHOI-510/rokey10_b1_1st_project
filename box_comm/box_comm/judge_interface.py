@@ -7,6 +7,8 @@ judge_interface.py — 판별 파트 통신 계층
 하는 일
   - Action 서버 /judge (box_interfaces/action/Judge)를 띄운다.
   - Goal의 specs(ClassSpec[])를 파이썬 dict 리스트로 바꿔 작업 클래스의 run()에 넘긴다.
+  - run() 직전에 기본 TCP·툴을 확인·적용한다 (box_comm/robot.py, stage 'robot_setup').
+    실패하면 run()을 부르지 않고 ROBOT_SETUP_FAILED로 끝낸다. 파라미터 robot_setup=auto/on/off
   - run()의 반환값/예외를 Result로 바꿔 관제에 보낸다.
 
 작업 클래스 약속 (box_judge/judge.py에서 작성)
@@ -26,11 +28,13 @@ judge_interface.py — 판별 파트 통신 계층
 
 import rclpy
 from rclpy.action import ActionServer
+from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.node import Node
 
 from box_interfaces.action import Judge
 
-from box_comm.common import ERROR_CODES, PartError, STAGES, VALID_CLASSES  # noqa: F401
+from box_comm.robot import RobotSetup
+from box_comm.common import SETUP_STAGE, ERROR_CODES, PartError, STAGES, VALID_CLASSES  # noqa: F401
 
 NODE_NAME = 'judge'
 ACTION_NAME = '/judge'
@@ -50,6 +54,7 @@ def _spec_to_dict(s) -> dict:
 class JudgeInterface(Node):
     def __init__(self, work_cls):
         super().__init__(NODE_NAME)
+        self.robot = RobotSetup(self, NODE_NAME)   # 기본 TCP·툴 확인 (box_comm/robot.py)
         self.work = work_cls(self)
         self._server = ActionServer(self, Judge, ACTION_NAME, self._execute)
         self.get_logger().info(f'[judge] Action 서버 {ACTION_NAME} 준비')
@@ -72,6 +77,13 @@ class JudgeInterface(Node):
         try:
             if not specs:
                 raise PartError('MEASURE_FAILED', 'specs가 비어 있음')
+            # 기본 TCP·툴 확인·적용 → 실패하면 run()을 부르지 않고 Result로 끝냄
+            report(SETUP_STAGE)
+            ok, setup_msg = self.robot.ensure_defaults()
+            if not ok:
+                raise PartError('ROBOT_SETUP_FAILED', setup_msg)
+            self.get_logger().info(f'[judge] robot_setup: {setup_msg}')
+
             result_class = self.work.run(specs, report)
             if result_class not in VALID_CLASSES:
                 raise ValueError(f'run()은 {VALID_CLASSES} 중 하나를 반환해야 함 '
@@ -102,10 +114,16 @@ class JudgeInterface(Node):
 def start(work_cls, args=None):
     rclpy.init(args=args)
     node = JudgeInterface(work_cls)
+    # 전용 executor로 spin한다 (rclpy.spin은 전역 executor를 씀).
+    # → run() 안에서 DSR_ROBOT2 함수(movej 등)가 전역 executor로 응답을 기다려도
+    #   'Executor is already spinning' 충돌이 나지 않는다.
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
+        executor.spin()
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         rclpy.try_shutdown()

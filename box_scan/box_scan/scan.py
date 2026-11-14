@@ -25,6 +25,16 @@ scan.py — 탐지 파트 메인 (예시: fake 동작)
 import time
 
 from box_comm.scan_interface import PartError, start  # noqa: F401  (PartError는 실패 시 사용)
+from box_comm.common import FIXED_POSES
+
+# ----------------------------------------------------------------------
+# 공통 고정 좌표 — 원본은 box_comm/common.py (관제 관리). 숫자를 직접 적지 않는다.
+#   값이 바뀌면 관제가 common.py만 고치고, 모든 파트에 같이 적용된다.
+#   관제는 작업 시작 전에 이 값과 DB 사본을 비교한다 (preflight).
+# ----------------------------------------------------------------------
+HOME_J = FIXED_POSES['home_j']              # HOME 관절 각도 [deg] → movej(HOME_J)
+MEASURE_ZONE = FIXED_POSES['measure_zone']  # 측정존 x, y, z [mm, base 기준] (None = 아직 미설정)
+#   측정존 자세(a, b, c)는 각 파트 동작에 맞게 정한다. 예: [*MEASURE_ZONE, 0.0, 180.0, 0.0]
 
 
 class ScanWork:
@@ -89,13 +99,26 @@ class ScanWork:
         time.sleep(self._delay)
 
     def move_to_measure_zone(self):
+        zone = self._measure_zone_xyz()   # 실제: movel([*zone 위쪽 접근점, a, b, c])
         time.sleep(self._delay)
 
     def place_on_measure_zone(self):
+        zone = self._measure_zone_xyz()   # 실제: movel([*zone, a, b, c]) → 그리퍼 열기
         time.sleep(self._delay * 0.5)
 
     def go_home(self):
+        # 실제: movej(HOME_J)
         time.sleep(self._delay * 0.5)
+
+    def _measure_zone_xyz(self):
+        """측정존 x, y, z. 미설정이면 실제 동작에서는 움직이면 안 된다."""
+        if MEASURE_ZONE is None:
+            if not getattr(self, '_zone_warned', False):
+                self.log.warn('측정존 좌표가 아직 미설정 (box_comm/common.py) — '
+                              '[FAKE]에서는 넘어가지만 실제 동작에서는 움직이지 않도록 처리할 것')
+                self._zone_warned = True
+            return None
+        return list(MEASURE_ZONE)
 
 
 def main():

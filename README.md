@@ -62,10 +62,11 @@
 box_project/
 ├─ box_interfaces/   메시지 정의 (.msg .srv .action)
 ├─ box_comm/         공용 통신 라이브러리 (노드 아님)
-│  └─ common.py (에러 코드·PartError 공통 정의),
-│     control_interface.py, scan_interface.py, judge_interface.py,
+│  ├─ common.py       공통 값: 에러 코드, stage, TCP·툴, 고정 좌표, PartError
+│  ├─ robot.py        기본 TCP·툴 확인·적용 (파트 Goal 시작 전 자동 실행)
+│  └─ control_interface.py, scan_interface.py, judge_interface.py,
 │     place_interface.py, database_interface.py
-├─ box_control/      관제: control.py + 테스트용 fake_*.py 4개
+├─ box_control/      관제: control.py (순서) + preflight.py (시작 전 점검) + 테스트용 fake_*.py 4개
 ├─ box_scan/         탐지: scan.py
 ├─ box_judge/        판별: judge.py
 ├─ box_place/        적재: place.py
@@ -85,7 +86,7 @@ box_project/
 
 ---
 
-## 4. 인터페이스 (`box_interfaces` v0.2)
+## 4. 인터페이스 (`box_interfaces` v0.3)
 
 ### Action (관제 → 파트)
 
@@ -107,13 +108,14 @@ box_project/
 | `/judge` | `measuring_length1` → `measuring_length2` → `measuring_length3` → `measuring_weight` → (`measuring_materiality`, 옵션) → `judging` |
 | `/place` | `picking` → `moving` → `placing` |
 
+모든 Action은 맨 앞에 `robot_setup`(기본 TCP·툴 확인, `box_comm`이 자동으로 보냄)이 먼저 옵니다.
 판별의 길이 측정은 물품 방향에 따라 가로·세로·높이가 달라질 수 있어 번호로 구분합니다.
 
 ### Service (관제 → DB)
 
 | 이름 | Request | Response | 호출 시점 |
 | --- | --- | --- | --- |
-| `/get_job_data` | 없음 | `success`, `specs`, `inventory`, `message` | 작업 시작 시 |
+| `/get_job_data` | 없음 | `success`, `specs`, `inventory`, `poses`, `message` | 작업 시작 시 |
 | `/update_inventory` | `box_id`, `inventory` | `success`, `message` | 적재완료마다 (같은 `box_id`는 한 번만 반영) |
 | `/set_job_status` | `status` | `success` | 작업중, 작업완료 시 |
 
@@ -123,6 +125,7 @@ box_project/
 | --- | --- |
 | `Inventory` | `a`, `b`, `c`, `d`: int32 — 분류별 재고 수 |
 | `ClassSpec` | `class_id`: string, `width_mm`, `depth_mm`, `height_mm`, `weight_g`: float32 |
+| `FixedPoses` | `available`: bool, `home_j`: float64[6] (deg), `measure_zone`: float64[3] (x, y, z mm) — DB에 저장된 고정 좌표 사본 |
 
 ### 공통 값
 
@@ -130,7 +133,7 @@ box_project/
 | --- | --- |
 | `status` | `BEFORE`, `RUNNING`, `DONE` |
 | `result_class` | `A`, `B`, `C`, `D` |
-| `error_code` | 성공 `""` / 실패 `NOT_FOUND`, `GRASP_FAILED`, `OVER_FORCE`, `MEASURE_FAILED`, `NO_SLOT`, `PLACE_FAILED` |
+| `error_code` | 성공 `""` / 실패 `NOT_FOUND`, `GRASP_FAILED`, `OVER_FORCE`, `MEASURE_FAILED`, `NO_SLOT`, `PLACE_FAILED`, `ROBOT_SETUP_FAILED` |
 | 좌표·단위 | 로봇 base 기준, mm |
 
 ---
@@ -138,7 +141,8 @@ box_project/
 ## 5. 관제 흐름
 
 ```
-BEFORE        GetJobData로 분류 기준(specs)과 재고 수신
+BEFORE        GetJobData로 분류 기준(specs), 재고, 고정 좌표 사본(poses) 수신
+PREFLIGHT     시작 전 점검 (분류 기준, 고정 좌표 common.py vs DB) → FAIL이면 시작 안 함
 STANDBY       시작 대기 카운트다운 (작업공간 안전 확인, q: 취소 / s: 바로 시작)
 RUNNING       SetJobStatus(RUNNING)
   ┌─ SCANNING    /scan Goal ──▶ found=False(물품 없음)면 관제가 작업완료로 판단
@@ -154,6 +158,7 @@ DONE          SetJobStatus(DONE)
 | 상태 | 한글 | DB 기록 |
 | --- | --- | :-: |
 | `BEFORE` | 작업전 | ✓ |
+| `PREFLIGHT` | 사전점검 | |
 | `STANDBY` | 시작대기 | |
 | `RUNNING` | 작업중 | ✓ |
 | `SCANNING` / `SCAN_DONE` | 스캔중 / 스캔완료 | |
@@ -161,6 +166,9 @@ DONE          SetJobStatus(DONE)
 | `PLACING` / `PLACE_DONE` | 적재중 / 적재완료 | |
 | `DONE` | 작업완료 | ✓ |
 
+- **중단은 두 가지로 통일합니다.**
+  - **시작 전 중단** (`RUNNING` 전): 작업 데이터 수신 실패, 사전 점검 FAIL, 카운트다운 중 `q` → 모두 같은 메시지 `작업을 시작하지 않습니다 [단계]: 이유`로 끝나고, 로봇은 움직이지 않으며 DB는 `BEFORE` 그대로입니다.
+  - **작업 중 중단** (`RUNNING` 이후): 파트 오류 등 → `단계에서 중단: error_code | 마지막 stage` 로그
 - `-ING` 상태는 Goal을 보내기 직전, `_DONE` 상태는 Result를 받은 직후에 바뀝니다.
 - 단계 상태는 관제 내부에만 있고, DB에는 `BEFORE` / `RUNNING` / `DONE`과 재고만 기록합니다.
 - 상태 값은 영어(`State` Enum)이고, 로그에는 `===== SCANNING (스캔중) =====`처럼 한글을 함께 표시합니다.
@@ -170,9 +178,52 @@ DONE          SetJobStatus(DONE)
 - `box_id`는 관제가 `<작업 시작 시각>_<순번>` 형식으로 붙입니다. (예: `20261114_130512_001`)
   관제를 다시 실행해도 이전 작업과 겹치지 않으므로, DB 노드를 켜 둔 채 관제만 재실행해도 됩니다.
 
+### 사전 점검 (PREFLIGHT) — `box_control/preflight.py`
+
+| 점검 | FAIL (시작 안 함) | WARN (진행) |
+| --- | --- | --- |
+| 분류 기준 | A~D 중 빠진 것, 0 이하 값 | |
+| 고정 좌표 | `common.py` 원본과 DB 사본이 다름 → "측정존 설정값이 DB와 다릅니다. 재설정 후 실행해 주세요." | DB에 사본 없음, `common.py` 값 미설정 |
+
+고정 좌표는 `box_comm/common.py`의 `FIXED_POSES`가 **원본**(로봇은 항상 이 값으로 움직임)이고, DB는 값 보호와 UI 표시를 위한 **사본**입니다. 둘을 비교해서 어느 한쪽이 실수로 바뀌어도 로봇이 움직이기 전에 잡습니다.
+점검을 추가할 때는 `preflight.py`에 함수를 만들고 `CHECKS`에 넣습니다.
+
 ---
 
-## 6. 빌드와 실행
+## 6. 로봇 설정 (TCP·툴)
+
+TCP와 툴은 로봇 컨트롤러에 **하나만** 걸리는 전역 설정입니다. 탐지·판별·적재가 같은 로봇을 번갈아 쓰므로, 앞 파트가 바꾼 설정이 남거나 (특히 가상 모드 에뮬레이터에서) TCP가 등록돼 있지 않으면 **플랜지 기준으로 움직여 TCP 오프셋(208.4mm)만큼 더 내려가 바닥에 부딪힙니다.**
+
+그래서 `box_comm/robot.py`가 **각 파트가 Goal을 받으면 `run()` 직전에** 기본 TCP·툴을 확인하고 적용합니다. 관제와 함께 돌리든 팀원이 혼자 테스트하든 똑같이 동작하고, 팀원 코드에는 아무것도 넣지 않아도 됩니다.
+
+| 항목 | 값 (`common.py`) |
+| --- | --- |
+| TCP | `GripperDA_v1`, 오프셋 `[0, 0, 208.4, 0, 0, 0]` |
+| 툴 | `Tool Weight`, 1.530 kg, 무게중심 `[13.52, 79.74, 0.12]` mm |
+
+동작 (TCP·툴 각각)
+1. 현재 이름 조회 → 기본값이면 끝
+2. 다르면 적용 → 다시 조회해서 확인
+3. 그래도 다르면 (미등록으로 판단) 수동 모드 → 등록 → 적용 → 자동 모드 → 확인
+4. 최종 확인 실패 → `run()`을 부르지 않고 `ROBOT_SETUP_FAILED`로 Result
+
+파트 노드 파라미터 `robot_setup`
+
+| 값 | 동작 | 쓰는 때 |
+| --- | --- | --- |
+| `auto` (기본) | 두산 서비스가 있으면 확인·적용, 없으면 경고 후 건너뜀 | 개발, fake 테스트 |
+| `on` | 두산 서비스가 없거나 확인 실패면 Goal 실패 | **실제 로봇, 시연** |
+| `off` | 하지 않음 | 특수한 경우 |
+
+```bash
+ros2 run box_scan scan --ros-args -p robot_setup:=on
+```
+
+파트는 자기 `run()` 안에서 필요하면 다른 TCP로 바꿔도 됩니다. 다음 Goal에서 기본값으로 다시 맞춰집니다.
+
+---
+
+## 7. 빌드와 실행
 
 ### 요구 환경
 
@@ -238,14 +289,14 @@ ros2 run box_control control --ros-args -p start_delay_sec:=3.0     # 테스트�
 | `fake_scan` | `box_count` (박스 개수, 기본 3), `fake_delay_sec` |
 | `fake_judge` | `class_sequence` (`"A,B,B,D"`처럼 주면 그 순서로 판별, 비우면 무작위), `fake_delay_sec` |
 | `fake_place` | `fake_delay_sec`, `miscount_at` (N번째 적재에서 일부러 틀린 재고 반환 — 관제 재고 검증 테스트용, 기본 0=끔) |
-| `fake_database` | 없음 (상태·재고 변화를 로그로 출력) |
+| `fake_database` | `pose_offset` (고정 좌표에 값을 더해 불일치 테스트), `poses_available` (False면 사본 없음) |
 
 fake와 실제 노드는 같은 Action/Service 이름을 쓰므로 **동시에 띄우지 않습니다.**
 파트 하나만 실제로 붙여 보려면 그 파트만 실제 노드로, 나머지는 fake로 띄웁니다.
 
 ---
 
-## 7. 팀
+## 8. 팀
 
 | 역할 | 담당 | 패키지 |
 | --- | --- | --- |

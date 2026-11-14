@@ -7,6 +7,8 @@ place_interface.py — 적재 파트 통신 계층
 하는 일
   - Action 서버 /place (box_interfaces/action/Place)를 띄운다.
   - Goal의 result_class와 inventory를 파이썬 값으로 바꿔 작업 클래스의 run()에 넘긴다.
+  - run() 직전에 기본 TCP·툴을 확인·적용한다 (box_comm/robot.py, stage 'robot_setup').
+    실패하면 run()을 부르지 않고 ROBOT_SETUP_FAILED로 끝낸다. 파라미터 robot_setup=auto/on/off
   - run()의 반환값/예외를 Result로 바꿔 관제에 보낸다.
   - 실패하면 적재 전 inventory를 그대로 돌려준다.
 
@@ -28,12 +30,14 @@ place_interface.py — 적재 파트 통신 계층
 
 import rclpy
 from rclpy.action import ActionServer
+from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.node import Node
 
 from box_interfaces.action import Place
 from box_interfaces.msg import Inventory
 
-from box_comm.common import ERROR_CODES, PartError, STAGES, VALID_CLASSES  # noqa: F401
+from box_comm.robot import RobotSetup
+from box_comm.common import SETUP_STAGE, ERROR_CODES, PartError, STAGES, VALID_CLASSES  # noqa: F401
 
 NODE_NAME = 'place'
 ACTION_NAME = '/place'
@@ -53,6 +57,7 @@ def _dict_to_inv(d: dict) -> Inventory:
 class PlaceInterface(Node):
     def __init__(self, work_cls):
         super().__init__(NODE_NAME)
+        self.robot = RobotSetup(self, NODE_NAME)   # 기본 TCP·툴 확인 (box_comm/robot.py)
         self.work = work_cls(self)
         self._server = ActionServer(self, Place, ACTION_NAME, self._execute)
         self.get_logger().info(f'[place] Action 서버 {ACTION_NAME} 준비')
@@ -76,6 +81,13 @@ class PlaceInterface(Node):
         try:
             if result_class not in VALID_CLASSES:
                 raise PartError('PLACE_FAILED', f'알 수 없는 result_class: "{result_class}"')
+            # 기본 TCP·툴 확인·적용 → 실패하면 run()을 부르지 않고 Result로 끝냄
+            report(SETUP_STAGE)
+            ok, setup_msg = self.robot.ensure_defaults()
+            if not ok:
+                raise PartError('ROBOT_SETUP_FAILED', setup_msg)
+            self.get_logger().info(f'[place] robot_setup: {setup_msg}')
+
             inv_after = self.work.run(result_class, dict(inv_before), report)
             result.success = True
             result.inventory = _dict_to_inv(inv_after)
@@ -103,10 +115,16 @@ class PlaceInterface(Node):
 def start(work_cls, args=None):
     rclpy.init(args=args)
     node = PlaceInterface(work_cls)
+    # 전용 executor로 spin한다 (rclpy.spin은 전역 executor를 씀).
+    # → run() 안에서 DSR_ROBOT2 함수(movej 등)가 전역 executor로 응답을 기다려도
+    #   'Executor is already spinning' 충돌이 나지 않는다.
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
+        executor.spin()
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         rclpy.try_shutdown()

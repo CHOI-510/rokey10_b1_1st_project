@@ -4,13 +4,18 @@ database.py — DB 파트 메인 (예시: 메모리 fake DB)
 ================================================================
 담당자가 작성하는 파일. 통신은 database_interface.py가 처리한다.
 
-지킬 약속은 세 개:
+지킬 약속은 네 개:
   get_job_data() -> (specs, inventory)
       specs     = [{'class_id': 'A', 'width_mm': .., 'depth_mm': ..,
                     'height_mm': .., 'weight_g': ..}, ...]
       inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
   update_inventory(box_id, inventory) -> None
   set_job_status(status) -> None         status: 'BEFORE' / 'RUNNING' / 'DONE'
+  get_fixed_poses() -> dict               DB에 저장된 고정 좌표 사본
+      {'home_j': [6개, deg], 'measure_zone': [x, y, z, mm]}
+      원본은 box_comm/common.py의 FIXED_POSES. 관제가 작업 시작 전에 둘을 비교해서
+      다르면 "측정존 설정값이 DB와 다릅니다"로 시작하지 않는다.
+      저장된 값이 없으면 None 반환 (관제는 경고만 남기고 진행)
 
   실패하면 아무 예외나 raise → 관제에 success=False로 전달된다.
   같은 box_id 중복 무시, status 값 검사는 interface가 이미 처리한다.
@@ -37,6 +42,13 @@ FAKE_SPECS = [
     {'class_id': 'D', 'width_mm': 100.0, 'depth_mm': 80.0, 'height_mm': 50.0, 'weight_g': 400.0},
 ]
 
+# [FAKE] DB에 저장된 고정 좌표 사본 — 실제로는 DB에서 읽어 온다
+#        값은 box_comm/common.py의 FIXED_POSES와 같아야 한다
+FAKE_POSES = {
+    'home_j': [0.0, 0.0, 90.0, 0.0, 90.0, 0.0],
+    'measure_zone': [0.0, 0.0, 0.0],      # TODO: 측정존 실측값 (common.py와 같은 값으로)
+}
+
 
 class DatabaseWork:
     def __init__(self, node):
@@ -45,6 +57,7 @@ class DatabaseWork:
 
         # [FAKE] 메모리 저장소 — 노드를 끄면 사라짐
         self._specs = [dict(s) for s in FAKE_SPECS]
+        self._poses = {k: list(v) for k, v in FAKE_POSES.items()}
         self._inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
         self._status = 'BEFORE'
         self._history = []                 # (box_id, inventory) 기록
@@ -63,6 +76,9 @@ class DatabaseWork:
     def set_job_status(self, status):
         self._status = status
         self.refresh_ui()
+
+    def get_fixed_poses(self):
+        return {k: list(v) for k, v in self._poses.items()}
 
     # ------------------------------------------------------------------
     # [FAKE] UI 갱신 자리

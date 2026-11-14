@@ -121,6 +121,9 @@ def run(self, result_class, inventory, report) -> dict:
 def get_job_data(self) -> tuple:           # (specs, inventory) 반환
 def update_inventory(self, box_id, inventory) -> None:
 def set_job_status(self, status) -> None:  # 'BEFORE' / 'RUNNING' / 'DONE'
+def get_fixed_poses(self) -> dict:         # DB에 저장된 고정 좌표 사본, 없으면 None
+    # {'home_j': [6개, deg], 'measure_zone': [x, y, z, mm]}
+    # 원본은 box_comm/common.py. 관제가 시작 전에 비교해서 다르면 시작하지 않음
 ```
 
 ### 2-2-1. Feedback stage (필수)
@@ -179,6 +182,21 @@ raise PartError('GRASP_FAILED', '두 번 시도했지만 못 집음')
 
 ### 2-5. 두산 로봇 연동
 
+**TCP·툴은 신경 쓰지 않아도 됩니다.** Goal을 받으면 `run()` 직전에 `box_comm`이 기본 TCP(`GripperDA_v1`)와 툴(`Tool Weight`)을 확인하고, 다르면 적용합니다. 관제 없이 혼자 `send_goal`로 테스트할 때도 똑같이 적용됩니다.
+
+- 실제 로봇·시연에서는 `--ros-args -p robot_setup:=on`으로 실행합니다. 적용에 실패하면 로봇을 움직이지 않고 `ROBOT_SETUP_FAILED`로 끝납니다.
+- 자기 동작 안에서 다른 TCP가 필요하면 바꿔도 됩니다. (예: 무게 측정용 기준점) 다음 Goal에서 기본값으로 돌아갑니다.
+  단, **로봇에 등록된 이름**이어야 합니다. 등록되지 않은 이름은 조용히 실패해서 플랜지 기준으로 움직입니다. 새 TCP가 필요하면 관제에게 요청하세요.
+
+**공통 좌표는 `common.py`에서 가져옵니다.** 직접 숫자를 적지 않습니다.
+
+```python
+from box_comm.common import FIXED_POSES
+HOME_J = FIXED_POSES['home_j']            # HOME 관절 각도
+MEASURE_ZONE = FIXED_POSES['measure_zone'] # 측정존 x, y, z (mm)
+```
+
+- `run()` 안에서 `DSR_ROBOT2` 함수(`movej`, `movel` 등)를 **그대로 호출해도 됩니다.** `box_comm`이 파트 노드를 전용 executor로 돌리기 때문에, 두산 함수가 내부에서 응답을 기다려도 충돌(`Executor is already spinning`)하지 않습니다.
 - `box_comm`이 만든 노드(`self.node`)와 **로봇 제어용 노드를 분리**합니다.
   `DSR_ROBOT2` 함수는 등록된 노드를 내부에서 spin하므로, 같은 노드를 쓰면 충돌할 수 있습니다.
 - 예시는 `scan.py`의 `DR_init` 주석을 참고합니다. 노드 이름은 파트별로 다르게 합니다. (`scan_dsr`, `judge_dsr`, `place_dsr`)

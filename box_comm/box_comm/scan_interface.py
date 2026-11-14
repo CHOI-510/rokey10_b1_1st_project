@@ -7,6 +7,8 @@ scan_interface.py — 탐지 파트 통신 계층
 하는 일
   - Action 서버 /scan (box_interfaces/action/Scan)을 띄운다.
   - Goal(시작명령)을 받으면 작업 클래스의 run(report)을 호출한다.
+  - run() 직전에 기본 TCP·툴을 확인·적용한다 (box_comm/robot.py, stage 'robot_setup').
+    실패하면 run()을 부르지 않고 ROBOT_SETUP_FAILED로 끝낸다. 파라미터 robot_setup=auto/on/off
   - run()의 반환값/예외를 Result로 바꿔 관제에 보낸다.
     (어떤 경우에도 Result 없이 끝나지 않는다)
 
@@ -25,11 +27,13 @@ scan_interface.py — 탐지 파트 통신 계층
 
 import rclpy
 from rclpy.action import ActionServer
+from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.node import Node
 
 from box_interfaces.action import Scan
 
-from box_comm.common import ERROR_CODES, PartError, STAGES  # noqa: F401  (PartError는 scan.py가 여기서 import)
+from box_comm.robot import RobotSetup
+from box_comm.common import SETUP_STAGE, ERROR_CODES, PartError, STAGES  # noqa: F401  (PartError는 scan.py가 여기서 import)
 
 NODE_NAME = 'scan'
 ACTION_NAME = '/scan'
@@ -39,6 +43,7 @@ DEFAULT_ERROR = 'GRASP_FAILED'   # 예상 못 한 예외일 때 보내는 코드
 class ScanInterface(Node):
     def __init__(self, work_cls):
         super().__init__(NODE_NAME)
+        self.robot = RobotSetup(self, NODE_NAME)   # 기본 TCP·툴 확인 (box_comm/robot.py)
         self.work = work_cls(self)
         self._server = ActionServer(self, Scan, ACTION_NAME, self._execute)
         self.get_logger().info(f'[scan] Action 서버 {ACTION_NAME} 준비')
@@ -56,6 +61,13 @@ class ScanInterface(Node):
             self.get_logger().info(f'[scan] stage={stage}')
 
         try:
+            # 기본 TCP·툴 확인·적용 → 실패하면 run()을 부르지 않고 Result로 끝냄
+            report(SETUP_STAGE)
+            ok, setup_msg = self.robot.ensure_defaults()
+            if not ok:
+                raise PartError('ROBOT_SETUP_FAILED', setup_msg)
+            self.get_logger().info(f'[scan] robot_setup: {setup_msg}')
+
             found = self.work.run(report)
             if not isinstance(found, bool):
                 raise TypeError(f'run()은 bool을 반환해야 함 (받은 값: {found!r})')
@@ -85,10 +97,16 @@ class ScanInterface(Node):
 def start(work_cls, args=None):
     rclpy.init(args=args)
     node = ScanInterface(work_cls)
+    # 전용 executor로 spin한다 (rclpy.spin은 전역 executor를 씀).
+    # → run() 안에서 DSR_ROBOT2 함수(movej 등)가 전역 executor로 응답을 기다려도
+    #   'Executor is already spinning' 충돌이 나지 않는다.
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
+        executor.spin()
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         rclpy.try_shutdown()

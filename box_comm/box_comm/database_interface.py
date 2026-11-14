@@ -26,6 +26,10 @@ database_interface.py — DB 파트 통신 계층
           # DB에 재고 기록 + UI 갱신
       def set_job_status(self, status: str) -> None:
           # DB에 작업 상태 기록 + UI 갱신
+      def get_fixed_poses(self) -> dict | None:      # 선택 (없으면 available=False)
+          # DB에 저장된 고정 좌표 사본
+          # {'home_j': [6개, deg], 'measure_zone': [x, y, z, mm]}
+          # 관제가 box_comm/common.py의 원본과 비교한다.
   실패하면 아무 예외나 raise → success=False, message에 사유가 담긴다.
 
 실행
@@ -34,9 +38,10 @@ database_interface.py — DB 파트 통신 계층
 """
 
 import rclpy
+from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.node import Node
 
-from box_interfaces.msg import ClassSpec, Inventory
+from box_interfaces.msg import ClassSpec, FixedPoses, Inventory
 from box_interfaces.srv import GetJobData, SetJobStatus, UpdateInventory
 
 from box_comm.common import VALID_CLASSES
@@ -57,6 +62,22 @@ def _dict_to_inv(d: dict) -> Inventory:
     if set(d.keys()) != set(VALID_CLASSES):
         raise ValueError(f'inventory는 {VALID_CLASSES} 키를 모두 가져야 함 (받은 값: {d!r})')
     return Inventory(a=int(d['A']), b=int(d['B']), c=int(d['C']), d=int(d['D']))
+
+
+def _dict_to_poses(d) -> FixedPoses:
+    """{'home_j': [6], 'measure_zone': [3]} → FixedPoses. None이면 available=False"""
+    msg = FixedPoses()
+    if not d:
+        msg.available = False
+        return msg
+    home = [float(v) for v in d['home_j']]
+    zone = [float(v) for v in d['measure_zone']]
+    if len(home) != 6 or len(zone) != 3:
+        raise ValueError(f'고정 좌표 길이 오류: home_j {len(home)}개(6), measure_zone {len(zone)}개(3)')
+    msg.available = True
+    msg.home_j = home
+    msg.measure_zone = zone
+    return msg
 
 
 def _dict_to_spec(d: dict) -> ClassSpec:
@@ -85,12 +106,16 @@ class DatabaseInterface(Node):
     def _on_get_job_data(self, request, response):
         try:
             specs, inventory = self.work.get_job_data()
+            getter = getattr(self.work, 'get_fixed_poses', None)
+            poses = getter() if getter else None
             response.specs = [_dict_to_spec(s) for s in specs]
             response.inventory = _dict_to_inv(inventory)
+            response.poses = _dict_to_poses(poses)
             response.success = True
             response.message = ''
             self.get_logger().info(
-                f'[database] GetJobData → specs {len(specs)}개, inventory={inventory}')
+                f'[database] GetJobData → specs {len(specs)}개, inventory={inventory}, '
+                f'poses={"있음" if poses else "없음"}')
         except Exception as e:
             response.success = False
             response.message = f'{type(e).__name__}: {e}'
@@ -134,10 +159,16 @@ class DatabaseInterface(Node):
 def start(work_cls, args=None):
     rclpy.init(args=args)
     node = DatabaseInterface(work_cls)
+    # 전용 executor로 spin한다 (rclpy.spin은 전역 executor를 씀).
+    # → run() 안에서 DSR_ROBOT2 함수(movej 등)가 전역 executor로 응답을 기다려도
+    #   'Executor is already spinning' 충돌이 나지 않는다.
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
+        executor.spin()
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         rclpy.try_shutdown()

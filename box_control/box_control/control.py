@@ -3,7 +3,7 @@
 control.py — 관제 메인 (예시: 정상 경로만)
 ================================================================
 흐름 (인터페이스 문서 2.5 관제 상태)
-  BEFORE → GetJobData → RUNNING
+  BEFORE → GetJobData → PREFLIGHT(사전 점검) → STANDBY(시작 대기) → RUNNING
   → [SCANNING → SCAN_DONE → JUDGING → JUDGE_DONE → PLACING → PLACE_DONE
      → UpdateInventory] 반복
   → /scan found=False → DONE
@@ -18,6 +18,10 @@ control.py — 관제 메인 (예시: 정상 경로만)
     result_class 칸만 +1)과 비교한다. 다르면 관제 기대값으로 DB에 반영하고
     경고 로그를 남긴 뒤 작업을 계속한다. (작업 로그를 DB에 남길지는 DB/UI와 협의 중)
   - 진행 추적: 중단 시 해당 파트의 마지막 Feedback stage와 경과 시간을 함께 기록한다.
+
+사전 점검 (PREFLIGHT) — box_control/preflight.py
+  분류 기준, 고정 좌표(common.py 원본 vs DB 사본) 등을 점검한다.
+  하나라도 FAIL이면 작업을 시작하지 않는다.
 
 시작 대기 (STANDBY)
   GetJobData 후 start_delay_sec(기본 10초) 동안 카운트다운한다.
@@ -49,12 +53,14 @@ except ImportError:        # pragma: no cover
     termios = tty = None
 
 from box_comm.control_interface import start
+from box_control import preflight
 
 
 class State(str, Enum):
     """관제 상태. 값은 영어, label은 로그용 한글."""
 
     BEFORE = 'BEFORE'           # 작업전   (DB 기록)
+    PREFLIGHT = 'PREFLIGHT'     # 사전점검 (관제 내부)
     STANDBY = 'STANDBY'         # 시작대기 (카운트다운, 관제 내부)
     RUNNING = 'RUNNING'         # 작업중   (DB 기록)
     SCANNING = 'SCANNING'       # 스캔중
@@ -72,6 +78,7 @@ class State(str, Enum):
 
 _STATE_LABEL = {
     State.BEFORE: '작업전',
+    State.PREFLIGHT: '사전점검',
     State.STANDBY: '시작대기',
     State.RUNNING: '작업중',
     State.SCANNING: '스캔중',
@@ -98,6 +105,7 @@ class Control:
         self.log = io.get_logger()
         self.state = None
         self.specs = []
+        self.db_poses = None               # DB에 저장된 고정 좌표 사본 (preflight에서 비교)
         self.inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
         self.box_seq = 0
         self.job_id = time.strftime('%Y%m%d_%H%M%S')   # 실행마다 고유한 작업 ID
@@ -116,16 +124,20 @@ class Control:
         # BEFORE: 물품값과 재고 받아오기
         self.set_state(State.BEFORE)
         self.log.info(f'[control] job_id={self.job_id}')
-        self.specs, self.inventory, err = self.io.get_job_data()
+        self.specs, self.inventory, self.db_poses, err = self.io.get_job_data()
         if err:
-            return self.stop(err)
+            return self.cancel_start(f'작업 데이터를 받지 못함 ({err})')
         self.log.info(f'[control] specs {len(self.specs)}개, inventory={self.inventory}')
+
+        # PREFLIGHT: 시작 전 점검 (box_control/preflight.py)
+        self.set_state(State.PREFLIGHT)
+        if not preflight.run_all(self):
+            return self.cancel_start('사전 점검 실패 (위 FAIL 항목 확인 후 재설정)')
 
         # STANDBY: 작업공간 안전 확인 시간 (q로 취소)
         self.set_state(State.STANDBY)
         if not self.wait_for_start():
-            self.log.warn('[control] 작업 시작이 취소되었습니다. (DB 상태는 BEFORE 유지)')
-            return
+            return self.cancel_start('사용자가 q로 취소')
 
         self.set_state(State.RUNNING)
         if err := self.io.set_job_status(State.RUNNING.value):
@@ -248,6 +260,18 @@ class Control:
     # ------------------------------------------------------------------
     # 중단
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 중단 — 두 가지로 통일
+    #   cancel_start(): RUNNING 전 (데이터 실패 / 사전 점검 실패 / q 취소)
+    #                   로봇이 움직이기 전이므로 DB는 BEFORE 그대로 두고 종료
+    #   stop()        : RUNNING 이후 (작업 중 오류)
+    # ------------------------------------------------------------------
+    def cancel_start(self, reason):
+        where = f'{self.state.value} ({self.state.label})' if self.state else '-'
+        self.log.warn(f'[control] ===== 작업을 시작하지 않습니다 [{where}]: {reason} =====')
+        self.log.warn('[control] 로봇은 움직이지 않았고, DB 상태는 BEFORE 그대로입니다. '
+                      '원인을 해결한 뒤 관제를 다시 실행하세요.')
+
     def stop(self, err):
         # TODO: error_code별 정책 (재시도 / 건너뛰기 / ERROR 상태 기록)
         where = f'{self.state.value} ({self.state.label})' if self.state else '-'

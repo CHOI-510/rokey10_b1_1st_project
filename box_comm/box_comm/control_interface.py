@@ -18,7 +18,8 @@ control_interface.py — 관제 통신 계층
   scan()                         -> (found: bool, err)
   judge(specs)                   -> (result_class: str, err)
   place(result_class, inventory) -> (inventory_after: dict, err)
-  get_job_data()                 -> (specs: list, inventory: dict, err)
+  get_job_data()                 -> (specs: list, inventory: dict, poses: dict|None, err)
+    poses = {'home_j': [6], 'measure_zone': [3]} (DB 사본), DB에 없으면 None
   update_inventory(box_id, inv)  -> err
   set_job_status(status)         -> err
 
@@ -45,7 +46,7 @@ import time
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 
 from box_interfaces.action import Judge, Place, Scan
@@ -133,11 +134,16 @@ class ControlInterface(Node):
     def get_job_data(self, timeout=None):
         res, err = self._call_service(self._get_job, GetJobData.Request(), 'GetJobData', timeout)
         if err:
-            return [], {}, err
+            return [], {}, None, err
         if not res.success:
             self.get_logger().error(f'[control] GetJobData 실패: {res.message}')
-            return [], {}, 'DB_FAILED'
-        return [_spec_to_dict(s) for s in res.specs], _inv_to_dict(res.inventory), None
+            return [], {}, None, 'DB_FAILED'
+        poses = None
+        if res.poses.available:
+            poses = {'home_j': list(res.poses.home_j),
+                     'measure_zone': list(res.poses.measure_zone)}
+        return ([_spec_to_dict(s) for s in res.specs], _inv_to_dict(res.inventory),
+                poses, None)
 
     def update_inventory(self, box_id, inventory, timeout=None):
         req = UpdateInventory.Request(box_id=box_id, inventory=_dict_to_inv(inventory))
@@ -234,9 +240,10 @@ def start(work_cls, args=None):
     try:
         work = work_cls(node)
         work.run()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         executor.shutdown()
+        spin_thread.join(timeout=2.0)       # spin 스레드가 끝난 뒤에 노드 정리 (종료 시 Aborted 방지)
         node.destroy_node()
         rclpy.try_shutdown()
