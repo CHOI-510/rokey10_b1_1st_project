@@ -1,0 +1,39 @@
+# 관제 전용 파일이 관제가 아닌 사람의 push로 바뀌었는지 검사한다.
+# 막지는 못하고, 바뀌었으면 실패(빨간 X)로 표시해 알린다.
+name: protect-paths
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 관제 전용 경로 변경 검사
+        env:
+          OWNER: CHOI-510                     # 관제 GitHub 아이디
+          ACTOR: ${{ github.actor }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          if [ "$ACTOR" = "$OWNER" ]; then
+            echo "관제($OWNER)의 push → 검사 생략"; exit 0
+          fi
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            RANGE="$AFTER"
+          else
+            RANGE="$BEFORE..$AFTER"
+          fi
+          changed=$(git diff --name-only $RANGE | \
+            grep -E '^(box_comm/|box_interfaces/|box_(scan|judge|place|database)/box_(scan|judge|place|database)/[a-z_]+_template\.py$)' || true)
+          if [ -n "$changed" ]; then
+            echo "::error::$ACTOR 님이 관제 전용 파일을 바꿨습니다. 관제에게 알려 주세요."
+            echo "$changed"
+            exit 1
+          fi
+          echo "관제 전용 파일 변경 없음"

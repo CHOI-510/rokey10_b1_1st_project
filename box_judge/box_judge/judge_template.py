@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """
-judge.py — 판별 파트 메인 (예시: fake 동작)
+judge_template.py — 판별 템플릿 (관제 관리, 참고용)
 ================================================================
-담당자가 작성하는 파일. 통신은 judge_interface.py가 처리한다.
+  이 파일은 직접 수정하지 않는다. 담당(송현석)은 이 파일을 참고해 자기 메인 코드(예: judge.py)를 만든다.
+  관제가 인터페이스·공통 규칙을 바꾸면 이 파일을 업데이트한다.
+  pull 후 바뀐 부분 확인:  git log -p -- box_judge/box_judge/judge_template.py
+  → 바뀐 내용을 자기 메인 코드에 직접 반영한다.
+  실행 비교: ros2 run box_judge judge_template  (메인 코드 노드와 동시에 켜지 말 것 — 같은 서버 이름이라 결과가 섞임)
+================================================================
+아래는 메인 코드가 지킬 약속과 예시다. 통신은 judge_interface.py가 처리한다.
 
 지킬 약속은 하나:
   run(specs, report) -> str
@@ -18,7 +24,7 @@ judge.py — 판별 파트 메인 (예시: fake 동작)
 [FAKE] 표시된 부분을 실제 측정으로 바꾸면 된다.
 classify()는 예시 로직 — 분류 기준·오차 범위가 정해지면 수정.
 
-실행: ros2 run box_judge judge
+실행: ros2 run box_judge judge_template
 단독 테스트:
   ros2 action send_goal /judge box_interfaces/action/Judge \
     "{specs: [{class_id: 'A', width_mm: 40.0, depth_mm: 40.0, height_mm: 40.0, weight_g: 100.0},

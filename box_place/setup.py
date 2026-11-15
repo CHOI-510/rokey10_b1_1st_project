@@ -18,7 +18,7 @@ setup(
     license='TODO',
     entry_points={
         'console_scripts': [
-            'place = box_place.place:main',
+            'place_template = box_place.place_template:main',
         ],
     },
 )

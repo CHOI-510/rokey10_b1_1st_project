@@ -18,7 +18,7 @@ setup(
     license='TODO',
     entry_points={
         'console_scripts': [
-            'scan = box_scan.scan:main',
+            'scan_template = box_scan.scan_template:main',
         ],
     },
 )

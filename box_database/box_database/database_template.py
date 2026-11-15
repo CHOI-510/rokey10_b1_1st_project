@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """
-database.py — DB 파트 메인 (예시: 메모리 fake DB)
+database_template.py — DB·UI 템플릿 (관제 관리, 참고용)
 ================================================================
-담당자가 작성하는 파일. 통신은 database_interface.py가 처리한다.
+  이 파일은 직접 수정하지 않는다. 담당(이승재)은 이 파일을 참고해 자기 메인 코드(예: database.py)를 만든다.
+  관제가 인터페이스·공통 규칙을 바꾸면 이 파일을 업데이트한다.
+  pull 후 바뀐 부분 확인:  git log -p -- box_database/box_database/database_template.py
+  → 바뀐 내용을 자기 메인 코드에 직접 반영한다.
+  실행 비교: ros2 run box_database database_template  (메인 코드 노드와 동시에 켜지 말 것 — 같은 서버 이름이라 결과가 섞임)
+================================================================
+아래는 메인 코드가 지킬 약속과 예시다. 통신은 database_interface.py가 처리한다.
 
 지킬 약속은 네 개:
   get_job_data() -> (specs, inventory)
@@ -23,7 +29,7 @@ database.py — DB 파트 메인 (예시: 메모리 fake DB)
 [FAKE] 표시된 부분을 실제 DB(SQLite 등) 읽기/쓰기로 바꾸면 된다.
 UI 연동도 이 파일(또는 여기서 import하는 모듈)에서 한다. 관제는 UI를 모른다.
 
-실행: ros2 run box_database database
+실행: ros2 run box_database database_template
 단독 테스트:
   ros2 service call /get_job_data box_interfaces/srv/GetJobData "{}"
   ros2 service call /set_job_status box_interfaces/srv/SetJobStatus "{status: 'RUNNING'}"

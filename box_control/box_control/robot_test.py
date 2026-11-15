@@ -18,7 +18,7 @@ robot_test.py — TCP·툴 자동 확인 점검 도구 (관제 테스트 전용)
   1) 두산 bringup (가상 또는 실제)
   2) /scan 서버 — 둘 중 하나
        ros2 run box_control test_scan_motion --ros-args -p robot_setup:=on   ← 로봇이 실제로 움직임
-       ros2 run box_scan scan --ros-args -p robot_setup:=on -p fake_delay_sec:=0.3   ← 움직임 없음
+       ros2 run box_scan scan_template --ros-args -p robot_setup:=on -p fake_delay_sec:=0.3   ← 움직임 없음
 
 실행
   ros2 run box_control robot_test
@@ -144,7 +144,7 @@ class RobotTest:
     def run(self):
         self.log.info('[robot_test] /scan 서버와 두산 서비스 기다리는 중...')
         if not self.scan.wait_for_server(timeout_sec=10.0):
-            self.record('준비', False, '/scan 서버 없음 (test_scan_motion 또는 box_scan scan 실행 확인)')
+            self.record('준비', False, '/scan 서버 없음 (test_scan_motion 또는 box_scan scan_template 실행 확인)')
             return
         try:
             before = self.current()

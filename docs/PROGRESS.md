@@ -42,6 +42,8 @@
 | 11/14 | 시작 전 점검은 `box_control/preflight.py`로 분리, `control.py`는 순서만 | 점검 항목이 늘어도 `control.py`가 비대해지지 않게 |
 | 11/14 | 중단 방식 통일: 시작 전(데이터 실패·점검 실패·`q`)은 `cancel_start()` 하나, 작업 중은 `stop()` | 경우마다 처리가 달라지지 않게 |
 | 11/14 | 템플릿 3개가 `HOME_J`, `MEASURE_ZONE`을 `common.py`에서 가져다 쓰도록 수정 | 좌표를 파트 코드에 숫자로 적지 않게 |
+| 11/14 | **관제 전용 파일 보호**: `box_comm/`, `box_interfaces/`, `*_template.py`는 commit 훅(팀원 commit 거부) + GitHub Actions(관제 외 push 시 실패 표시)로 보호 | 무료 public 저장소는 경로별 push 제한(push rulesets)이 안 돼서 실수 방지로 대신 |
+| 11/14 | **템플릿 이름 변경**: `scan.py` 등 → `*_template.py` (관제 관리, 참고용, 수정 금지). 담당자는 템플릿을 복사해 자기 메인 코드를 만들고 `setup.py`에 진입점 추가. 관제는 템플릿만 업데이트하고, 담당자가 바뀐 부분을 자기 코드에 반영 | 템플릿 업데이트가 팀원 코드와 충돌하지 않게, 폴더 담당 규칙 유지 |
 
 ---
 
@@ -112,6 +114,8 @@
 
 ### 11/14
 
+- 관제 전용 파일 보호 추가: `.githooks/pre-commit`, `.github/workflows/protect-paths.yml`, CONTRIBUTING 1-2·3-1·3-6 수정
+- 템플릿 이름 변경: `scan.py`·`judge.py`·`place.py`·`database.py` → `*_template.py`, 실행 진입점도 `scan_template` 등으로 변경. README·CONTRIBUTING 명령 수정, CONTRIBUTING에 메인 코드 만드는 법과 템플릿 업데이트 반영 방법 추가
 - 인터페이스 v0.3에 포함: Action Goal 3개에 `poses` 추가, 관제가 DB 좌표로 무조건 덮어쓴 뒤 매 Goal에 전달, 파트는 `self.poses` 사용(템플릿은 Goal마다 받은 좌표를 로그로 남김). 사전 점검은 DB 좌표 유무·형식만 확인, 템플릿·`test_scan_motion` 수정
 - **실제 로봇 테스트 통과** (`reapply_test:=false`): TCP는 펜던트 설정(`GripperDA_v1`)이 걸려 있었으나 **툴은 미적용(`''`) 상태였음** → 관제가 수동 모드 경로로 `Tool Weight` 적용. 이후 Goal은 `TCP OK, TOOL OK`. `test_scan_motion` 동작(HOME → ±50mm) 오류 없음, HOME posx z≈214.9 (가상 216.6과 일치)
 - 실제 로봇도 자동 모드에서는 툴 적용이 바로 반영되지 않음 (수동 모드 경로로 적용됨)

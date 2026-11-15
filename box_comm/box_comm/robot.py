@@ -26,7 +26,7 @@ robot.py — 기본 TCP·툴 확인·적용 (두산 서비스 직접 호출)
   robot_setup = 'auto' (기본) : 두산 서비스가 있으면 확인·적용, 없으면 경고 후 건너뜀 (fake 테스트 가능)
                 'on'          : 두산 서비스가 없거나 확인 실패면 Goal 실패 (실제 로봇·시연 권장)
                 'off'         : 아무것도 안 함
-  예: ros2 run box_scan scan --ros-args -p robot_setup:=on
+  예: ros2 run box_scan scan_template --ros-args -p robot_setup:=on
 
 참고: 서비스 정의 확인
   ros2 interface show dsr_msgs2/srv/GetCurrentTcp

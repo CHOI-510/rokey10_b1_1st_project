@@ -16,7 +16,7 @@ test_scan_motion.py — 실제 두산 동작을 넣은 '/scan' 테스트 노드 
 
 주의
   - 로봇이 실제로 움직인다. 작업공간을 비우고 실행할 것.
-  - 진짜 탐지 노드(box_scan scan)와 같은 /scan 이름을 쓰므로 동시에 띄우지 않는다.
+  - 탐지 노드(scan_template 또는 탐지 메인 코드)와 같은 /scan 이름을 쓰므로 동시에 띄우지 않는다.
   - gear_test_v2.py도 같이 돌리지 않는다.
 
 실행 (bringup이 떠 있는 상태에서)

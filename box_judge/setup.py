@@ -18,7 +18,7 @@ setup(
     license='TODO',
     entry_points={
         'console_scripts': [
-            'judge = box_judge.judge:main',
+            'judge_template = box_judge.judge_template:main',
         ],
     },
 )

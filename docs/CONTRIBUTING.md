@@ -36,6 +36,9 @@ git config --global user.email "GitHub 가입 이메일"
 cd ~/ws/src
 git clone https://github.com/CHOI-510/rokey10_b1_1st_project.git box_project
 
+cd box_project
+git config core.hooksPath .githooks   # 관제 전용 파일 보호 훅 켜기 (팀원 필수, 한 번만)
+
 cd ~/ws
 colcon build --symlink-install --packages-up-to box_control box_scan box_judge box_place box_database
 source install/setup.bash
@@ -43,6 +46,7 @@ ros2 pkg list | grep box_       # 7개가 나오면 성공
 ```
 
 - 폴더 이름은 모두 `box_project`로 맞춥니다. (`clone` 뒤에 `box_project`를 꼭 붙이기)
+- `core.hooksPath` 설정은 관제 전용 파일(`box_comm/`, `box_interfaces/`, `*_template.py`)을 실수로 commit하지 않게 막아 줍니다 (3-1 참고).
 - `--symlink-install`로 빌드하면 파이썬 파일을 고쳐도 다시 빌드하지 않아도 됩니다.
 - 빌드 중 `pytest-repeat` 관련 `UserWarning`은 시스템 경고이므로 무시합니다.
 
@@ -65,17 +69,30 @@ ros2 run box_control control          # 마지막에 실행
 
 ## 2. 내 파트 구현하기
 
-### 2-1. 고치는 파일은 하나
+### 2-1. 템플릿은 참고용, 메인 코드는 내가 만든다
 
-| 담당 | 고치는 파일 |
-| --- | --- |
-| 탐지 | `box_scan/box_scan/scan.py` |
-| 판별 | `box_judge/box_judge/judge.py` |
-| 적재 | `box_place/box_place/place.py` |
-| DB·UI | `box_database/box_database/database.py` |
+| 담당 | 참고용 템플릿 (관제 관리, **수정 금지**) | 실행 |
+| --- | --- | --- |
+| 탐지 | `box_scan/box_scan/scan_template.py` | `ros2 run box_scan scan_template` |
+| 판별 | `box_judge/box_judge/judge_template.py` | `ros2 run box_judge judge_template` |
+| 적재 | `box_place/box_place/place_template.py` | `ros2 run box_place place_template` |
+| DB·UI | `box_database/box_database/database_template.py` | `ros2 run box_database database_template` |
 
 - 통신(Action/Service 서버, Result 보내기)은 `box_comm`이 처리합니다. **신경 쓰지 않아도 됩니다.**
-- 지금 파일은 fake로 동작합니다. `[FAKE]` 표시된 부분을 실제 동작으로 바꿔 갑니다.
+- 템플릿은 fake로 바로 동작합니다. **템플릿은 고치지 않습니다.** 관제가 인터페이스·공통 규칙을 바꾸면 템플릿을 업데이트하고 공지합니다 (3-4 참고).
+- 메인 코드는 템플릿을 복사해서 만듭니다. 파일 이름은 자유이며, 아래는 `scan.py`로 만드는 예입니다.
+
+```bash
+cd ~/ws/src/box_project/box_scan
+cp box_scan/scan_template.py box_scan/scan.py
+# setup.py의 console_scripts에 한 줄 추가:
+#     'scan = box_scan.scan:main',
+cd ~/ws && colcon build --symlink-install --packages-select box_scan && source install/setup.bash
+ros2 run box_scan scan
+```
+
+- 메인 코드의 `[FAKE]` 부분을 실제 동작으로 바꿔 갑니다.
+- **템플릿 노드와 내 노드를 동시에 켜지 마세요.** 서버 이름(`/scan` 등)이 같아서 관제가 엉뚱한 결과를 받습니다.
 - 모션·측정 함수가 길어지면 **같은 패키지 안에 파일을 추가**해서 import해도 됩니다.
   예: `box_scan/box_scan/motion.py` → `scan.py`에서 `from box_scan.motion import ...`
 
@@ -248,7 +265,7 @@ ros2 service call /update_inventory box_interfaces/srv/UpdateInventory \
 ```
 
 관제와 연결해 보려면 내 노드만 실제로, 나머지는 fake로 띄웁니다.
-예: `box_scan scan` + `fake_judge` + `fake_place` + `fake_database` + `control`
+예: `box_scan scan`(내 노드) + `fake_judge` + `fake_place` + `fake_database` + `control`
 
 ---
 
@@ -267,7 +284,17 @@ ros2 service call /update_inventory box_interfaces/srv/UpdateInventory \
 | DB·UI | `box_database/` |
 
 - **다른 사람의 폴더와 공용 파일은 건드리지 않습니다.**
+- 예외: 각 파트 폴더 안의 `*_template.py`는 **관제가 관리**합니다. 파트 담당은 템플릿을 고치지 않고, 관제는 파트 담당의 메인 코드를 고치지 않습니다.
 - `box_interfaces/`, `box_comm/` 변경이 필요하면 관제에게 요청합니다.
+
+**관제 전용 파일 보호** — `box_comm/`, `box_interfaces/`, 각 폴더의 `*_template.py`
+
+| 장치 | 동작 |
+| --- | --- |
+| commit 훅 (`.githooks/pre-commit`) | 이 파일을 바꾼 채 commit하면 **commit이 거부**되고 되돌리는 명령이 안내됩니다. 1-2의 `git config core.hooksPath .githooks`로 켭니다 |
+| GitHub Actions (`.github/workflows/protect-paths.yml`) | 관제가 아닌 사람의 push에 이 파일 변경이 있으면 GitHub에 **빨간 X**가 뜨고 관제에게 알림이 갑니다 |
+
+- GitHub 무료 public 저장소에서는 경로별로 push를 완전히 막을 수 없어서, 위 두 장치로 실수를 막습니다. `--no-verify`로 훅을 피하지 마세요.
 
 ### 3-2. 매일 작업 루틴
 
@@ -313,6 +340,17 @@ source install/setup.bash
 - `box_interfaces`가 바뀌었거나 파일이 추가된 경우에는 빌드가 필요합니다.
 - `run()`의 입력/출력 형식이 바뀌는 변경은 관제가 미리 알리며, 이때는 해당 파트도 코드를 수정합니다.
 
+**템플릿이 바뀌었을 때** (공지에 "템플릿 업데이트"가 있으면)
+
+```bash
+cd ~/ws/src/box_project
+git log --oneline -5 -- box_scan/box_scan/scan_template.py        # 템플릿이 바뀐 commit 목록
+git log -p -1 -- box_scan/box_scan/scan_template.py               # 가장 최근에 바뀐 내용 (+ 추가, - 삭제)
+git diff --no-index box_scan/box_scan/scan.py box_scan/box_scan/scan_template.py   # 내 코드와 템플릿 비교
+```
+
+바뀐 부분을 보고 내 메인 코드에 직접 옮깁니다. 템플릿을 내 코드에 통째로 덮어쓰지 마세요.
+
 ### 3-5. pull할 때 알아 둘 것
 
 - `pull`은 **다른 사람이 올린 변경만** 받아 옵니다. 내가 작업 중인 파일은 그대로 남습니다.
@@ -328,4 +366,5 @@ source install/setup.bash
 | `Your local changes ... would be overwritten` | 내 작업 먼저 commit → 다시 `git pull` |
 | `CONFLICT` | **손대지 말고** `git merge --abort` 후 관제에게 연락 |
 | `Authentication failed` | `gh auth login` 다시 하기 |
+| `✋ commit 거부: 아래 파일은 관제 전용입니다` | 안내된 `git restore --staged --worktree <파일>`로 **그 파일만** 되돌린 뒤 다시 `git commit` (내 다른 작업은 그대로 남음) |
 | 내 상태 확인 | `git status` |

@@ -60,6 +60,8 @@
 
 ```
 box_project/
+├─ .githooks/        관제 전용 파일 commit 방지 훅 (팀원은 git config core.hooksPath .githooks)
+├─ .github/          GitHub Actions: 관제 전용 파일 변경 감시
 ├─ box_interfaces/   메시지 정의 (.msg .srv .action)
 ├─ box_comm/         공용 통신 라이브러리 (노드 아님)
 │  ├─ common.py       공통 값: 에러 코드, stage, TCP·툴, 고정 좌표, PartError
@@ -68,10 +70,10 @@ box_project/
 │     place_interface.py, database_interface.py
 ├─ box_control/      관제: control.py (순서) + preflight.py (시작 전 점검)
 │                    + 테스트용 fake_*.py 4개, test_scan_motion.py, robot_test.py
-├─ box_scan/         탐지: scan.py
-├─ box_judge/        판별: judge.py
-├─ box_place/        적재: place.py
-├─ box_database/     DB·UI: database.py
+├─ box_scan/         탐지: scan_template.py (관제 관리 참고용) + 담당 메인 코드
+├─ box_judge/        판별: judge_template.py + 담당 메인 코드
+├─ box_place/        적재: place_template.py + 담당 메인 코드
+├─ box_database/     DB·UI: database_template.py + 담당 메인 코드
 └─ docs/             CONTRIBUTING.md, PROGRESS.md
 ```
 
@@ -80,10 +82,10 @@ box_project/
 | `box_interfaces` | 메시지 정의 | - | - |
 | `box_comm` | 공용 통신 코드 | - | import 전용 |
 | `box_control` | 관제 | `/control` | `ros2 run box_control control` |
-| `box_scan` | 탐지 | `/scan` | `ros2 run box_scan scan` |
-| `box_judge` | 판별 | `/judge` | `ros2 run box_judge judge` |
-| `box_place` | 적재 | `/place` | `ros2 run box_place place` |
-| `box_database` | DB·UI | `/database` | `ros2 run box_database database` |
+| `box_scan` | 탐지 | `/scan` | `ros2 run box_scan scan_template` |
+| `box_judge` | 판별 | `/judge` | `ros2 run box_judge judge_template` |
+| `box_place` | 적재 | `/place` | `ros2 run box_place place_template` |
+| `box_database` | DB·UI | `/database` | `ros2 run box_database database_template` |
 
 ---
 
@@ -219,7 +221,7 @@ TCP와 툴은 로봇 컨트롤러에 **하나만** 걸리는 전역 설정입니
 | `off` | 하지 않음 | 특수한 경우 |
 
 ```bash
-ros2 run box_scan scan --ros-args -p robot_setup:=on
+ros2 run box_scan scan_template --ros-args -p robot_setup:=on
 ```
 
 파트는 자기 `run()` 안에서 필요하면 다른 TCP로 바꿔도 됩니다. 다음 Goal에서 기본값으로 다시 맞춰집니다.
@@ -248,10 +250,10 @@ source install/setup.bash
 서버 4개를 먼저 띄우고 관제를 마지막에 실행합니다.
 
 ```bash
-ros2 run box_database database
-ros2 run box_scan scan
-ros2 run box_judge judge
-ros2 run box_place place
+ros2 run box_database database_template
+ros2 run box_scan scan_template
+ros2 run box_judge judge_template
+ros2 run box_place place_template
 ros2 run box_control control
 ```
 
@@ -308,7 +310,7 @@ fake와 실제 노드는 같은 Action/Service 이름을 쓰므로 **동시에 �
 
 ```bash
 # 로봇을 움직이지 않고 TCP·툴만 점검
-ros2 run box_scan scan --ros-args -p robot_setup:=on -p fake_delay_sec:=0.3 &
+ros2 run box_scan scan_template --ros-args -p robot_setup:=on -p fake_delay_sec:=0.3 &
 sleep 3; ros2 run box_control robot_test --ros-args -p reapply_test:=false; pkill -f box_scan
 
 # 실제 동작 포함 (로봇이 움직임 — 작업공간 비우고 펜던트 속도 낮게)

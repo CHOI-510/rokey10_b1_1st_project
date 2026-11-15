@@ -18,7 +18,7 @@ setup(
     license='TODO',
     entry_points={
         'console_scripts': [
-            'database = box_database.database:main',
+            'database_template = box_database.database_template:main',
         ],
     },
 )
