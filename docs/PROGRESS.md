@@ -35,6 +35,7 @@
 | 11/16 | 파트는 cancel을 받으면 다음 `report()`/`report.check()`에서 `CANCELED`로 빠져나옴. 파트 노드는 MultiThreadedExecutor + Reentrant로 실행 중에도 cancel 수신, Goal은 한 번에 하나만 | `move_stop` 뒤 STANDBY로 돌아가 파트가 다음 동작을 보내는 문제 대응 |
 | 11/16 | **적재 규칙 변경: 3층 × 2자리** (`STACK`), 다음 자리는 **−x 방향 80mm**(`place_config.json` `slot_dx_mm`, y 같음). 적재 실제 코드 `place_main`이 시작 시 `STACK`과 설정이 같은지 확인 | 적재 담당 실측 결과에 맞춤. 관제·DB·UI·적재가 같은 수량 해석 |
 | 11/16 | **적재 실제 코드 통합**: `box_place/place_main.py` + `config/place_config.json` (entry `place_main`). 정지 대응(`report.check`, 하강 중 `report.keepalive`), 멈춘 뒤 `clear_pending` 복구. 지원 클래스 A/B/C (D·미분류는 수치·좌표가 나오면 추가) | 실제 로봇에서 검증된 힘 제어 적재를 시스템 약속에 맞춤. 동작 로직은 그대로 |
+| 11/16 | **미분류 `U` (인터페이스 v0.5)**: 판별이 `U`를 내면 관제가 적재에 `U`로 보내고, 적재는 미분류 투하 위치(`place_config.json` `unclassified`, 경사로)에 놓기만 하고 `count = 0`. 미분류 수량은 관제가 세서(+1) DB에 보냄. `Inventory`에 `u` 추가. 미분류 위치는 DB가 아니라 적재 설정 | 쌓지 않으니 높이로 셀 필요 없음. 투하 자세까지 포함한 한 점이라 적재 설정에 둠 |
 | 11/16 | **측정존 `[300, -160, 30]`** (z = 박스 파지 TCP 높이 = 적재 1층 첫 접촉 Z). 에뮬레이터 적재 시험은 `place_main -p sim_contact:=true`(힘 대신 가상 높이까지 movel), `fake_run.sh PLACE_MAIN=1 SIM=1` | 측정존 바닥 = 적재 구역 바닥 높이 가정. 에뮬레이터에 힘 센서 값이 없어서 |
 | 11/16 | UI 적재 이미지는 수량 → `common.stack_layout()`(단별 층 수)으로 그림. DB에 박스별 위치를 저장하지 않음 | 수량에서 위치가 정해지므로 중복 저장 불필요 |
 | 11/14 | 관제 중심 허브 구조. 관제↔파트 Action, 관제↔DB Service (11/16: 로그만 Topic 추가) | 파트 간 결합 제거, 통합 지점 단일화 |
@@ -82,7 +83,7 @@
 | 14 | **TCP·툴 자동 확인** 구현·가상·실제 로봇 테스트 완료(`box_comm/robot.py`). 응답 필드 `info` 확인, 툴 이름 `Tool Weight` 확인, 가상·실제 모두 자동 모드 적용 불가 → 수동 모드 경로로 적용됨 | 관제 | 완료 |
 | 16 | **측정존 좌표** `[300, -160, 30]` → `common.py` 기본값·DB 템플릿에 입력됨. 남은 것: **DB 실제 코드에 입력**, 탐지·판별도 z를 '박스 파지 TCP 높이'로 쓰는지 확인 | 관제, DB, 탐지, 판별, 적재 | DB 반영 필요 |
 | 17 | DB: `get_fixed_poses()` 구현 (**필수**: 없으면 관제가 시작하지 않음). 인터페이스 v0.3라 전원 `git pull` 후 **다시 빌드** 필요 | DB, 전체 | 공지 필요 |
-| 18 | **적재 실측값**: A/B/C는 `place_config.json`에 반영됨(높이, 자세, 첫 접촉 Z, 자리 간격 −80mm). 남은 것: **A/B/C 구역 1자리 x·y 실측 → DB** (지금 fake 값), **D 수치**, **미분류(구역 좌표·놓는 방식)** | 적재, DB, 관제 | D·미분류 대기 |
+| 18 | **적재 실측값**: A/B/C는 `place_config.json`에 반영됨(높이, 자세, 첫 접촉 Z, 자리 간격 −80mm). 구역 1자리 x·y 실측: **A (480, −160), B (650, −160), C (580, 300)** → `common.py`·DB 템플릿 입력됨. 미분류: `unclassified.release_pose [670, -43, 144, 160, 180, 162]`, `approach_z 160` (적재 설정). 남은 것: **DB 실제 코드에 A/B/C 입력**, **D 수치·구역** | 적재, DB, 관제 | D 대기 |
 | 19 | **접촉 감지 방식**: 박스를 쥔 채 내려가다 멈춘 z를 얻는 방법 (DSR 순응 제어 + 힘 조건 / 조금씩 내리며 외력 확인), 층 판단 허용 오차 `LEVEL_TOL` | 적재 | 구현·시험 필요 |
 | 20 | **판별 → 적재 위상 고정**: 판별이 항상 같은 방향으로 내려놓아야 박스 높이 하나로 층 판단 가능 (이슈 6과 연결) | 판별, 적재 | 시험 필요 |
 | 21 | **수량 측정의 한계**: 앞 단은 모두 찼다고 보고 셈. 안쪽 단에서 박스를 빼면 빈자리부터 채우며 실제보다 적게 셀 수 있음. 모든 단이 차면(`NO_SLOT`) 박스를 쥔 채 끝남 → 측정존 복귀 등은 에러 정책(이슈 2)과 함께 | 적재, 관제 | 시연 범위에서는 허용 |
@@ -164,6 +165,9 @@
 
 ### 11/16
 
+- **미분류 U 통합 (v0.5)**: `Inventory.u`, `common.UNCLASSIFIED`·`RESULT_CLASSES`·`INVENTORY_KEYS`, 판별·적재 interface가 `U` 허용(적재 U는 0만 허용), 관제 U → 재고 U +1(검증 없음), DB interface `U` 없으면 0, `place_main` = 적재 담당 `place_working`(미분류 투하 분기) + 설정 `unclassified`, fake 노드·템플릿 U 대응. ROS 없이 관제 흐름 시험 통과 (A, U, U, B → `U 2`), **에뮬레이터·실제 로봇 시험은 아직**
+- **실제 로봇 A 1~3층 적재 성공** (`PLACE_MAIN=1`, 탐지·판별 fake, 박스 수동 배치): TCP Z 29.57 / 50.25 / 70.55 (기준 30.19 + 20mm씩, 오차 ±0.7mm 이내), 재고·불일치 0·`DONE`. 이동 중 펜던트 비상정지 → `STOPPED : Pendant emergency stop` 확인. 박스당 적재 약 44초
+- 구역 좌표 실측 입력: A (480, −160), B (650, −160), C (580, 300)
 - **에뮬레이터 적재 시험 통과** (`PLACE_MAIN=1 SIM=1`, A×4 + B×1): A 1자리 1·2·3층 → 만재 감지 후 2자리 1층(수량 4), B 1자리 1층, 재고 `A 4, B 1`, 적재 이미지 `A[3, 1] B[1]`, 불일치 0, `DONE`. 적재 중 CLI 비상정지 → `STOPPED : EMERGENCY STOP — by cli` 확인. 박스당 적재 약 33초(첫 박스 41초, HOME 이동). **실제 접촉 감지·실제 파지는 실제 로봇에서 확인 필요**
 - 측정존 `[300, -160, 30]` 입력(`common.FIXED_POSES`, DB 템플릿). `place_main`에 `sim_contact`(에뮬레이터 전용, 상태 파일 분리), `fake_run.sh`에 `PLACE_MAIN=1`·`SIM=1`
 - **적재 실제 코드 통합**: `place_main.py`·`place_config.json`을 `box_place`에 추가(entry `place_main`, 설정 설치), `STACK` 3층×2자리, 템플릿 −x 방향, `place_main`: 설정 경로(설치 폴더), `STACK` 일치 검사, 지원 클래스 검사(A/B/C), 모든 이동 전 `report.check()`, 하강 루프 `report.keepalive()`, `clear_pending`, 정지 실패 시에도 `CANCELED` 유지. `Reporter.keepalive()` 추가, 관제는 stage가 바뀔 때만 feedback 출력. ROS 없이 연결부 시험 통과, **실제 로봇 시험은 아직**

@@ -21,6 +21,8 @@ control.py — 관제 메인 (예시: 정상 경로만)
     관제는 기대값(적재 전 재고의 result_class 수량 + 1)과 비교해서 기록하고,
     DB에는 항상 '측정값'을 반영한다 (실제 적재 상태가 기준). 다르면 경고 로그를 남기고
     작업을 계속한다. 다른 클래스 수량은 그대로 둔다. (불일치 기록을 DB에 남길지는 DB/UI와 협의 중)
+  - 미분류 U (v0.5): 판별이 'U'를 내면 적재에 'U'로 보낸다. 적재는 미분류 위치에 놓기만 하고
+    수량을 재지 않는다(count 0). 관제가 적재 성공 후 재고 U = 이전 + 1로 DB에 반영한다 (검증 없음).
   - 진행 추적: 중단 시 해당 파트의 마지막 Feedback stage와 경과 시간을 함께 기록한다.
   - 작업 중 중단 (abort_job): DB status를 ERROR(공정 오류) 또는 STOPPED(로봇 정지)로 바꾸고
     이유를 함께 기록한다 (예: 'ERROR : Fail to pick'). 로봇에 정지 명령을 보내지는 않는다.
@@ -61,7 +63,7 @@ try:                       # 한 글자 입력(q/s)을 Enter 없이 받기 위�
 except ImportError:        # pragma: no cover
     termios = tty = None
 
-from box_comm.common import error_text, status_for, default_poses
+from box_comm.common import INVENTORY_KEYS, UNCLASSIFIED, error_text, status_for, default_poses
 from box_comm.control_interface import start
 from box_control import preflight
 
@@ -120,7 +122,7 @@ class Control:
         self.state = None
         self.specs = []
         self.poses = default_poses()       # 고정 좌표. GetJobData 후 DB 값으로 무조건 덮어씀 → 모든 Goal에 실어 보냄
-        self.inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
+        self.inventory = {c: 0 for c in INVENTORY_KEYS}     # A~D + U(미분류)
         self.box_seq = 0
         self.job_id = time.strftime('%Y%m%d_%H%M%S')   # 실행마다 고유한 작업 ID
         self._current_class = ''          # 지금 박스의 판별 결과 (중단 이유 표시용)
@@ -209,17 +211,23 @@ class Control:
             if err:
                 return self.abort_job(err)
             self.set_state(State.PLACE_DONE)
-            self.log.info(f'[control] 적재 측정 수량: {result_class} {measured}개')
 
             # ---- 재고 검증 → 반영 (Place Result를 받은 뒤에만) ----
             self.box_seq += 1
-            inventory_new = self.verify_inventory(box_id, result_class, measured)
+            if result_class == UNCLASSIFIED:
+                # 미분류: 적재는 놓기만 함 → 관제가 +1 (측정·비교 없음)
+                inventory_new = dict(self.inventory)
+                inventory_new[UNCLASSIFIED] = self.inventory.get(UNCLASSIFIED, 0) + 1
+                done_msg = f'미분류 투하 완료 → 미분류 {inventory_new[UNCLASSIFIED]}개 (관제 집계)'
+            else:
+                self.log.info(f'[control] 적재 측정 수량: {result_class} {measured}개')
+                inventory_new = self.verify_inventory(box_id, result_class, measured)
+                done_msg = f'{result_class} 적재 완료 → {result_class} {measured}개'
             if err := self.io.update_inventory(box_id, inventory_new):
                 return self.abort_job(err)
             self.inventory = inventory_new
-            self.log.info(f'[control] {box_id} 적재 완료 → inventory={self.inventory}')
-            self.io.log_event('INFO', 'BOX_DONE',
-                              f'{result_class} 적재 완료 → {result_class} {measured}개')
+            self.log.info(f'[control] {box_id} {done_msg} → inventory={self.inventory}')
+            self.io.log_event('INFO', 'BOX_DONE', done_msg)
 
         # DONE
         self.io.arm_monitor(False)
@@ -296,7 +304,6 @@ class Control:
     # ------------------------------------------------------------------
     def expected_count(self, result_class) -> int:
         """기대 수량 = 적재 전 재고의 result_class 수량 + 1"""
-        # TODO: 미분류('X')가 생기면 그때는 변화 0을 기대값으로
         return self.inventory[result_class] + 1
 
     def verify_inventory(self, box_id, result_class, measured) -> dict:

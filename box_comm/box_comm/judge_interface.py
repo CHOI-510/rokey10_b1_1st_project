@@ -20,7 +20,7 @@ judge_interface.py — 판별 파트 통신 계층
       def run(self, specs, report) -> str:
           # specs = [{'class_id': 'A', 'width_mm': 40.0, 'depth_mm': 40.0,
           #           'height_mm': 40.0, 'weight_g': 100.0}, ...]
-          # 판별 결과 'A' / 'B' / 'C' / 'D' 중 하나를 반환
+          # 판별 결과 'A' / 'B' / 'C' / 'D' 중 하나, 어디에도 맞지 않으면 'U'(미분류, v0.5)를 반환
           # 실패하면 raise PartError('MEASURE_FAILED', '이유')
           # 단계가 바뀔 때마다 report(stage) 호출 (필수, stage 목록은 common.STAGES['judge'])
           # 남길 일이 있으면 report.log('집기 실패, 재시도 2/3', 'WARN') → 관제가 /event_log로 넘김
@@ -41,7 +41,7 @@ from rclpy.node import Node
 from box_interfaces.action import Judge
 
 from box_comm.robot import RobotSetup
-from box_comm.common import Reporter, SETUP_STAGE, ERROR_CODES, PartError, STAGES, default_poses, poses_from_msg, VALID_CLASSES  # noqa: F401
+from box_comm.common import Reporter, SETUP_STAGE, ERROR_CODES, PartError, STAGES, default_poses, poses_from_msg, RESULT_CLASSES, VALID_CLASSES  # noqa: F401
 
 NODE_NAME = 'judge'
 ACTION_NAME = '/judge'
@@ -116,8 +116,8 @@ class JudgeInterface(Node):
             self.get_logger().info(f'[judge] robot_setup: {setup_msg}')
 
             result_class = self.work.run(specs, report)
-            if result_class not in VALID_CLASSES:
-                raise ValueError(f'run()은 {VALID_CLASSES} 중 하나를 반환해야 함 '
+            if result_class not in RESULT_CLASSES:
+                raise ValueError(f'run()은 {RESULT_CLASSES} 중 하나를 반환해야 함 '
                                  f'(받은 값: {result_class!r})')
             result.success = True
             result.result_class = result_class

@@ -98,7 +98,7 @@ box_project/
 
 ---
 
-## 4. 인터페이스 (`box_interfaces` v0.4)
+## 4. 인터페이스 (`box_interfaces` v0.5)
 
 ### Action (관제 → 파트)
 
@@ -113,6 +113,8 @@ box_project/
 `/place`의 `count`는 적재가 **실제로 놓은 위치(단·층)로 잰** `result_class` 수량입니다(v0.4). 단·층·z는 적재 내부 정보라 Result에 넣지 않고 적재 로그에만 남깁니다. 아래 "적재 규칙" 참고.
 
 `/scan`의 `found=False`는 "더 이상 물품 없음"이며 실패가 아닙니다(`success=True`).
+
+**미분류 `U` (v0.5)**: 판별은 A~D 어디에도 맞지 않으면 `result_class = "U"`를 냅니다. 관제는 적재에 `U`로 Goal을 보내고, 적재는 미분류 투하 위치(`place_config.json`의 `unclassified`)에 놓기만 하고 `count = 0`을 돌려줍니다(쌓지 않으니 높이로 셀 필요 없음). 미분류 수량은 **관제가 셉니다**: 적재 성공 후 재고 `U = 이전 + 1`을 `UpdateInventory`로 DB에 보냅니다(검증 없음). 미분류 위치는 DB 고정 좌표가 아니라 적재 설정에 있습니다.
 
 ### Feedback stage
 
@@ -156,7 +158,7 @@ Feedback의 `log_level`·`log_msg`는 파트가 `report.log('메시지', 'WARN')
 
 | 메시지 | 필드 |
 | --- | --- |
-| `Inventory` | `a`, `b`, `c`, `d`: int32 — 분류별 재고 수 |
+| `Inventory` | `a`, `b`, `c`, `d`: int32 — 분류별 재고 수 (적재 측정값), `u`: int32 — 미분류 수 (관제 집계, v0.5) |
 | `ClassSpec` | `class_id`: string, `width_mm`, `depth_mm`, `height_mm`, `weight_g`: float32 |
 | `FixedPoses` | `available`: bool, `home_j`: float64[6] (deg), `measure_zone`: float64[3] (x, y, z mm), `place_zones`: `PlaceZone[]` — 고정 좌표. **기준은 DB**. `GetJobData`로 받아 모든 Action Goal에 실어 보냄 |
 | `LogEvent` | `stamp`, `job_id`, `source`(control/scan/judge/place), `stage`, `level`(INFO/WARN/ERROR), `code`, `box_id`, `class_id`: string, `expected`, `measured`: int32 (-1 = 해당 없음), `message`: string |
@@ -168,7 +170,7 @@ Feedback의 `log_level`·`log_msg`는 파트가 `report.log('메시지', 'WARN')
 | --- | --- |
 | `status` | `BEFORE`, `RUNNING`, `DONE`, `ERROR`, `STOPPED` (`common.JOB_STATUS`) |
 | `reason` | `ERROR`·`STOPPED`일 때 UI에 보일 이유 (`common.ERROR_TEXT`, 예: `Fail to pick`, `Zone full (B)`, `EMERGENCY STOP`). UI 표시: `{status} : {reason}` |
-| `result_class` | `A`, `B`, `C`, `D` |
+| `result_class` | `A`, `B`, `C`, `D`, `U`(미분류, v0.5) |
 | `error_code` | 성공 `""` / 실패 `NOT_FOUND`, `GRASP_FAILED`, `OVER_FORCE`, `MEASURE_FAILED`, `NO_SLOT`, `PLACE_FAILED`, `ROBOT_SETUP_FAILED` |
 | 좌표·단위 | 로봇 base 기준, mm |
 
@@ -227,6 +229,7 @@ DONE          SetJobStatus(DONE)
 - 상태 값은 영어(`State` Enum)이고, 로그에는 `===== SCANNING (스캔중) =====`처럼 한글을 함께 표시합니다.
 - 스캔은 물품 유무(`found`)만 알리고, 작업완료 여부는 관제가 판단합니다.
 - **재고 검증 (v0.4)**: 관제는 적재가 잰 수량(`count`)을 기대값(적재 전 재고의 `result_class` 수량 + 1)과 비교합니다. DB에는 **항상 측정값**을 반영하고(실제 적재 상태가 기준), 다르면 `재고 불일치` 경고 로그(기대·측정·차이)를 남긴 뒤 작업을 계속하며, 작업이 끝나면 불일치 건수를 요약해서 출력합니다. 다른 클래스 수량은 그대로 둡니다.
+- **미분류 (v0.5)**: `result_class`가 `U`면 비교하지 않고 재고 `U`만 +1 해서 DB에 반영합니다 (적재는 `count = 0`).
 - **중단 기록**: 오류로 중단되면 해당 파트의 마지막 Feedback stage와 경과 시간을 함께 로그로 남깁니다. (예: `SCANNING (스캔중) 단계에서 중단: GRASP_FAILED | /scan 마지막 stage="picking" (4.2초 전)`)
 - `box_id`는 관제가 `<작업 시작 시각>_<순번>` 형식으로 붙입니다. (예: `20261114_130512_001`)
   관제를 다시 실행해도 이전 작업과 겹치지 않으므로, DB 노드를 켜 둔 채 관제만 재실행해도 됩니다.
@@ -422,8 +425,8 @@ ros2 run box_control control --ros-args -p start_delay_sec:=3.0     # 테스트�
 | --- | --- |
 | `fake_scan` | `box_count` (박스 개수, 기본 3), `fake_delay_sec` |
 | `fake_judge` | `class_sequence` (`"A,B,B,D"`처럼 주면 그 순서로 판별, 비우면 무작위), `fake_delay_sec` |
-| `fake_place` | `fake_delay_sec`, `fake_start` (A~D 구역에 처음부터 쌓인 개수, 기본 `[0,0,0,0]`), `miscount_at` (N번째 적재에서 수량을 일부러 +1 틀리게 측정 — 관제 불일치 처리 테스트용, 기본 0=끔) |
-| `fake_database` | `pose_offset` (고정 좌표에 값을 더해서 반환 → DB 값이 Goal로 전달되는지 확인), `poses_available` (False면 좌표 없음 → 사전 점검 FAIL), `start_inventory`, `estop_at` (N번째 박스 반영 직후 UI 비상정지 버튼을 누른 것처럼 동작, 기본 0=끔) |
+| `fake_place` | `U`는 0 반환, `fake_delay_sec`, `fake_start` (A~D 구역에 처음부터 쌓인 개수, 기본 `[0,0,0,0]`), `miscount_at` (N번째 적재에서 수량을 일부러 +1 틀리게 측정 — 관제 불일치 처리 테스트용, 기본 0=끔) |
+| `fake_database` | `pose_offset` (고정 좌표에 값을 더해서 반환 → DB 값이 Goal로 전달되는지 확인), `poses_available` (False면 좌표 없음 → 사전 점검 FAIL), `start_inventory` (A~D, U 순서, 4개만 주면 U=0), `estop_at` (N번째 박스 반영 직후 UI 비상정지 버튼을 누른 것처럼 동작, 기본 0=끔) |
 
 fake와 실제 노드는 같은 Action/Service 이름을 쓰므로 **동시에 띄우지 않습니다.**
 파트 하나만 실제로 붙여 보려면 그 파트만 실제 노드로, 나머지는 fake로 띄웁니다.

@@ -11,7 +11,8 @@ UI 대신 상태·재고가 바뀔 때마다 로그로 보여 준다.
 파라미터 (preflight 테스트용)
   pose_offset      (float, 기본 0.0)  고정 좌표에 이 값을 더해서 돌려줌 → 불일치 테스트
   poses_available  (bool,  기본 True) False면 좌표 없음(available=False)으로 응답
-  start_inventory  (int[4], 기본 [0,0,0,0]) A~D 처음 재고 → fake_place의 fake_start와 다르게 주면 불일치 테스트
+  start_inventory  (int[], 기본 [0,0,0,0,0]) A~D(+U) 처음 재고 → fake_place의 fake_start와 다르게 주면 불일치 테스트
+                   4개만 주면 U(미분류)는 0
   estop_at         (int, 기본 0)  N번째 박스 재고 반영 직후 UI 비상정지 버튼을 누른 것처럼 동작 (0 = 끔)
 
 실행
@@ -20,7 +21,7 @@ UI 대신 상태·재고가 바뀔 때마다 로그로 보여 준다.
 ================================================================
 """
 
-from box_comm.common import FIXED_POSES, stack_layout
+from box_comm.common import FIXED_POSES, INVENTORY_KEYS, UNCLASSIFIED, stack_layout
 from box_comm.database_interface import start
 
 FAKE_SPECS = [
@@ -41,15 +42,15 @@ class FakeDatabase:
         self.node = node
         self.log = node.get_logger()
         self.specs = [dict(s) for s in FAKE_SPECS]
-        self.inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
+        self.inventory = {c: 0 for c in INVENTORY_KEYS}
         self.status = 'BEFORE'
         self.history = []
         node.declare_parameter('pose_offset', 0.0)
         node.declare_parameter('poses_available', True)
-        node.declare_parameter('start_inventory', [0, 0, 0, 0])   # A~D 처음 재고 (불일치 테스트용)
+        node.declare_parameter('start_inventory', [0, 0, 0, 0, 0])   # A~D, U 처음 재고 (불일치 테스트용)
         self.estop_at = int(node.declare_parameter('estop_at', 0).value)   # 비상정지 버튼 테스트
-        self.inventory = dict(zip('ABCD', [int(n) for n in
-                                            node.get_parameter('start_inventory').value]))
+        start = [int(n) for n in node.get_parameter('start_inventory').value]
+        self.inventory = {c: (start[i] if i < len(start) else 0) for i, c in enumerate(INVENTORY_KEYS)}
         self.pose_offset = float(node.get_parameter('pose_offset').value)
         self.poses_available = bool(node.get_parameter('poses_available').value)
         self._show('시작')
@@ -96,7 +97,8 @@ class FakeDatabase:
         self.log.info(
             f'[fake_db] ({event}) 상태={self.status} | 재고={self.inventory} '
             f'| 처리 {len(self.history)}개 | 적재 이미지 '
-            + ' '.join(f'{c}{stack_layout(n)}' for c, n in self.inventory.items()))
+            + ' '.join(f'{c}{stack_layout(n)}' for c, n in self.inventory.items() if c != UNCLASSIFIED)
+            + f' | 미분류 {self.inventory.get(UNCLASSIFIED, 0)}개')
 
 
 def main():

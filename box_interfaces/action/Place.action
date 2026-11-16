@@ -1,10 +1,11 @@
 # v0.4: place measures the real stack and reports the count (no inventory in Goal)
-string result_class
+string result_class    # "A" / "B" / "C" / "D" / "U" (v0.5: U = drop at unclassified spot, not counted by place)
 FixedPoses poses       # home_j, measure_zone, place_zones (from DB via control)
 ---
 bool success
 int32 count            # measured count of result_class in its zone after placing (this box included)
                        # tier/level/z stay inside the place part (logged there)
+                       # U: always 0 (control counts unclassified itself)
 string error_code
 ---
 string stage           # see box_comm/common.py STAGES

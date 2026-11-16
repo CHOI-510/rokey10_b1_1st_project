@@ -7,7 +7,8 @@ common.py — box_comm 공통 정의
 여기에 한 번만 정의하고 모든 *_interface.py와 파트 코드가 import해서 쓴다.
   - ERROR_CODES   : 등록된 error_code 목록 (인터페이스 계약 2.4)
   - JOB_STATUS    : DB 작업 상태 5개 + ERROR_TEXT(에러 코드 → UI 표시 이유) + status_for()
-  - VALID_CLASSES : result_class / inventory 키
+  - VALID_CLASSES : 정상 분류 A~D (분류 기준·적재 구역·적재 수량 측정 대상)
+  - UNCLASSIFIED  : 미분류 'U' (v0.5) + RESULT_CLASSES(판별 결과·적재 Goal) / INVENTORY_KEYS(재고 키)
   - STAGES        : 파트별 Feedback stage 목록
   - ROBOT         : 로봇 ID, 두산 서비스 네임스페이스
   - TCP, TOOL     : 기본 TCP·툴 (각 Goal 시작 전에 box_comm/robot.py가 확인·적용)
@@ -38,7 +39,19 @@ ERROR_CODES = (
     'CANCELED',             # 관제가 작업을 취소함 (정지 요청) — box_comm이 report()에서 자동으로 냄
 )
 
-VALID_CLASSES = ('A', 'B', 'C', 'D')
+VALID_CLASSES = ('A', 'B', 'C', 'D')     # 정상 분류: 분류 기준(specs)·적재 구역(place_zones)·적재 수량 측정 대상
+
+# ----------------------------------------------------------------------
+# 미분류 (v0.5) — 판별이 A~D 어디에도 맞지 않는다고 판단한 물품
+#   - 판별은 'U'를 반환할 수 있다. 관제는 적재에 'U'로 Goal을 보낸다.
+#   - 적재는 미분류 투하 위치(place_config.json의 unclassified)에 놓기만 하고 수량을 재지 않는다.
+#     (쌓지 않으므로 높이로 셀 필요가 없음) → Place Result count = 0
+#   - 미분류 수량은 관제가 센다: 적재 성공 시 재고 U = 이전 + 1 → DB UpdateInventory
+#   - 미분류 위치는 DB 고정 좌표가 아니라 적재 설정에 있다 (투하 자세까지 포함한 한 점이라서)
+# ----------------------------------------------------------------------
+UNCLASSIFIED = 'U'
+RESULT_CLASSES = VALID_CLASSES + (UNCLASSIFIED,)   # 판별 결과 / 적재 Goal에 허용
+INVENTORY_KEYS = RESULT_CLASSES                    # 재고(Inventory) 키: A, B, C, D, U
 
 # ----------------------------------------------------------------------
 # 작업 상태 (DB SetJobStatus) — UI 표시: f"{status} : {reason}"
@@ -170,11 +183,13 @@ FIXED_POSES = {
     'home_j': [0.0, 0.0, 90.0, 0.0, 90.0, 0.0],   # HOME 관절 각도 [deg]
     'measure_zone': [300.0, -160.0, 30.0],         # 측정존 x, y, z [mm, base 기준]  z = 박스 파지 TCP 높이 (적재 1층 첫 접촉 Z ≈ 30)
     'place_zones': {                               # 적재 구역 1단 x, y [mm, base 기준]  TODO: 실측 후 입력
-        'A': [480.0, -160.0],   # 실측 (11/16, 측정존의 +x 쪽)
-        'B': None,
-        'C': None,
-        'D': None,
+        'A': [480.0, -160.0],   # 실측 (11/16)
+        'B': [650.0, -160.0],   # 실측 (11/16)
+        'C': [580.0, 300.0],    # 실측 (11/16)
+        'D': None,              # 미정 (D 수치 대기)
     },
+    # 미분류(U) 투하 위치는 여기(DB 고정 좌표)가 아니라 box_place/config/place_config.json의 unclassified
+    #   release_pose [670, -43, 144, 160, 180, 162], approach_z 160 (11/16)
 }
 
 POSE_TOLERANCE = 0.01   # 좌표 비교 허용 오차 (mm 또는 deg)

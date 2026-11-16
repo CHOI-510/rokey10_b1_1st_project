@@ -15,6 +15,8 @@ judge_template.py — 판별 템플릿 (관제 관리, 참고용)
     - specs: [{'class_id': 'A', 'width_mm': 40.0, 'depth_mm': 40.0,
                'height_mm': 40.0, 'weight_g': 100.0}, ...]   (DB의 물품값)
     - 측정존 물품을 측정하고 'A' / 'B' / 'C' / 'D' 중 하나를 반환
+    - 어느 기준에도 맞지 않으면 'U'(미분류, v0.5)를 반환 → 적재가 미분류 위치에 놓고, 관제가 미분류 +1
+      (from box_comm.common import UNCLASSIFIED)  기준을 얼마나 벗어나면 U인지는 판별이 정함
     - 실패하면 raise PartError('MEASURE_FAILED', '이유')  (등록된 코드만)
     - 단계가 바뀔 때마다 report(stage)를 반드시 호출 (관제가 진행 상황을 추적)
     - 기록할 일이 있으면 report.log('메시지', 'INFO'/'WARN'/'ERROR') — 관제가 /event_log로 DB·UI에 넘김

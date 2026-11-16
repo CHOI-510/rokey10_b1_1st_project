@@ -14,7 +14,8 @@ database_template.py — DB·UI 템플릿 (관제 관리, 참고용)
   get_job_data() -> (specs, inventory)
       specs     = [{'class_id': 'A', 'width_mm': .., 'depth_mm': ..,
                     'height_mm': .., 'weight_g': ..}, ...]
-      inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
+      inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0, 'U': 0}      ← v0.5: U = 미분류 수량
+      (U를 빼고 돌려주면 interface가 0으로 채움 — v0.4 코드도 그대로 동작)
   update_inventory(box_id, inventory) -> None
   set_job_status(status, reason) -> None status: 'BEFORE' / 'RUNNING' / 'DONE' / 'ERROR' / 'STOPPED'
       reason: ERROR·STOPPED일 때 이유 ('Fail to pick', 'Zone full (B)', 'EMERGENCY STOP'), 그 밖에는 ''
@@ -38,11 +39,12 @@ UI 비상정지 버튼 (정지 기능)
   → 관제가 로봇 move_stop + 진행 중인 파트 취소 → set_job_status('STOPPED', 'EMERGENCY STOP — by ui')
   관제가 꺼져 있으면 False를 돌려준다 (UI에 '관제 연결 안 됨' 표시).
 
-재고와 UI 적재 이미지 (v0.4)
+재고와 UI 적재 이미지 (v0.4, 미분류 v0.5)
   update_inventory로 받는 재고는 적재가 실제로 놓은 위치로 잰 수량이다 (관제가 기대값과 비교·기록함).
   적재 규칙: 1자리에 3층까지 → 다 차면 다음 자리(2단)에 1층부터, 구역당 2자리 (common.STACK)
   수량 → 이미지:  from box_comm.common import stack_layout
                   stack_layout(5) → [3, 2]  (1자리 3층, 2자리 2층)  → 미리 만든 이미지 선택·표시
+  미분류 U: 쌓지 않는다 (투하). 재고 U는 관제가 센 미분류 개수 → 숫자로만 표시 (stack_layout 쓰지 않음)
 
   실패하면 아무 예외나 raise → 관제에 success=False로 전달된다.
   같은 box_id 중복 무시, status 값 검사는 interface가 이미 처리한다.
@@ -56,11 +58,11 @@ UI 연동도 이 파일(또는 여기서 import하는 모듈)에서 한다. 관�
   ros2 service call /set_job_status box_interfaces/srv/SetJobStatus "{status: 'RUNNING'}"
   ros2 service call /set_job_status box_interfaces/srv/SetJobStatus "{status: 'ERROR', reason: 'Fail to pick'}"
   ros2 service call /update_inventory box_interfaces/srv/UpdateInventory \
-    "{box_id: 'box_001', inventory: {a: 1, b: 0, c: 0, d: 0}}"
+    "{box_id: 'box_001', inventory: {a: 1, b: 0, c: 0, d: 0, u: 0}}"
 ================================================================
 """
 
-from box_comm.common import stack_layout
+from box_comm.common import UNCLASSIFIED, stack_layout
 from box_comm.database_interface import start
 
 # [FAKE] 임시 기준값 — 실제 물품 실측값으로 교체 (RG2 개구 폭 이내로)
@@ -78,9 +80,9 @@ FAKE_POSES = {
     'measure_zone': [300.0, -160.0, 30.0],  # 측정존 x, y, z [mm, base]  z = 박스 파지 TCP 높이 (적재 1층 높이)
     'place_zones': {                      # TODO: 구역별 1단 x, y 실측값 [mm, base]
         'A': [480.0, -160.0],     # 실측 (11/16)
-        'B': [400.0, -300.0],
-        'C': [500.0, -300.0],
-        'D': [600.0, -300.0],
+        'B': [650.0, -160.0],     # 실측 (11/16)
+        'C': [580.0, 300.0],      # 실측 (11/16)
+        'D': [600.0, -300.0],     # TODO: D 미정 (가짜 값)
     },
 }
 
@@ -95,7 +97,7 @@ class DatabaseWork:
         self._poses = {'home_j': list(FAKE_POSES['home_j']),
                        'measure_zone': list(FAKE_POSES['measure_zone']),
                        'place_zones': {c: list(xy) for c, xy in FAKE_POSES['place_zones'].items()}}
-        self._inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
+        self._inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0, 'U': 0}
         self._status = 'BEFORE'
         self._reason = ''
         self._history = []                 # (box_id, inventory) 기록
@@ -144,10 +146,11 @@ class DatabaseWork:
     # [FAKE] UI 갱신 자리
     # ------------------------------------------------------------------
     def refresh_ui(self):
-        layout = {c: stack_layout(n) for c, n in self._inventory.items()}   # 적재 이미지용
+        layout = {c: stack_layout(n) for c, n in self._inventory.items()
+                  if c != UNCLASSIFIED}                                      # 적재 이미지용 (A~D)
         status = f'{self._status} : {self._reason}' if self._reason else self._status
         self.log.info(f'[database] UI 갱신: 상태={status}, 재고={self._inventory}, '
-                      f'적재 상태(단별 층 수)={layout}')
+                      f'적재 상태(단별 층 수)={layout}, 미분류 {self._inventory.get(UNCLASSIFIED, 0)}개')
 
 
 def main():

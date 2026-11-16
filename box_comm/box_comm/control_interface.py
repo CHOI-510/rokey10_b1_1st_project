@@ -95,11 +95,12 @@ WAIT_SLICE = 0.05            # Action 결과를 기다리며 정지 요청을 �
 # 변환 헬퍼
 # ----------------------------------------------------------------------
 def _inv_to_dict(inv: Inventory) -> dict:
-    return {'A': inv.a, 'B': inv.b, 'C': inv.c, 'D': inv.d}
+    return {'A': inv.a, 'B': inv.b, 'C': inv.c, 'D': inv.d, 'U': inv.u}     # U = 미분류 (v0.5)
 
 
 def _dict_to_inv(d: dict) -> Inventory:
-    return Inventory(a=int(d['A']), b=int(d['B']), c=int(d['C']), d=int(d['D']))
+    return Inventory(a=int(d['A']), b=int(d['B']), c=int(d['C']), d=int(d['D']),
+                     u=int(d.get('U', 0)))
 
 
 def _spec_to_dict(s: ClassSpec) -> dict:

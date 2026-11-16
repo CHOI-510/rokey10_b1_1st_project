@@ -13,6 +13,7 @@
 #   PLACE_ARGS="-p miscount_at:=2" ./scripts/fake_run.sh    # 재고 불일치 시험
 #   MOTION=1 BOX_COUNT=2 ./scripts/fake_run.sh               # 로봇이 실제로 움직임 (아래 참고)
 #   PLACE_MAIN=1 SIM=1 BOX_COUNT=4 ./scripts/fake_run.sh     # 적재만 실제 코드(place_main), 에뮬레이터
+#   PLACE_MAIN=1 SIM=1 BOX_COUNT=3 CLASSES="A,U,B" ./scripts/fake_run.sh   # 미분류(U) 포함
 #
 # MOTION=1 (에뮬레이터·실제 로봇, bringup 필요)
 #   탐지·판별·적재를 fake 대신 test_*_motion 노드로 띄운다 → 로봇이 HOME에서 50mm씩 위아래로 움직임.

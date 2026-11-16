@@ -6,12 +6,14 @@ v0.4 적재 약속 구현: run(result_class, report) -> 수량(int)
   - 매 Goal마다 1자리부터 박스를 쥔 채 힘 제어로 내려가 닿은 TCP Z로 층 판단
   - 꽉 찼으면(max_layers 초과 높이) 놓지 않고 올라가 다음 자리, 모든 자리가 차면 NO_SLOT
   - 놓은 (자리, 층) → 수량 = (자리-1) * max_layers + 층
+  - U(미분류)는 unclassified.release_pose로 위치 이동 후 투하. 힘 제어/층 판단 없음
+    정상 재고 제외·report.log 이력만 기록. U 성공 반환 0은 정상 재고 갱신용 수량이 아님
 
 설정: box_place/config/place_config.json (설치 후 share/box_place/config/place_config.json)
   - max_layers / slot_count 는 공용 box_comm/common.py STACK(levels / max_tiers)과 같아야 함
     (다르면 시작하지 않음 — 관제·DB·UI가 같은 규칙으로 수량을 해석하기 때문)
   - slot_dx_mm: 다음 자리 위치 = 1자리 x + (자리-1) * slot_dx_mm, y는 같음 (현재 −x 방향)
-  - classes: 설정된 클래스만 적재 (지금 A/B/C. D·미분류는 설정이 생기면 추가)
+  - classes: 설정된 클래스만 적재 (지금 A/B/C. D는 설정 시 추가, U는 별도 투하 분기)
 
 정지 (관제 비상정지·로봇 이상·진행 감시)
   - 모든 이동 전과 힘 제어 하강 루프 안에서 report.check() → 관제가 취소하면 CANCELED로 빠져나옴
@@ -47,7 +49,7 @@ from pathlib import Path
 import rclpy
 from box_comm.place_interface import PartError, start
 from box_comm.robot import connect_dsr
-from box_comm.common import ROBOT, STACK, TCP, TOOL, VALID_CLASSES
+from box_comm.common import RESULT_CLASSES, ROBOT, STACK, TCP, TOOL, UNCLASSIFIED, VALID_CLASSES
 from dsr_msgs2.srv import (GetCurrentPosx, GetToolForce, CheckMotion, MoveStop,
                           TaskComplianceCtrl, SetDesiredForce, ReleaseForce,
                           ReleaseComplianceCtrl, GetCurrentTcp, SetCurrentTcp,
@@ -122,6 +124,20 @@ def validate_config(c):
         for z in refs:
             if z is not None and z + c['max_layers'] * h + 10.0 >= c['travel_z']:
                 raise ValueError(f"{key}: {c['max_layers']}층 위 파지 접촉 높이와 상부 Z 여유 부족")
+    if 'U' in c['classes']:
+        raise ValueError('U는 일반 classes가 아니라 unclassified 항목으로 설정하세요')
+    u = c.get('unclassified')
+    if u is not None:
+        if not isinstance(u, dict) or type(u.get('enabled', False)) is not bool:
+            raise ValueError('unclassified.enabled는 true/false여야 합니다')
+        if u.get('enabled', False):
+            if not finite_vector(u.get('release_pose'), 6):
+                raise ValueError('미분류 투하 TCP 좌표 6개가 필요합니다')
+            approach_z = u.get('approach_z')
+            if (type(approach_z) not in (int, float) or not math.isfinite(approach_z)
+                    or approach_z < c['travel_z'] or approach_z < u['release_pose'][2]
+                    or u['release_pose'][2] <= c['min_search_z']):
+                raise ValueError('미분류 접근 Z는 이송 Z/투하 Z 이상, 투하 Z는 최저 Z보다 높아야 합니다')
     return c
 
 
@@ -196,6 +212,13 @@ class PlaceWork:
             ('release_force', ReleaseForce, 'force/release_force'),
             ('release_compliance', ReleaseComplianceCtrl, 'force/release_compliance_ctrl')):
             self.clients[key] = self.dsr_node.create_client(typ, ROBOT['service_ns'].rstrip('/') + '/' + suffix)
+        u = self.c.get('unclassified') or {}
+        if u.get('enabled', False):
+            if UNCLASSIFIED not in RESULT_CLASSES:
+                self.log.warn('[place_main] U 분기 준비됨: 공용 통신 계층(box_comm)이 U Goal을 허용하지 않습니다')
+            self.log.info(f"[place_main] 미분류(U) 투하: {u['release_pose']}, 접근 Z {u['approach_z']}")
+        else:
+            self.log.warn('[place_main] 미분류(U) 투하 꺼짐 (place_config.json unclassified.enabled) — U Goal은 실패')
         self.log.info(f"[place_main] 적재 규칙 {self.c['max_layers']}층 x {self.c['slot_count']}자리, "
                       f"자리 간격 x {self.c['slot_dx_mm']:+.0f}mm, 클래스 {sorted(self.c['classes'])}")
 
@@ -516,6 +539,63 @@ class PlaceWork:
         self._call('movej', self.dr.posj(home), vel=self.c['home_speed_deg_s'],
                    acc=self.c['home_acc_deg_s2'])
 
+    def _unclassified_poses(self):
+        """U 분기는 일반 place_zones나 바닥 접촉 기준을 사용하지 않는다."""
+        u = self.c.get('unclassified', {})
+        if not u.get('enabled', False):
+            raise ValueError('U 미분류 투하가 비활성입니다. unclassified 설정을 확인하세요')
+        home = self.poses.get('home_j')
+        zone = self.poses.get('measure_zone')
+        if not finite_vector(home, 6) or not finite_vector(zone, 3):
+            raise ValueError('U 작업의 HOME/측정존 좌표가 없습니다')
+        if all(abs(v) < 1e-6 for v in zone) or not self.c['min_search_z'] < zone[2] < self.c['travel_z']:
+            raise ValueError('U 작업의 측정존 TCP 파지 좌표가 잘못되었습니다')
+        return list(home), list(zone), list(u['release_pose']), u['approach_z']
+
+    def _place_unclassified(self, home, zone, release_pose, approach_z):
+        """힘 제어 없이 경사로 위에서 개방. 성공 시 정상 재고 제외 표시로 0 반환."""
+        report = self._report
+        self.state['pending'] = {'class': 'U', 'route': 'unclassified', 'phase': 'picking'}
+        save_state(self.state_path, self.state)
+        report('picking')
+        self._check()
+        if not getattr(self, '_home_initialized', False):
+            self.go_home(home)
+            self._home_initialized = True
+        self.pick_from_measure_zone(zone)
+        self.state['pending']['phase'] = 'moving'
+        save_state(self.state_path, self.state)
+        report('moving')
+        # Raise vertically before lateral travel; keep the gripper closed throughout.
+        self._check()
+        current = self._pose()
+        if current[2] < approach_z:
+            self._move([current[0], current[1], approach_z, *current[3:]])
+        above = [release_pose[0], release_pose[1], approach_z, *release_pose[3:]]
+        self._move(above)
+        self.state['pending'].update(phase='placing', release_pose=release_pose)
+        save_state(self.state_path, self.state)
+        report('placing')
+        self._move(release_pose)  # Pure position motion: no _descend/_sim_descend.
+        self._check()
+        self.state['pending']['phase'] = 'releasing'
+        save_state(self.state_path, self.state)
+        self.release()
+        self.state['pending']['phase'] = 'released'
+        save_state(self.state_path, self.state)
+        self._keepalive()
+        self._move(above)
+        self.state['pending']['phase'] = 'released_and_retracted'
+        save_state(self.state_path, self.state)
+        self.go_home(home)
+        message = (f'U 미분류 경사로 투하 동작 완료: TCP={release_pose}, '
+                   '정상 A/B/C/D 재고 갱신 제외 (경사로 유입은 별도 센서로 확인하지 않음)')
+        self.log.info(message)
+        report.log(message)
+        self.state['pending'] = None
+        save_state(self.state_path, self.state)
+        return 0
+
     def run(self, result_class, report) -> int:
         if not self.lock.acquire(blocking=False):
             raise PartError('PLACE_FAILED', '적재 작업이 이미 실행 중입니다')
@@ -524,6 +604,18 @@ class PlaceWork:
         self._last_keepalive = time.monotonic()
         try:
             c = self.c
+            if result_class == 'U':
+                self._check()
+                if self.state['pending']:
+                    raise ValueError('이전 작업 미완료: 파지 물품/실제 상태 확인 후 clear_pending으로 복구하세요')
+                home, zone, release_pose, approach_z = self._unclassified_poses()
+                for client in self.clients.values():
+                    if not client.wait_for_service(timeout_sec=10.0):
+                        raise RuntimeError(f'서비스 준비 안 됨: {client.srv_name}')
+                self._ensure_robot()
+                self._call('set_ref_coord', self.dr.DR_BASE)
+                motion_started = True
+                return self._place_unclassified(home, zone, release_pose, approach_z)
             if result_class not in c['classes']:
                 raise ValueError(f'{result_class}: place_config.json에 설정이 없습니다 '
                                  f'(지원: {sorted(c["classes"])})')

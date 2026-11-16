@@ -25,7 +25,7 @@ database_interface.py — DB 파트 통신 계층
           # (specs, inventory) 반환
           # specs     = [{'class_id': 'A', 'width_mm': .., 'depth_mm': ..,
           #               'height_mm': .., 'weight_g': ..}, ...]
-          # inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
+          # inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0, 'U': 0}   (v0.5: U = 미분류 수량, 빼면 0)
       def update_inventory(self, box_id: str, inventory: dict) -> None:
           # DB에 재고 기록 + UI 갱신
       def set_job_status(self, status: str, reason: str) -> None:
@@ -56,7 +56,7 @@ from rclpy.node import Node
 from box_interfaces.msg import ClassSpec, FixedPoses, Inventory, LogEvent, PlaceZone
 from box_interfaces.srv import EmergencyStop, GetJobData, SetJobStatus, UpdateInventory
 
-from box_comm.common import JOB_STATUS, LOG_TOPIC, VALID_CLASSES, log_qos
+from box_comm.common import INVENTORY_KEYS, JOB_STATUS, LOG_TOPIC, UNCLASSIFIED, VALID_CLASSES, log_qos
 
 NODE_NAME = 'database'
 SRV_GET_JOB_DATA = '/get_job_data'
@@ -68,13 +68,16 @@ VALID_STATUS = JOB_STATUS
 
 
 def _inv_to_dict(inv: Inventory) -> dict:
-    return {'A': inv.a, 'B': inv.b, 'C': inv.c, 'D': inv.d}
+    return {'A': inv.a, 'B': inv.b, 'C': inv.c, 'D': inv.d, 'U': inv.u}
 
 
 def _dict_to_inv(d: dict) -> Inventory:
-    if set(d.keys()) != set(VALID_CLASSES):
-        raise ValueError(f'inventory는 {VALID_CLASSES} 키를 모두 가져야 함 (받은 값: {d!r})')
-    return Inventory(a=int(d['A']), b=int(d['B']), c=int(d['C']), d=int(d['D']))
+    """A~D는 필수, U(미분류, v0.5)는 없으면 0"""
+    keys = set(d.keys())
+    if not set(VALID_CLASSES) <= keys or not keys <= set(INVENTORY_KEYS):
+        raise ValueError(f'inventory는 {VALID_CLASSES} 키(+ 선택 {UNCLASSIFIED})를 가져야 함 (받은 값: {d!r})')
+    return Inventory(a=int(d['A']), b=int(d['B']), c=int(d['C']), d=int(d['D']),
+                     u=int(d.get(UNCLASSIFIED, 0)))
 
 
 def _dict_to_poses(d) -> FixedPoses:

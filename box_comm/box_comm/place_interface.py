@@ -12,7 +12,7 @@ place_interface.py — 적재 파트 통신 계층
   - run() 직전에 기본 TCP·툴을 확인·적용한다 (box_comm/robot.py, stage 'robot_setup').
     실패하면 run()을 부르지 않고 ROBOT_SETUP_FAILED로 끝낸다. 파라미터 robot_setup=auto/on/off
   - run()의 반환값/예외를 Result로 바꿔 관제에 보낸다.
-  - 반환값(수량)을 검사한다 (정수, 1 ~ 구역 최대 수량). 어긋나면 PLACE_FAILED.
+  - 반환값(수량)을 검사한다 (정수, 1 ~ 구역 최대 수량 / 미분류 U는 0). 어긋나면 PLACE_FAILED.
 
 작업 클래스 약속 (box_place/place.py에서 작성)
   class PlaceWork:
@@ -20,7 +20,8 @@ place_interface.py — 적재 파트 통신 계층
       # self.poses = {'home_j': [6], 'measure_zone': [x, y, z],
       #               'place_zones': {'A': [x, y], ...}}   ← interface가 Goal마다 넣어 줌 (DB 값)
       def run(self, result_class, report) -> dict:
-          # result_class = 'A' / 'B' / 'C' / 'D'
+          # result_class = 'A' / 'B' / 'C' / 'D' / 'U'
+          # U(미분류, v0.5): 미분류 투하 위치에 놓기만 하고 0을 반환 (수량은 관제가 셈)
           # 1단부터 내려가며 실제로 놓을 자리를 찾고, 놓은 위치로 잰 수량(int)을 반환
           #   수량 = common.count_from_position(단, 층)   예: 2단 2층 → 6
           # 단·층·z·단 간격·박스 높이는 이 안에서만 처리 (관제에는 수량만 감)
@@ -46,17 +47,21 @@ from box_interfaces.action import Place
 from box_comm.robot import RobotSetup
 from box_comm.common import (Reporter, SETUP_STAGE, ERROR_CODES, PartError, STACK, STAGES,  # noqa: F401
                              count_from_position, default_poses, poses_from_msg,
-                             stack_capacity, VALID_CLASSES)
+                             stack_capacity, RESULT_CLASSES, UNCLASSIFIED, VALID_CLASSES)
 
 NODE_NAME = 'place'
 ACTION_NAME = '/place'
 DEFAULT_ERROR = 'PLACE_FAILED'   # 예상 못 한 예외일 때 보내는 코드
 
 
-def _check_count(count) -> int:
-    """run() 반환값(측정 수량) 검사"""
+def _check_count(count, result_class='') -> int:
+    """run() 반환값(측정 수량) 검사. 미분류(U)는 적재가 세지 않으므로 0"""
     if isinstance(count, bool) or not isinstance(count, int):
         raise ValueError(f'run()은 수량(int)을 반환해야 함 (받은 값: {count!r})')
+    if result_class == UNCLASSIFIED:
+        if count != 0:
+            raise ValueError(f'미분류(U)는 0을 반환해야 함 (받은 값: {count})')
+        return 0
     if not 1 <= count <= stack_capacity():
         raise ValueError(f'수량 범위 밖: {count} (1~{stack_capacity()})')
     return count
@@ -102,7 +107,7 @@ class PlaceInterface(Node):
             is_canceled=lambda: goal_handle.is_cancel_requested)
 
         try:
-            if result_class not in VALID_CLASSES:
+            if result_class not in RESULT_CLASSES:
                 raise PartError('PLACE_FAILED', f'알 수 없는 result_class: "{result_class}"')
             # 고정 좌표: 관제가 Goal에 실어 보낸 DB 값 → 작업 클래스의 self.poses
             poses = poses_from_msg(goal_handle.request.poses)
@@ -119,7 +124,7 @@ class PlaceInterface(Node):
             self.get_logger().info(f'[place] robot_setup: {setup_msg}')
 
             try:
-                count = _check_count(self.work.run(result_class, report))
+                count = _check_count(self.work.run(result_class, report), result_class)
             except ValueError as e:
                 raise PartError('PLACE_FAILED', f'run() 반환값 오류: {e}')
             result.success = True

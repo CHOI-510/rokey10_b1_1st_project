@@ -20,67 +20,32 @@
   "classes": {
     "A": {
       "height_mm": 20.0,
-      "dimensions_mm": [
-        60.0,
-        40.0,
-        20.0
-      ],
+      "dimensions_mm": [60.0, 40.0, 20.0],
       "mass_g": 130.0,
-      "orientation": [
-        120.0,
-        180.0,
-        120.0
-      ],
-      "first_contact_z_mm": [
-        30.19,
-        30.19
-      ]
+      "orientation": [120.0, 180.0, 120.0],
+      "first_contact_z_mm": [30.19, 30.19]
     },
     "B": {
       "height_mm": 25.0,
-      "dimensions_mm": [
-        75.0,
-        44.0,
-        25.0
-      ],
-      "mass_g": [
-        47.0,
-        54.0
-      ],
-      "orientation": [
-        120.0,
-        -180.0,
-        120.0
-      ],
-      "first_contact_z_mm": [
-        30.0,
-        30.0
-      ]
+      "dimensions_mm": [75.0, 44.0, 25.0],
+      "mass_g": [47.0, 54.0],
+      "orientation": [120.0, -180.0, 120.0],
+      "first_contact_z_mm": [30.0, 30.0]
     },
     "C": {
       "height_mm": 20.0,
-      "dimensions_mm": [
-        50.0,
-        40.0,
-        20.0
-      ],
+      "dimensions_mm": [50.0, 40.0, 20.0],
       "mass_g": 108.0,
-      "orientation": [
-        120.0,
-        -180.0,
-        120.0
-      ],
-      "first_contact_z_mm": [
-        30.0,
-        30.0
-      ]
+      "orientation": [120.0, -180.0, 120.0],
+      "first_contact_z_mm": [30.0, 30.0]
     }
   },
-  "pick_orientation": [
-    148.0,
-    -180.0,
-    148.0
-  ],
+  "pick_orientation": [148.0, -180.0, 148.0],
   "home_speed_deg_s": 10.0,
-  "home_acc_deg_s2": 10.0
+  "home_acc_deg_s2": 10.0,
+  "unclassified": {
+    "enabled": true,
+    "release_pose": [670.0, -43.0, 144.0, 160.0, 180.0, 162.0],
+    "approach_z": 160.0
+  }
 }

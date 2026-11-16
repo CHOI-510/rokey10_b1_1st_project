@@ -7,7 +7,8 @@ judge_template / 담당 메인 코드 대신 띄워서 관제(control.py)를 테
 
 파라미터
   class_sequence  (str,   기본 "")  "A,B,C,D"처럼 주면 그 순서대로 반복해서 반환
-                                     비워 두면 받은 specs 중 무작위
+                                     U(미분류, v0.5)도 넣을 수 있음: "A,U,B"
+                                     비워 두면 받은 specs(A~D) 중 무작위
   fake_delay_sec  (float, 기본 1.0) 동작 하나당 가짜 소요 시간
 
 실행

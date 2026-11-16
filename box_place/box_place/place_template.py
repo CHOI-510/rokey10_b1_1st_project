@@ -25,7 +25,9 @@ place_template.py — 적재 템플릿 (관제 관리, 참고용)
 
 지킬 약속은 하나:
   run(result_class, report) -> int
-    - result_class: 'A' / 'B' / 'C' / 'D'
+    - result_class: 'A' / 'B' / 'C' / 'D' / 'U'
+    - U(미분류, v0.5): 미분류 투하 위치에 놓기만 하고 0을 반환 (쌓지 않음, 수량은 관제가 셈)
+      실제 코드: place_main.py의 _place_unclassified (위치는 place_config.json unclassified)
     - 반환: 적재 후 그 구역의 수량 (놓은 단·층으로 계산 — count_from_position(단, 층))
     - 단 간격·접근 높이·바닥 z·박스 높이는 이 파일 안에서만 처리 (관제·DB는 모름)
     - 모든 단이 차면 raise PartError('NO_SLOT', ...), 그 밖의 실패는 PartError('PLACE_FAILED', ...)
@@ -105,6 +107,16 @@ class PlaceWork:
     # 약속된 함수
     # ------------------------------------------------------------------
     def run(self, result_class, report) -> int:
+        if result_class == 'U':                    # 미분류: 놓기만 하고 0 (v0.5)
+            report('picking')
+            self.pick_from_measure_zone()
+            report('moving')
+            report('placing')
+            report.check()
+            self.log.info('[place] (FAKE) 미분류 투하 위치에 놓음 → 0 반환')
+            report.log('미분류 투하 완료')
+            self.go_home()
+            return 0
         x1, y = self._zone_xy(result_class)
         h = BOX_HEIGHT[result_class]
         self.log.info(f'[place] {result_class} 구역 1단 x={x1}, y={y}, 박스 높이 {h}mm')

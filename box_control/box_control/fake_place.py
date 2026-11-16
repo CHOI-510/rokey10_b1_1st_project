@@ -5,6 +5,7 @@ fake_place.py — 관제 테스트용 가짜 적재 노드 (v0.4)
 place_template / 담당 메인 코드 대신 띄워서 관제(control.py)를 테스트한다.
 구역별로 '실제로 쌓인 개수'를 메모리에 두고, 적재할 때마다 +1 한 뒤
 그 수량(count)을 돌려준다. (실제 적재의 '놓은 위치로 수량 측정' 흉내)
+미분류 U(v0.5)는 놓기만 하고 0을 돌려준다 (수량은 관제가 셈).
 
 파라미터
   fake_delay_sec  (float,  기본 1.0)          동작 하나당 가짜 소요 시간
@@ -46,6 +47,11 @@ class FakePlace:
         report('placing')
         time.sleep(self.delay * 0.5)
 
+        if result_class == 'U':
+            self.count += 1
+            self.log.info('[fake_place] 미분류 투하 → 0 반환 (수량은 관제가 셈)')
+            report.log('미분류 투하 완료 (fake)')
+            return 0
         if self.stack[result_class] >= stack_capacity():
             raise PartError('NO_SLOT', f'{result_class} 구역 꽉 참 ({stack_capacity()}개)')
         self.stack[result_class] += 1

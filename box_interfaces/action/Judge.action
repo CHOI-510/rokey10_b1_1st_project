@@ -2,7 +2,7 @@ ClassSpec[] specs      # reference values for A~D
 FixedPoses poses       # home_j, measure_zone (from DB via control)
 ---
 bool success
-string result_class    # "A" / "B" / "C" / "D"
+string result_class    # "A" / "B" / "C" / "D" / "U" (U = unclassified, v0.5)
 string error_code
 ---
 string stage           # see box_comm/common.py STAGES

@@ -65,6 +65,9 @@ class PlaceMotionTest:
         except Exception as e:
             raise PartError('PLACE_FAILED', f'DSR 동작 실패: {type(e).__name__}: {e}')
 
+        if result_class == 'U':          # 미분류: 놓기만 함, 수량은 관제가 셈 (v0.5)
+            self.log.info(f'[test_place_motion] #{self.count} 동작 완료 → 미분류 투하 (0 반환)')
+            return 0
         self.stack[result_class] += 1
         tier, level = position_from_count(self.stack[result_class])
         self.log.info(f'[test_place_motion] #{self.count} 동작 완료 → {result_class} '
