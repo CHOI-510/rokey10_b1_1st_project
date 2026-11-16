@@ -69,17 +69,23 @@ class ScanMotionTest:
             home = self.poses['home_j']          # Goal로 받은 DB 값 (단독 실행이면 common.py 기본값)
             self.log.info(f'[test_scan_motion] #{self.count} movej HOME {home} | 측정존 {self.poses["measure_zone"]}')
             self.movej(home)
+            report.check()            # 관제가 정지를 요청했으면 다음 동작 전에 멈춤
             pos = self.get_current_posx()
             self.log.info(f'[test_scan_motion] TCP 기준 현재 위치(posx): {pos}')
 
             report('picking')
             self.movel([0.0, 0.0, LIFT_MM, 0.0, 0.0, 0.0], mod=DR_MV_MOD_REL)
+            report.check()            # 관제가 정지를 요청했으면 다음 동작 전에 멈춤
 
             report('moving')
             self.movel([0.0, 0.0, -LIFT_MM, 0.0, 0.0, 0.0], mod=DR_MV_MOD_REL)
+            report.check()            # 관제가 정지를 요청했으면 다음 동작 전에 멈춤
 
             report('placing')
             self.movej(home)
+            report.check()            # 관제가 정지를 요청했으면 다음 동작 전에 멈춤
+        except PartError:
+            raise                 # CANCELED(관제 정지) 등은 바꾸지 않고 그대로 올림
         except Exception as e:
             raise PartError('GRASP_FAILED', f'DSR 동작 실패: {type(e).__name__}: {e}')
 

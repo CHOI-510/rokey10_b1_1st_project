@@ -11,6 +11,12 @@
 #   BOX_COUNT=6 CLASSES="A,A,B,C,D,D" ./scripts/fake_run.sh
 #   DB_ARGS="-p estop_at:=2" ./scripts/fake_run.sh          # 2번째 박스 뒤 UI 비상정지 흉내
 #   PLACE_ARGS="-p miscount_at:=2" ./scripts/fake_run.sh    # 재고 불일치 시험
+#   MOTION=1 BOX_COUNT=2 ./scripts/fake_run.sh               # 로봇이 실제로 움직임 (아래 참고)
+#
+# MOTION=1 (에뮬레이터·실제 로봇, bringup 필요)
+#   탐지·판별·적재를 fake 대신 test_*_motion 노드로 띄운다 → 로봇이 HOME에서 50mm씩 위아래로 움직임.
+#   DB는 fake 그대로. 관제 기본값: robot_monitor=dsr, 대기 5초.
+#   움직이는 중에 비상정지를 걸어 로봇이 멈추는지 확인하는 용도. 작업공간을 비우고 실행할 것.
 #
 # 환경 변수 (기본값)
 #   BOX_COUNT=4  CLASSES="A,B,B,D"  DELAY=0.5
@@ -45,11 +51,16 @@ else
 fi
 
 # 다른 터미널에서 이미 시험 중이면 멈춤 (서로 노드를 끄는 사고 방지)
-RUNNING_PATTERN='(box_control/(fake_database|fake_scan|fake_judge|fake_place|control)( |$))'
+RUNNING_PATTERN='(box_control/(fake_database|fake_scan|fake_judge|fake_place|test_scan_motion|test_judge_motion|test_place_motion|control)( |$))'
 if pgrep -f "$RUNNING_PATTERN" >/dev/null; then
     if [ "${FORCE:-0}" = 1 ]; then
         echo "[fake_run] FORCE=1 → 실행 중인 노드를 끄고 시작합니다."
-        "$SCRIPT_DIR/fake_stop.sh"
+        bash "$SCRIPT_DIR/fake_stop.sh"
+        if pgrep -f "$RUNNING_PATTERN" >/dev/null; then
+            echo "[fake_run] 정리하지 못한 노드가 남아 있습니다. 직접 확인하세요:" >&2
+            pgrep -a -f "$RUNNING_PATTERN" | sed 's/^/  /' >&2
+            exit 1
+        fi
     else
         echo "[fake_run] 이미 실행 중인 fake 노드·관제가 있습니다 (다른 터미널?):" >&2
         pgrep -a -f "$RUNNING_PATTERN" | sed 's/^/  /' >&2
@@ -115,12 +126,22 @@ start_bg() {      # start_bg 이름 실행파일 [인자...]
 
 # shellcheck disable=SC2086
 start_bg database fake_database --ros-args $DB_ARGS
-# shellcheck disable=SC2086
-start_bg scan  fake_scan  --ros-args -p box_count:="$BOX_COUNT" -p fake_delay_sec:="$DELAY" $SCAN_ARGS
-# shellcheck disable=SC2086
-start_bg judge fake_judge --ros-args -p class_sequence:="$CLASSES" -p fake_delay_sec:="$DELAY" $JUDGE_ARGS
-# shellcheck disable=SC2086
-start_bg place fake_place --ros-args -p fake_delay_sec:="$DELAY" $PLACE_ARGS
+if [ "${MOTION:-0}" = 1 ]; then
+    echo "[fake_run] MOTION=1 → 로봇이 실제로 움직입니다 (test_*_motion). 작업공간을 비우세요."
+    # shellcheck disable=SC2086
+    start_bg scan  test_scan_motion  --ros-args -p robot_setup:=on -p box_count:="$BOX_COUNT" $SCAN_ARGS
+    # shellcheck disable=SC2086
+    start_bg judge test_judge_motion --ros-args -p robot_setup:=on $JUDGE_ARGS
+    # shellcheck disable=SC2086
+    start_bg place test_place_motion --ros-args -p robot_setup:=on $PLACE_ARGS
+else
+    # shellcheck disable=SC2086
+    start_bg scan  fake_scan  --ros-args -p box_count:="$BOX_COUNT" -p fake_delay_sec:="$DELAY" $SCAN_ARGS
+    # shellcheck disable=SC2086
+    start_bg judge fake_judge --ros-args -p class_sequence:="$CLASSES" -p fake_delay_sec:="$DELAY" $JUDGE_ARGS
+    # shellcheck disable=SC2086
+    start_bg place fake_place --ros-args -p fake_delay_sec:="$DELAY" $PLACE_ARGS
+fi
 
 # 서버 4개가 뜰 때까지 대기 (최대 20초). 그 사이 죽은 노드가 있으면 로그를 보여 주고 멈춤
 NAMES=(database scan judge place)
@@ -149,9 +170,21 @@ if ! grep -q '^/get_job_data$' <<<"$services" || ! grep -q '^/place$' <<<"$actio
     echo "[fake_run] 서버가 다 뜨지 않았습니다. 로그를 확인하세요: $LOG_DIR" >&2
 fi
 
+# 같은 이름의 노드가 둘 이상이면 멈춤 (다른 터미널·다른 PC가 같은 ROS_DOMAIN_ID에서 띄운 경우 포함)
+# → 관제가 엉뚱한 서버에 Goal을 보내 로봇이 예상과 다르게 움직이는 것을 막는다.
+DUPS="$(ros2 node list 2>/dev/null | grep -E '^/(database|scan|judge|place|control)$' | sort | uniq -d)"
+if [ -n "$DUPS" ]; then
+    echo "[fake_run] 같은 이름의 노드가 둘 이상 있습니다: $(echo "$DUPS" | tr '\n' ' ')" >&2
+    echo "[fake_run] 다른 터미널의 노드를 끄거나(bash scripts/fake_stop.sh), 다른 PC와 ROS_DOMAIN_ID가 겹치는지 확인하세요." >&2
+    echo "[fake_run] 지금 ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}" >&2
+    exit 1
+fi
+
 # 관제 (앞에서 실행). 인자를 주면 그 인자만 쓴다.
 if [ "$#" -gt 0 ]; then
     CONTROL_ARGS=(--ros-args "$@")
+elif [ "${MOTION:-0}" = 1 ]; then
+    CONTROL_ARGS=(--ros-args -p robot_monitor:=dsr -p start_delay_sec:=5.0)
 else
     CONTROL_ARGS=(--ros-args -p robot_monitor:=fake -p start_delay_sec:=3.0)
 fi

@@ -46,14 +46,21 @@ class JudgeMotionTest:
             self.log.info(f'[test_judge_motion] #{self.count} movej HOME {home}')
             report('measuring_length1')
             self.movej(home)
+            report.check()            # 관제가 정지를 요청했으면 다음 동작 전에 멈춤
             report('measuring_length2')
             self.movel([STEP_MM, 0.0, 0.0, 0.0, 0.0, 0.0], mod=DR_MV_MOD_REL)
+            report.check()            # 관제가 정지를 요청했으면 다음 동작 전에 멈춤
             report('measuring_length3')
             self.movel([-2 * STEP_MM, 0.0, 0.0, 0.0, 0.0, 0.0], mod=DR_MV_MOD_REL)
+            report.check()            # 관제가 정지를 요청했으면 다음 동작 전에 멈춤
             report('measuring_weight')
             self.movel([STEP_MM, 0.0, 0.0, 0.0, 0.0, 0.0], mod=DR_MV_MOD_REL)
+            report.check()            # 관제가 정지를 요청했으면 다음 동작 전에 멈춤
             report('judging')
             self.movej(home)
+            report.check()            # 관제가 정지를 요청했으면 다음 동작 전에 멈춤
+        except PartError:
+            raise                 # CANCELED(관제 정지) 등은 바꾸지 않고 그대로 올림
         except Exception as e:
             raise PartError('MEASURE_FAILED', f'DSR 동작 실패: {type(e).__name__}: {e}')
 
