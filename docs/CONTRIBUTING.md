@@ -148,6 +148,7 @@ def get_fixed_poses(self) -> dict:         # DB에 저장된 고정 좌표 (기�
     #  'place_zones': {'A': [x, y], 'B': [x, y], 'C': [x, y], 'D': [x, y]}}   ← v0.4 적재 구역 1단
     # 관제가 이 값을 모든 파트 Goal에 실어 보낸다. 없거나 구역이 빠지면 관제가 작업을 시작하지 않음
 # UI 적재 이미지: box_comm.common.stack_layout(수량) → 단별 층 수 (예: 6 → [4, 2])
+# UI 비상정지 버튼: self.node.request_emergency_stop('ui')   (관제가 없으면 False)
 ```
 
 ### 2-2-1. Feedback stage (필수)
@@ -204,10 +205,24 @@ raise PartError('GRASP_FAILED', '두 번 시도했지만 못 집음')
 | `NO_SLOT` | 적재할 칸 없음 |
 | `PLACE_FAILED` | 적재 실패 |
 | `ROBOT_SETUP_FAILED` | 기본 TCP·툴 적용 실패 (`box_comm`이 `run()` 전에 보냄, 파트 코드에서는 쓰지 않음) |
+| `CANCELED` | 관제가 정지를 요청함 (`box_comm`이 `report()`에서 자동으로 냄, 파트 코드에서는 쓰지 않음) |
 
 - **등록된 코드만** 쓸 수 있습니다. 새 코드가 필요하면 관제에게 요청합니다.
 - 예상하지 못한 예외가 나도 `box_comm`이 잡아서 Result를 보냅니다. 관제가 멈추지 않습니다.
 - DB는 `PartError` 없이 아무 예외나 raise하면 `success=False`로 전달됩니다.
+
+**정지 (비상정지·로봇 이상 감지)**: 관제가 정지를 요청하면 로봇에 `move_stop`을 보내고 내 Goal을 취소합니다. 내 코드는 다음 `report(stage)` 또는 `report.check()`에서 `PartError('CANCELED')`로 빠져나옵니다.
+
+```python
+report('moving')
+self.dr.movel(above)          # 정지 요청이 오면 두산이 이 동작을 멈춤
+report.check()                # ← 동작 사이사이에 넣으면 다음 동작을 보내기 전에 멈춤
+self.dr.movel(target)
+```
+
+- `except PartError`로 잡아서 계속 진행하지 마세요. 잡아야 한다면 정리(그리퍼 열기 등)만 하고 다시 `raise` 합니다.
+- `except Exception:`으로 모든 예외를 삼키는 코드도 `CANCELED`를 막으니 피합니다.
+- 한 번에 Goal 하나만 실행됩니다. 실행 중에 온 새 Goal은 `box_comm`이 거절합니다.
 
 ### 2-4. 그 밖의 규칙
 

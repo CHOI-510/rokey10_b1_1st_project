@@ -31,6 +31,8 @@
 | 11/16 | **파트 로그는 Feedback으로**: Feedback에 `log_level`·`log_msg` 추가, 파트는 `report.log(msg, level)`. 로그 칸이 채워진 Feedback만 관제가 `/event_log`로 넘김 (`code=PART_LOG`). 관제 이벤트: `JOB_START`·`BOX_DONE`·`COUNT_MISMATCH`·`JOB_STOPPED`·`JOB_CANCELED`·`JOB_DONE` | 허브 구조 유지(파트→DB 직접 없음), stage(진행 추적)와 로그를 분리 |
 | 11/16 | **작업 상태 5개**: `BEFORE`·`RUNNING`·`DONE`·`ERROR`·`STOPPED` + `SetJobStatus.reason`. ERROR = 공정 오류(관제 판단, 로봇 정상), STOPPED = 로봇이 물리적으로 멈춤(비상정지 버튼, 두산 안전 정지·펜던트 비상정지, 연결 끊김). UI 표시 `{status} : {reason}` (예: `ERROR : Fail to pick`, `STOPPED : EMERGENCY STOP`). 이유 문구는 `common.ERROR_TEXT` 한 곳 | 사람이 할 일이 다름 (로그 확인 vs 현장 확인). status로 UI 색 구분 |
 | 11/16 | 관제 `stop()` → **`abort_job()`** 이름 변경. 로봇을 멈추는 함수가 아니라 작업 종료 처리임(두산 `stop()`과 혼동 방지). 이제 DB에 ERROR/STOPPED + 이유를 기록 | 작업 중 멈추면 DB가 RUNNING으로 남던 문제 해결 |
+| 11/16 | **정지 기능**: 비상정지 `/emergency_stop`(DB → 관제, `EmergencyStop.srv`), 관제가 두산 `move_stop`(모드 1, 3초 반복) + 진행 중 파트 Goal cancel. 로봇 상태는 `get_robot_state` 0.5초 주기 확인(`robot_monitor`: dsr / fake / off), 작업 중에만 정지로 처리. 진행 감시 `progress_timeout_sec`(기본 끔) → `ERROR : No progress` | 멈추게 하기와 알아차리기를 둘 다. 상태 토픽이 없는 컨트롤러 버전이라 주기 확인 |
+| 11/16 | 파트는 cancel을 받으면 다음 `report()`/`report.check()`에서 `CANCELED`로 빠져나옴. 파트 노드는 MultiThreadedExecutor + Reentrant로 실행 중에도 cancel 수신, Goal은 한 번에 하나만 | `move_stop` 뒤 STANDBY로 돌아가 파트가 다음 동작을 보내는 문제 대응 |
 | 11/16 | UI 적재 이미지는 수량 → `common.stack_layout()`(단별 층 수)으로 그림. DB에 박스별 위치를 저장하지 않음 | 수량에서 위치가 정해지므로 중복 저장 불필요 |
 | 11/14 | 관제 중심 허브 구조. 관제↔파트 Action, 관제↔DB Service (11/16: 로그만 Topic 추가) | 파트 간 결합 제거, 통합 지점 단일화 |
 | 11/14 | 인터페이스 v0.2 확정 (`box_interfaces`) | |
@@ -61,9 +63,9 @@
 
 | # | 이슈 | 관련 | 상태 |
 | --- | --- | --- | --- |
-| 1 | **비상정지 (필수 목표)**: UI 버튼 → DB → 관제 → 두산 `move_stop` + 파트 Goal cancel → `STOPPED : EMERGENCY STOP`. `STOPPED` 상태·`STOP_CODES`는 정의 완료(11/16). 로봇 안전 정지 감지는 `get_robot_state` 주기 확인(아래 메모) | 관제, DB | 정지 기능 묶음(#1·#3·#12)으로 진행 |
+| 1 | **비상정지**: 관제 쪽 구현 완료(11/16, `/emergency_stop` → `move_stop` + cancel → `STOPPED : EMERGENCY STOP`). 남은 것: DB·UI 버튼 연결(`request_emergency_stop('ui')`), 에뮬레이터·실제 로봇 시험, 안전 정지 **복구**(`set_robot_control`) 버튼 여부 | 관제, DB | 시험 필요 |
 | 2 | `error_code`별 관제 처리 (재시도 / 건너뛰기 / 정지), 실패 시 무한 루프 방지 | 관제 | 미정 |
-| 3 | Action별 타임아웃과 cancel | 관제 | 미정 |
+| 3 | Action별 타임아웃과 cancel: cancel 경로는 완료(11/16). 전체 시간 제한 대신 진행 감시(`progress_timeout_sec`)로 대체 — 실제 동작 시간을 재서 값 정하기 | 관제 | 값 정하기 |
 | 4 | 미분류 물품 처리 (`result_class`에 `X` 추가 여부, 리젝트 존) | 판별, 적재 | 미정 |
 | 5 | 측정값(W·D·H·무게)을 DB·UI까지 전달할지 | 판별, DB | 미정 |
 | 6 | 위상(방향) 정보를 판별 → 적재로 전달할지 (옵션) | 판별, 적재 | 미정 |
@@ -72,7 +74,7 @@
 | 9 | DB 방식(SQLite 권장)과 UI 방식(웹 / PyQt) — PyQt를 노드 안에 띄우면 `box_comm` 수정 필요 | DB | 미정 |
 | 10 | **재고 검증 (v0.4, 측정값 우선)**: 관제 쪽 적용 완료. 불일치 기록을 DB 작업 로그로 남길지(통계만 / 상세 기록), UI 표시 여부. 차이가 클 때(예: ±2 이상) 중단할지 | 관제, DB | DB·UI 담당과 협의 |
 | 11 | **집기 최종 실패 처리**: 파트 내부 재시도 후에도 실패하면 `GRASP_FAILED`. 같은 박스를 계속 다시 찾는 무한 루프 방지 필요 (연속 실패 상한, 해당 위치 건너뛰기 여부) | 관제, 탐지 | 탐지 담당과 협의 |
-| 12 | **Feedback 기반 진행 감시**: stage 목록·필수화·관제 추적은 적용 완료. 일정 시간 소식이 없을 때의 **개입 로직**(cancel, 두산 정지) | 관제 | `common`의 safety 항목으로 추가 예정 |
+| 12 | **Feedback 기반 진행 감시**: 개입 로직 완료(11/16, `progress_timeout_sec` 초과 → `move_stop` + cancel → `ERROR : No progress`). 파트가 `report()`를 충분히 자주 부르는지 확인 필요 | 관제, 파트 | 시험 필요 |
 | 13 | 작업 통계 로그 (작업완료 물품 수, 재시도 횟수 등) — `/event_log`로 기반 마련(`JOB_DONE` 요약, `PART_LOG`). DB 저장 형식·UI 로그 창 표시(level·code 필터) | 관제, DB | DB·UI 담당과 협의 |
 | 14 | **TCP·툴 자동 확인** 구현·가상·실제 로봇 테스트 완료(`box_comm/robot.py`). 응답 필드 `info` 확인, 툴 이름 `Tool Weight` 확인, 가상·실제 모두 자동 모드 적용 불가 → 수동 모드 경로로 적용됨 | 관제 | 완료 |
 | 16 | **측정존 좌표 실측** → **DB에 입력** (기준값). `common.py` 기본값도 같은 값으로 맞춰 두면 단독 테스트가 편함 | 관제, DB, 탐지, 판별, 적재 | 실측 필요 |
@@ -102,7 +104,18 @@
 - 미분류(`X`)가 생기면 `result_class == 'X'`일 때 기대값 처리 (`expected_count()`에 TODO)
 - 경고 로그를 DB에 남길지(UI 표시 여부)는 DB 담당과 협의
 
-### 메모: 정지 기능 묶음 (#1·#3·#12) — 두산 패키지 확인 결과 (11/16)
+### 메모: 정지 기능 묶음 (#1·#3·#12) — 두산 패키지 확인 결과 (11/16, 구현 완료 — README '정지 기능' 참고)
+
+시험 순서
+1. 로봇 없이: fake 4개 + `control -p robot_monitor:=fake`
+   - 작업 중 `ros2 param set /control fake_robot_state 5` → `STOPPED : Robot safety stop — robot_state=SAFE_STOP`
+   - `fake_database -p estop_at:=2` → 2번째 박스 뒤 `STOPPED : EMERGENCY STOP — by fake_db`
+   - 카운트다운 중 `ros2 service call /emergency_stop ...` → 시작 안 함 (DB BEFORE 유지)
+2. 에뮬레이터: `-p robot_monitor:=dsr` → 사전 점검에 `로봇 상태 STANDBY`, 작업 중 비상정지 시 `move_stop` 로그·로봇 멈춤 확인
+   - `error`·`robot_disconnection` 토픽 이름을 `ros2 topic list`로 확인하고 다르면 `common.SAFETY` 수정
+3. 실제 로봇: 펜던트 비상정지 → `STOPPED : Pendant emergency stop`, 해제 후 관제 재실행
+
+(아래는 설계할 때 확인한 내용)
 
 관제의 `abort_job()`은 작업 종료 처리일 뿐 로봇을 멈추지 않는다. 필요한 것은 두 가지:
 
@@ -148,6 +161,7 @@
 
 ### 11/16
 
+- **정지 기능**: `EmergencyStop.srv` + 관제 `/emergency_stop`, 관제 `request_stop()`(두산 `move_stop` 3초 반복 + 파트 Goal cancel), 로봇 상태 감시(`robot_monitor` dsr/fake/off, `get_robot_state` 0.5초), 두산 알람·연결 끊김 구독, 진행 감시(`progress_timeout_sec`), 사전 점검 '로봇 상태', 카운트다운 중 비상정지 → 시작 안 함. 파트 interface: cancel 수신(MultiThreaded + Reentrant), Goal 하나만, `report.check()`·`CANCELED`. DB `request_emergency_stop()`, `fake_database estop_at`. ROS 없이 로직 시험 통과, **ROS·에뮬레이터·실제 로봇 시험은 아직**
 - **작업 상태 ERROR/STOPPED**: `SetJobStatus`에 `reason` 추가, `common.JOB_STATUS`·`STOP_CODES`·`ERROR_TEXT`·`status_for()`·`error_text()`, 관제 `stop()` → `abort_job()`(DB에 `ERROR : Fail to pick` 등 기록, `JOB_ERROR`/`JOB_STOPPED` 이벤트), DB interface·템플릿 `set_job_status(status, reason)`. STOPPED 감지 경로는 정지 기능 묶음에서
 - **인터페이스 v0.4** (적재 규칙·재고 측정): `PlaceZone.msg` 추가, `FixedPoses.place_zones`, Place Goal에서 `inventory` 제거, Place Result `count`만
 - `common.py`: `FIXED_POSES['place_zones']` 기본값(미설정), `STACK`(4층·3단), `count_from_position()`·`position_from_count()`·`stack_layout()` 추가

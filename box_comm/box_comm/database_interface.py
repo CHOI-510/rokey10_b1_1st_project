@@ -12,6 +12,8 @@ database_interface.py — DB 파트 통신 계층
   - ROS 메시지를 파이썬 값으로 바꿔 작업 클래스의 메서드를 호출한다.
   - 이벤트 로그 토픽 /event_log (LogEvent)를 구독해서 작업 클래스의 on_event(event)를 부른다.
     (관제가 보내기만 하는 로그 — 응답 없음, 누락 가능)
+  - 비상정지: 작업 클래스가 self.node.request_emergency_stop('ui')를 부르면 관제 /emergency_stop 호출
+    (UI 비상정지 버튼에 연결). 응답을 기다리지 않는다.
   - 계약 규칙을 여기서 강제한다.
       · 같은 box_id는 한 번만 반영 (중복이면 작업 클래스를 호출하지 않음)
       · status는 BEFORE / RUNNING / DONE / ERROR / STOPPED만 허용 (common.JOB_STATUS)
@@ -52,7 +54,7 @@ from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.node import Node
 
 from box_interfaces.msg import ClassSpec, FixedPoses, Inventory, LogEvent, PlaceZone
-from box_interfaces.srv import GetJobData, SetJobStatus, UpdateInventory
+from box_interfaces.srv import EmergencyStop, GetJobData, SetJobStatus, UpdateInventory
 
 from box_comm.common import JOB_STATUS, LOG_TOPIC, VALID_CLASSES, log_qos
 
@@ -60,6 +62,7 @@ NODE_NAME = 'database'
 SRV_GET_JOB_DATA = '/get_job_data'
 SRV_UPDATE_INVENTORY = '/update_inventory'
 SRV_SET_JOB_STATUS = '/set_job_status'
+SRV_EMERGENCY_STOP = '/emergency_stop'     # 관제가 서버, DB가 클라이언트 (UI 비상정지 버튼)
 
 VALID_STATUS = JOB_STATUS
 
@@ -112,6 +115,7 @@ def _dict_to_spec(d: dict) -> ClassSpec:
 class DatabaseInterface(Node):
     def __init__(self, work_cls):
         super().__init__(NODE_NAME)
+        self._estop = self.create_client(EmergencyStop, SRV_EMERGENCY_STOP)
         self.work = work_cls(self)
         self._applied_box_ids = set()
 
@@ -166,6 +170,18 @@ class DatabaseInterface(Node):
             response.message = f'{type(e).__name__}: {e}'
             self.get_logger().error(f'[database] UpdateInventory 실패: {response.message}')
         return response
+
+    def request_emergency_stop(self, source='ui'):
+        """UI 비상정지 버튼 → 관제 /emergency_stop. 기다리지 않고 바로 돌아온다.
+        반환: 요청을 보냈으면 True, 관제가 없으면 False (UI에 '관제 연결 안 됨' 표시 등)"""
+        if not self._estop.service_is_ready():
+            self.get_logger().error('[database] 비상정지 요청 실패: 관제 /emergency_stop 없음')
+            return False
+        self.get_logger().error(f'[database] 비상정지 요청 → 관제 (source={source})')
+        fut = self._estop.call_async(EmergencyStop.Request(source=str(source)))
+        fut.add_done_callback(lambda f: self.get_logger().warn(
+            f'[database] 비상정지 응답: {f.result().message if f.result() else "없음"}'))
+        return True
 
     def _on_log_event(self, msg):
         event = {k: getattr(msg, k) for k in (

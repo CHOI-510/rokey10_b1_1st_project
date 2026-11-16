@@ -39,11 +39,17 @@
                  Topic
             ◀───────────────
              /event_log  (로그, 관제 → DB 보내기만)
+                 Service
+            ───────────────▶
+             /emergency_stop (UI 비상정지 버튼, DB → 관제)
+
+  control ──▶ 두산 dsr_controller2: motion/move_stop (정지), system/get_robot_state (상태 감시)
 ```
 
 - 관제 ↔ 탐지/판별/적재: **Action** (로봇이 움직여 오래 걸리고, 진행·결과가 필요)
 - 관제 ↔ DB: 응답이 필요하면 **Service** (작업 데이터, 재고 반영, 상태 기록), 알리기만 하면 **Topic** (이벤트 로그 `/event_log`)
 - 파트끼리는 직접 통신하지 않고, 파트는 DB와 UI를 모릅니다. 파트 로그도 Feedback으로 관제에 보내면 관제가 `/event_log`로 넘깁니다.
+- 비상정지만 방향이 반대입니다(DB → 관제 `/emergency_stop`). 로봇 정지와 상태 감시는 관제가 두산 서비스를 직접 씁니다.
 - 실행되는 노드는 5개입니다: `/control`, `/scan`, `/judge`, `/place`, `/database`
 
 <!-- TODO: 노드 구조도, 통신 시퀀스 그림 -->
@@ -130,6 +136,12 @@ Feedback의 `log_level`·`log_msg`는 파트가 `report.log('메시지', 'WARN')
 | `/get_job_data` | 없음 | `success`, `specs`, `inventory`, `poses`, `message` | 작업 시작 시 |
 | `/update_inventory` | `box_id`, `inventory` | `success`, `message` | 적재완료마다 (같은 `box_id`는 한 번만 반영) |
 | `/set_job_status` | `status`, `reason` | `success` | 작업중, 작업완료, 오류중단·정지 시 |
+
+### Service (DB → 관제)
+
+| 이름 | Request | Response | 호출 시점 |
+| --- | --- | --- | --- |
+| `/emergency_stop` | `source` (`ui`, `cli` …) | `success`, `message` | UI 비상정지 버튼. DB는 `self.node.request_emergency_stop('ui')` 한 줄로 호출 |
 
 ### Topic (관제 → DB)
 
@@ -310,7 +322,46 @@ ros2 run box_control control
 - 대기 시간은 `start_delay_sec` 파라미터로 바꿉니다. 기본 10초(테스트용), 실제 운용은 10분을 상정합니다.
   `ros2 run box_control control --ros-args -p start_delay_sec:=600.0`
 - `0`으로 주면 대기 없이 바로 시작합니다.
-- 관제가 터미널 입력을 받을 수 없는 환경(launch 등)에서는 취소 기능 없이 대기 후 시작합니다.
+- 관제가 터미널 입력을 받을 수 없는 환경(launch 등)에서는 `q` 없이 대기 후 시작합니다. 비상정지 서비스는 대기 중에도 동작합니다(시작 안 함).
+
+### 정지 기능 (비상정지 · 로봇 정지 감지 · 진행 감시)
+
+관제의 `abort_job()`은 작업을 끝내는 처리이고, 로봇을 멈추는 것은 아래 정지 기능이 합니다.
+
+| 계기 | 언제 | 관제 동작 | DB 기록 |
+| --- | --- | --- | --- |
+| `/emergency_stop` (UI 버튼, 터미널) | 언제든 (시작 전이면 시작 안 함) | 두산 `move_stop` 반복 + 진행 중인 파트 Goal cancel | `STOPPED : EMERGENCY STOP — by ui` |
+| 로봇 상태가 STANDBY·MOVING이 아님 (안전 정지, 펜던트 비상정지 등) | 작업 중 (`robot_monitor`) | 같음 | `STOPPED : Robot safety stop — robot_state=SAFE_STOP` 등 |
+| 로봇 상태 확인 3초 연속 실패, `robot_disconnection` | 작업 중 (`robot_monitor=dsr`) | 같음 | `STOPPED : Robot disconnected` |
+| 파트 Feedback이 `progress_timeout_sec` 동안 없음 | 작업 중 | 같음 | `ERROR : No progress (judge) — …` |
+
+- 파트는 cancel을 받으면 다음 `report(stage)`·`report.check()`에서 `CANCELED`로 빠져나옵니다. `move_stop` 뒤에도 파트가 다음 동작을 보낼 수 있어 관제가 3초 동안 `move_stop`을 반복합니다(`common.SAFETY`).
+- 두산 알람(`error` 토픽)은 이벤트 로그(`ROBOT_ALARM`)로 남고, 로봇 정지 이유에 덧붙습니다.
+- 복구(로봇 안전 정지 해제)는 아직 수동입니다(펜던트). 해제 후 관제를 다시 실행합니다.
+
+| 관제 파라미터 | 값 | 설명 |
+| --- | --- | --- |
+| `robot_monitor` | `off`(기본) / `dsr` / `fake` | `dsr`: 실제 로봇·에뮬레이터에서 `get_robot_state`를 0.5초마다 확인. `off`면 사전 점검에서 WARN |
+| `fake_robot_state` | int (기본 1 = STANDBY) | `robot_monitor:=fake`일 때 로봇 상태 흉내. 실행 중에 `ros2 param set`으로 바꿈 |
+| `progress_timeout_sec` | float (기본 0 = 끔) | 파트 Feedback 감시 시간. 파트 동작 중 가장 긴 구간보다 넉넉하게 (예: 60) |
+
+```bash
+# 실제 로봇·에뮬레이터
+ros2 run box_control control --ros-args -p robot_monitor:=dsr -p progress_timeout_sec:=60.0
+
+# 비상정지 버튼 대신 터미널에서
+ros2 service call /emergency_stop box_interfaces/srv/EmergencyStop "{source: 'cli'}"
+
+# 로봇 안전 정지 흉내 (로봇 없이, robot_monitor:=fake)
+ros2 run box_control control --ros-args -p robot_monitor:=fake -p start_delay_sec:=3.0
+ros2 param set /control fake_robot_state 5      # 5 = SAFE_STOP, 6 = EMERGENCY_STOP, 1 = STANDBY
+```
+
+| 환경 | 시험할 수 있는 것 |
+| --- | --- |
+| 로봇 없이 (fake 노드) | 비상정지 서비스·`fake_database estop_at`, `robot_monitor:=fake` 상태 변경, 진행 감시 |
+| 에뮬레이터 (`mode:=virtual`) | 위 + `robot_monitor:=dsr`로 실제 상태 읽기, `move_stop` 동작. 충돌·토크 안전 정지는 거의 안 생김 |
+| 실제 로봇 | 위 + 펜던트 비상정지 버튼 → `STOPPED : Pendant emergency stop`, 충돌 감지 안전 정지 |
 
 ### 로봇 없이 실행 (fake)
 
@@ -329,7 +380,7 @@ ros2 run box_control control --ros-args -p start_delay_sec:=3.0     # 테스트�
 | `fake_scan` | `box_count` (박스 개수, 기본 3), `fake_delay_sec` |
 | `fake_judge` | `class_sequence` (`"A,B,B,D"`처럼 주면 그 순서로 판별, 비우면 무작위), `fake_delay_sec` |
 | `fake_place` | `fake_delay_sec`, `fake_start` (A~D 구역에 처음부터 쌓인 개수, 기본 `[0,0,0,0]`), `miscount_at` (N번째 적재에서 수량을 일부러 +1 틀리게 측정 — 관제 불일치 처리 테스트용, 기본 0=끔) |
-| `fake_database` | `pose_offset` (고정 좌표에 값을 더해서 반환 → DB 값이 Goal로 전달되는지 확인), `poses_available` (False면 좌표 없음 → 사전 점검 FAIL) |
+| `fake_database` | `pose_offset` (고정 좌표에 값을 더해서 반환 → DB 값이 Goal로 전달되는지 확인), `poses_available` (False면 좌표 없음 → 사전 점검 FAIL), `start_inventory`, `estop_at` (N번째 박스 반영 직후 UI 비상정지 버튼을 누른 것처럼 동작, 기본 0=끔) |
 
 fake와 실제 노드는 같은 Action/Service 이름을 쓰므로 **동시에 띄우지 않습니다.**
 파트 하나만 실제로 붙여 보려면 그 파트만 실제 노드로, 나머지는 fake로 띄웁니다.

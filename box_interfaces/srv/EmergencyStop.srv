@@ -1,0 +1,9 @@
+# Emergency stop request -> control (server: /emergency_stop on control node).
+# Caller: DB (UI E-STOP button), or terminal for testing:
+#   ros2 service call /emergency_stop box_interfaces/srv/EmergencyStop "{source: 'cli'}"
+# Control stops the robot (Doosan move_stop), cancels the running part goal,
+# and records STOPPED : EMERGENCY STOP. Works before start too (start is canceled).
+string source          # who pressed it: "ui" / "cli" / ...
+---
+bool success
+string message

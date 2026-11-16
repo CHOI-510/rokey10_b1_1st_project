@@ -14,7 +14,8 @@ common.py — box_comm 공통 정의
   - FIXED_POSES   : 고정 좌표 기본값 (실제 작업은 DB 값을 관제가 Goal로 보내 줌)
   - STACK         : 적재 규칙 (구역당 층 수·단 수) + 수량 ↔ 단·층 변환 함수
   - LOG_*         : 이벤트 로그 (/event_log 토픽) 레벨·코드·QoS
-  - Reporter      : 파트 run()에 넘기는 report — report(stage), report.log(msg)
+  - SAFETY        : 정지 기능 설정 (로봇 상태 감시 주기, 정지 모드, 진행 감시) + ROBOT_STATE
+  - Reporter      : 파트 run()에 넘기는 report — report(stage), report.log(msg), report.check()
   - PartError     : 파트가 실패를 알릴 때 raise하는 예외
 
 새 error_code·stage·좌표가 필요하면 관제에게 요청한다.
@@ -34,6 +35,7 @@ ERROR_CODES = (
     'NO_SLOT',              # 적재할 칸 없음
     'PLACE_FAILED',         # 적재 실패
     'ROBOT_SETUP_FAILED',   # 기본 TCP·툴 적용 실패 (box_comm이 Goal 시작 전에 보냄)
+    'CANCELED',             # 관제가 작업을 취소함 (정지 요청) — box_comm이 report()에서 자동으로 냄
 )
 
 VALID_CLASSES = ('A', 'B', 'C', 'D')
@@ -50,7 +52,8 @@ STOP_CODES = (
     'EMERGENCY_STOP',         # UI 비상정지 버튼
     'ROBOT_SAFETY_STOP',      # 두산 안전 정지 (충돌 감지, 토크 초과, 보호 정지) — robot_state SAFE_STOP 등
     'ROBOT_EMERGENCY_STOP',   # 티치 펜던트·하드웨어 비상정지 — robot_state EMERGENCY_STOP
-    'ROBOT_DISCONNECTED',     # 로봇 연결 끊김
+    'ROBOT_DISCONNECTED',     # 로봇 연결 끊김 (robot_disconnection 토픽, 상태 확인 연속 실패)
+    'ROBOT_NOT_READY',        # 작업 중 로봇이 STANDBY/MOVING이 아닌 상태 (수동 모드, 복구 중 등)
 )
 
 # 에러 코드 → UI에 보일 이유 (영어, 짧게). 없는 코드는 코드 이름 그대로 표시
@@ -63,6 +66,8 @@ ERROR_TEXT = {
     'NO_SLOT': 'Zone full',
     'PLACE_FAILED': 'Fail to place',
     'ROBOT_SETUP_FAILED': 'Robot setup failed',
+    'CANCELED': 'Canceled',
+    'NO_PROGRESS': 'No progress',
     # 관제 쪽 통신 오류 (control_interface)
     'SERVER_DOWN': 'No response',
     'REJECTED': 'Goal rejected',
@@ -74,6 +79,7 @@ ERROR_TEXT = {
     'ROBOT_SAFETY_STOP': 'Robot safety stop',
     'ROBOT_EMERGENCY_STOP': 'Pendant emergency stop',
     'ROBOT_DISCONNECTED': 'Robot disconnected',
+    'ROBOT_NOT_READY': 'Robot not ready',
 }
 
 
@@ -88,7 +94,7 @@ def error_text(code: str, part: str = '', class_id: str = '') -> str:
     text = ERROR_TEXT.get(code, code or 'Unknown failure')
     if code == 'NO_SLOT' and class_id:
         return f'{text} ({class_id})'
-    if code in ('SERVER_DOWN', 'REJECTED', 'TIMEOUT', 'NO_ERROR_CODE') and part:
+    if code in ('SERVER_DOWN', 'REJECTED', 'TIMEOUT', 'NO_ERROR_CODE', 'NO_PROGRESS') and part:
         return f'{text} ({part})'
     return text
 
@@ -236,6 +242,47 @@ def stack_layout(count: int) -> list:
 
 
 # ----------------------------------------------------------------------
+# 정지 기능 (관제 control_interface가 사용)
+#   멈추게 하기 : /emergency_stop 요청 또는 이상 감지 → 두산 move_stop + 파트 Goal cancel
+#   알아차리기   : 두산 get_robot_state를 주기적으로 확인 (이 버전 컨트롤러는 상태 토픽을 안 냄)
+#   관제 파라미터
+#     robot_monitor        : 'dsr'(실제·에뮬레이터) / 'fake'(테스트) / 'off'(기본, 감시 안 함)
+#       fake 모드에서는 'ros2 param set /control fake_robot_state 5' 로 상태를 바꿔 시험한다
+#     progress_timeout_sec : 파트 Feedback이 이 시간 동안 없으면 정지 (0 = 끔)
+# ----------------------------------------------------------------------
+SAFETY = {
+    'monitor_period_sec': 0.5,     # 로봇 상태 확인 주기
+    'lost_limit': 6,               # 상태 확인 연속 실패 횟수 → ROBOT_DISCONNECTED (0.5초 x 6 = 3초)
+    'stop_mode': 1,                # move_stop 모드: 0 빠른 정지(STO 없음) / 1 빠른 정지 / 2 부드러운 정지 / 3 HOLD
+    'stop_hold_sec': 3.0,          # 정지 후 이 시간 동안 move_stop을 반복 (파트가 다음 동작을 보내도 막음)
+    'stop_resend_sec': 0.2,        # 위 반복 간격
+    'srv_robot_state': 'system/get_robot_state',   # ROBOT['service_ns'] 아래
+    'srv_move_stop': 'motion/move_stop',
+    'topic_error': '/dsr01/error',                  # 두산 알람 (RobotError) — 이름은 'ros2 topic list'로 확인
+    'topic_disconnect': '/dsr01/robot_disconnection',
+}
+
+# 두산 GetRobotState.robot_state 값 (dsr_msgs2/srv/GetRobotState.srv)
+ROBOT_STATE = {
+    0: 'INITIALIZING', 1: 'STANDBY', 2: 'MOVING', 3: 'SAFE_OFF', 4: 'TEACHING',
+    5: 'SAFE_STOP', 6: 'EMERGENCY_STOP', 7: 'HOMMING', 8: 'RECOVERY',
+    9: 'SAFE_STOP2', 10: 'SAFE_OFF2', 15: 'NOT_READY',
+}
+ROBOT_OK_STATES = (1, 2)            # 작업 가능: STANDBY, MOVING
+
+
+def robot_stop_code(state: int):
+    """로봇 상태 → 중단 코드. 정상(STANDBY/MOVING)이면 None"""
+    if state in ROBOT_OK_STATES:
+        return None
+    if state == 6:
+        return 'ROBOT_EMERGENCY_STOP'
+    if state in (3, 5, 9, 10):
+        return 'ROBOT_SAFETY_STOP'
+    return 'ROBOT_NOT_READY'
+
+
+# ----------------------------------------------------------------------
 # 이벤트 로그 (/event_log 토픽, box_interfaces/msg/LogEvent)
 #   보내는 쪽은 관제 하나. 파트는 report.log()로 Feedback에 실어 보내고 관제가 넘긴다.
 #   받는 쪽은 DB(저장 + UI). 보내기만 하고 응답을 기다리지 않는다 (누락 가능, 작업은 안 막힘).
@@ -252,6 +299,8 @@ LOG_CODES = (
     'JOB_STOPPED',      # 로봇 정지로 중단 (status STOPPED)
     'BOX_DONE',         # 박스 하나 적재·재고 반영 완료
     'COUNT_MISMATCH',   # 재고 기대값과 적재 측정값이 다름 (측정값으로 반영)
+    'STOP_REQUEST',     # 정지 요청 (비상정지 버튼, 로봇 이상 감지, 진행 없음)
+    'ROBOT_ALARM',      # 두산 알람 (error 토픽)
 )
 LOG_QOS_DEPTH = 100     # reliable + transient_local: DB가 조금 늦게 켜져도 최근 100개는 받음
 
@@ -268,15 +317,27 @@ class Reporter:
 
     report('picking')                              진행 단계 알림 (필수) → 로그 아님
     report.log('집기 실패, 재시도 2/3', 'WARN')     지금 단계 그대로 + 이벤트 로그로 올라감
+    report.check()                                 관제가 정지를 요청했으면 여기서 멈춤 (로봇 명령 전에)
+
+    정지: 관제가 Goal을 cancel하면 다음 report(stage) 또는 report.check()에서
+    PartError('CANCELED')가 나서 run()을 빠져나온다. 잡지(except) 말고 그대로 두면 된다.
     """
 
-    def __init__(self, part, publish, logger):
+    def __init__(self, part, publish, logger, is_canceled=None):
         self._part = part                # 'scan' / 'judge' / 'place'
         self._publish = publish          # publish(stage, log_level, log_msg)
         self._log = logger
+        self._is_canceled = is_canceled or (lambda: False)
         self.stage = ''
 
+    def check(self):
+        """관제가 취소(정지)를 요청했으면 PartError('CANCELED')"""
+        if self._is_canceled():
+            self._log.warn(f'[{self._part}] 관제가 정지를 요청함 → 작업 중단 (stage={self.stage})')
+            raise PartError('CANCELED', f'관제 정지 요청 (stage={self.stage})')
+
     def __call__(self, stage: str):
+        self.check()
         stage = str(stage)
         if stage not in STAGES[self._part]:
             self._log.warn(f'[{self._part}] 등록되지 않은 stage: "{stage}" '

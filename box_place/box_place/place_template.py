@@ -31,6 +31,8 @@ place_template.py — 적재 템플릿 (관제 관리, 참고용)
     - 기록할 일이 있으면 report.log('메시지', 'INFO'/'WARN'/'ERROR') — 관제가 /event_log로 DB·UI에 넘김
       예: report.log('집기 실패, 재시도 2/3', 'WARN'), report.log('정렬 완료 (90° 회전)')
       진행만 알리는 report(stage)는 로그로 올라가지 않는다
+    - 정지: 관제가 정지를 요청하면 다음 report(stage) / report.check()에서 PartError('CANCELED')가 난다.
+      잡지 말고 그대로 두면 된다. 로봇 동작(movel 등) 사이사이에 report.check()를 넣으면 더 빨리 멈춘다.
       stage: 'picking' → 'moving' → 'placing'  (box_comm/common.py STAGES)
 
 [FAKE] 표시된 부분을 실제 로봇 동작으로 바꾸면 된다.
@@ -116,6 +118,7 @@ class PlaceWork:
         # 3. 1단부터 내려가며 놓을 자리 찾기
         report('placing')
         for tier in range(1, MAX_TIERS + 1):
+            report.check()                         # 정지 요청이면 여기서 멈춤 (로봇 명령 전에)
             y = y1 + (tier - 1) * TIER_PITCH_Y
             if tier > 1:
                 self.move_above(x, y)

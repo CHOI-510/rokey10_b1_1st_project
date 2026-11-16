@@ -12,6 +12,7 @@ UI 대신 상태·재고가 바뀔 때마다 로그로 보여 준다.
   pose_offset      (float, 기본 0.0)  고정 좌표에 이 값을 더해서 돌려줌 → 불일치 테스트
   poses_available  (bool,  기본 True) False면 좌표 없음(available=False)으로 응답
   start_inventory  (int[4], 기본 [0,0,0,0]) A~D 처음 재고 → fake_place의 fake_start와 다르게 주면 불일치 테스트
+  estop_at         (int, 기본 0)  N번째 박스 재고 반영 직후 UI 비상정지 버튼을 누른 것처럼 동작 (0 = 끔)
 
 실행
   ros2 run box_control fake_database
@@ -37,6 +38,7 @@ FAKE_PLACE_ZONES = {'A': [300.0, -300.0], 'B': [400.0, -300.0],
 
 class FakeDatabase:
     def __init__(self, node):
+        self.node = node
         self.log = node.get_logger()
         self.specs = [dict(s) for s in FAKE_SPECS]
         self.inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
@@ -45,6 +47,7 @@ class FakeDatabase:
         node.declare_parameter('pose_offset', 0.0)
         node.declare_parameter('poses_available', True)
         node.declare_parameter('start_inventory', [0, 0, 0, 0])   # A~D 처음 재고 (불일치 테스트용)
+        self.estop_at = int(node.declare_parameter('estop_at', 0).value)   # 비상정지 버튼 테스트
         self.inventory = dict(zip('ABCD', [int(n) for n in
                                             node.get_parameter('start_inventory').value]))
         self.pose_offset = float(node.get_parameter('pose_offset').value)
@@ -58,6 +61,9 @@ class FakeDatabase:
         self.inventory = dict(inventory)
         self.history.append(box_id)
         self._show(f'{box_id} 반영')
+        if self.estop_at and len(self.history) == self.estop_at:
+            self.log.warn(f'[fake_db] (테스트) {self.estop_at}번째 박스 뒤 UI 비상정지 버튼')
+            self.node.request_emergency_stop('fake_db')
 
     def set_job_status(self, status, reason=''):
         self.status = f'{status} : {reason}' if reason else status
@@ -77,8 +83,14 @@ class FakeDatabase:
         return {'home_j': home, 'measure_zone': zone, 'place_zones': zones}
 
     def on_event(self, event):
-        log = {'WARN': self.log.warn, 'ERROR': self.log.error}.get(event['level'], self.log.info)
-        log(f'[fake_db] 로그 [{event["source"]}/{event["code"]}] {event["box_id"]} {event["message"]}')
+        # rclpy 로거는 같은 줄에서 레벨을 바꿔 부르면 오류 → 레벨마다 따로 호출
+        line = f'[fake_db] 로그 [{event["source"]}/{event["code"]}] {event["box_id"]} {event["message"]}'
+        if event['level'] == 'ERROR':
+            self.log.error(line)
+        elif event['level'] == 'WARN':
+            self.log.warn(line)
+        else:
+            self.log.info(line)
 
     def _show(self, event):
         self.log.info(

@@ -33,6 +33,11 @@ database_template.py — DB·UI 템플릿 (관제 관리, 참고용)
       예: level='WARN', code='COUNT_MISMATCH', message='B 재고 불일치: 기대 4, 측정 6 (+2) → 측정값 반영'
       응답은 없다 (보내기만 하는 로그). 늦게 켜지면 최근 100개까지만 받는다.
 
+UI 비상정지 버튼 (정지 기능)
+  버튼을 누르면:  self.node.request_emergency_stop('ui')
+  → 관제가 로봇 move_stop + 진행 중인 파트 취소 → set_job_status('STOPPED', 'EMERGENCY STOP — by ui')
+  관제가 꺼져 있으면 False를 돌려준다 (UI에 '관제 연결 안 됨' 표시).
+
 재고와 UI 적재 이미지 (v0.4)
   update_inventory로 받는 재고는 적재가 실제로 놓은 위치로 잰 수량이다 (관제가 기대값과 비교·기록함).
   적재 규칙: 1단(가장 안쪽)에 4층까지 → 다 차면 +y로 한 칸 앞 2단에 1층부터 ...
@@ -117,13 +122,23 @@ class DatabaseWork:
                 'measure_zone': list(self._poses['measure_zone']),
                 'place_zones': {c: list(xy) for c, xy in self._poses['place_zones'].items()}}
 
+    def on_estop_button(self):
+        # [FAKE] 실제로는 UI 비상정지 버튼의 클릭 이벤트에 연결
+        if not self.node.request_emergency_stop('ui'):
+            self.log.error('[database] 관제 연결 안 됨 — 로봇 펜던트의 비상정지 버튼을 사용하세요')
+
     def on_event(self, event):
         # [FAKE] 실제로는 DB 테이블에 저장하고 UI 로그 창에 추가
         self._events.append(event)
-        log = {'INFO': self.log.info, 'WARN': self.log.warn, 'ERROR': self.log.error}.get(
-            event['level'], self.log.info)
-        log(f'[database] 로그 {event["stamp"]} [{event["source"]}/{event["code"]}] '
-            f'{event["box_id"]} {event["message"]}')
+        # rclpy 로거는 같은 줄에서 레벨을 바꿔 부르면 오류 → 레벨마다 따로 호출
+        line = (f'[database] 로그 {event["stamp"]} [{event["source"]}/{event["code"]}] '
+                f'{event["box_id"]} {event["message"]}')
+        if event['level'] == 'ERROR':
+            self.log.error(line)
+        elif event['level'] == 'WARN':
+            self.log.warn(line)
+        else:
+            self.log.info(line)
 
     # ------------------------------------------------------------------
     # [FAKE] UI 갱신 자리

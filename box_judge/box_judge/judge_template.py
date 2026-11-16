@@ -20,6 +20,8 @@ judge_template.py — 판별 템플릿 (관제 관리, 참고용)
     - 기록할 일이 있으면 report.log('메시지', 'INFO'/'WARN'/'ERROR') — 관제가 /event_log로 DB·UI에 넘김
       예: report.log('집기 실패, 재시도 2/3', 'WARN'), report.log('정렬 완료 (90° 회전)')
       진행만 알리는 report(stage)는 로그로 올라가지 않는다
+    - 정지: 관제가 정지를 요청하면 다음 report(stage) / report.check()에서 PartError('CANCELED')가 난다.
+      잡지 말고 그대로 두면 된다. 로봇 동작(movel 등) 사이사이에 report.check()를 넣으면 더 빨리 멈춘다.
       stage: 'measuring_length1' → 'measuring_length2' → 'measuring_length3'
              → 'measuring_weight' → ('measuring_materiality', 옵션) → 'judging'
       (box_comm/common.py STAGES)

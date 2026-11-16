@@ -167,10 +167,14 @@ class Control:
 
         # STANDBY: 작업공간 안전 확인 시간 (q로 취소)
         self.set_state(State.STANDBY)
-        if not self.wait_for_start():
+        started = self.wait_for_start()
+        if (stop := self.io.stop_reason()):               # 시작 전 비상정지 → 시작하지 않음
+            return self.cancel_start(f'정지 요청 ({stop[0]}{" — " + stop[1] if stop[1] else ""})')
+        if not started:
             return self.cancel_start('사용자가 q로 취소')
 
         self.set_state(State.RUNNING)
+        self.io.arm_monitor(True)                        # 작업 중에만 로봇 이상·진행 없음을 정지로 처리
         if err := self.io.set_job_status(State.RUNNING.value):
             return self.abort_job(err)
         self.io.log_event('INFO', 'JOB_START', f'작업 시작 (재고 {self.inventory})', box_id='')
@@ -218,6 +222,7 @@ class Control:
                               f'{result_class} 적재 완료 → {result_class} {measured}개')
 
         # DONE
+        self.io.arm_monitor(False)
         self.io.set_log_context(box_id='', class_id='')
         self.set_state(State.DONE)
         self.io.set_job_status(State.DONE.value)
@@ -247,8 +252,12 @@ class Control:
             return True
 
         if termios is None or not sys.stdin.isatty():
-            self.log.warn('[control] 터미널 입력을 받을 수 없어 중단 기능 없이 대기합니다.')
-            time.sleep(delay)
+            self.log.warn('[control] 터미널 입력을 받을 수 없어 q 입력 없이 대기합니다. (비상정지는 동작)')
+            end = time.monotonic() + delay
+            while time.monotonic() < end:
+                if self.io.stop_reason():
+                    return False
+                time.sleep(0.1)
             return True
 
         fd = sys.stdin.fileno()
@@ -258,6 +267,9 @@ class Control:
             end = time.monotonic() + delay
             shown = None
             while True:
+                if self.io.stop_reason():
+                    print('\r  비상정지 요청 — 작업을 시작하지 않습니다.' + ' ' * 20, flush=True)
+                    return False
                 remain = end - time.monotonic()
                 if remain <= 0:
                     print('\r  시작합니다.' + ' ' * 40, flush=True)
@@ -329,10 +341,16 @@ class Control:
           STOPPED : 로봇 정지 (EMERGENCY_STOP, ROBOT_SAFETY_STOP ...) → 'STOPPED : EMERGENCY STOP'
         """
         # TODO: error_code별 정책 (재시도 / 이 박스 건너뛰기) — 지금은 모든 오류에서 작업 종료
+        self.io.arm_monitor(False)
+        detail = ''
+        if (stop := self.io.stop_reason()):              # 정지 요청이 있었으면 그 원인이 우선 (파트의 CANCELED 등보다)
+            err, detail = stop
         where = f'{self.state.value} ({self.state.label})' if self.state else '-'
         action = _STATE_ACTION.get(self.state)
         status = status_for(err)
         reason = error_text(err, part=action or '', class_id=self._current_class)
+        if detail:
+            reason += f' — {detail}'
 
         msg = f'[control] {where} 단계에서 중단: {err}'
         stage = ''

@@ -29,9 +29,12 @@ scan_interface.py — 탐지 파트 통신 계층
 ================================================================
 """
 
+import threading
+
 import rclpy
-from rclpy.action import ActionServer
-from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
+from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 
 from box_interfaces.action import Scan
@@ -50,10 +53,27 @@ class ScanInterface(Node):
         self.robot = RobotSetup(self, NODE_NAME)   # 기본 TCP·툴 확인 (box_comm/robot.py)
         self.work = work_cls(self)
         self.work.poses = default_poses()      # Goal을 받으면 Goal의 좌표(DB 값)로 바뀜
-        self._server = ActionServer(self, Scan, ACTION_NAME, self._execute)
+        # 정지 기능: 실행 중에도 cancel을 받을 수 있게 Reentrant 그룹 + MultiThreadedExecutor.
+        # 한 번에 Goal 하나만 실행 (실행 중 새 Goal은 거절).
+        self._busy = threading.Lock()
+        self._server = ActionServer(
+            self, Scan, ACTION_NAME, self._execute,
+            goal_callback=self._on_goal,
+            cancel_callback=lambda _gh: CancelResponse.ACCEPT,
+            callback_group=ReentrantCallbackGroup())
         self.get_logger().info(f'[scan] Action 서버 {ACTION_NAME} 준비')
 
+    def _on_goal(self, _goal_request):
+        if self._busy.locked():
+            self.get_logger().warn(f'[{NODE_NAME}] 이미 실행 중 → 새 Goal 거절')
+            return GoalResponse.REJECT
+        return GoalResponse.ACCEPT
+
     def _execute(self, goal_handle):
+        with self._busy:
+            return self._execute_locked(goal_handle)
+
+    def _execute_locked(self, goal_handle):
         self.get_logger().info('[scan] Goal 수신: 시작명령')
         result = Scan.Result()
 
@@ -61,7 +81,8 @@ class ScanInterface(Node):
             'scan',
             lambda stage, level, msg: goal_handle.publish_feedback(
                 Scan.Feedback(stage=stage, log_level=level, log_msg=msg)),
-            self.get_logger())
+            self.get_logger(),
+            is_canceled=lambda: goal_handle.is_cancel_requested)
 
         try:
             # 고정 좌표: 관제가 Goal에 실어 보낸 DB 값 → 작업 클래스의 self.poses
@@ -92,25 +113,33 @@ class ScanInterface(Node):
             result.success = False
             result.found = False
             result.error_code = e.code
-            goal_handle.abort()
+            _finish_failed(goal_handle)
 
         except Exception as e:
             self.get_logger().error(f'[scan] 예외: {type(e).__name__}: {e}')
             result.success = False
             result.found = False
             result.error_code = DEFAULT_ERROR
-            goal_handle.abort()
+            _finish_failed(goal_handle)
 
         return result
+
+
+def _finish_failed(goal_handle):
+    """실패로 끝낼 때: 관제가 취소(정지)를 요청한 상태면 canceled, 아니면 abort"""
+    if goal_handle.is_cancel_requested:
+        goal_handle.canceled()
+    else:
+        goal_handle.abort()
 
 
 def start(work_cls, args=None):
     rclpy.init(args=args)
     node = ScanInterface(work_cls)
-    # 전용 executor로 spin한다 (rclpy.spin은 전역 executor를 씀).
+    # 전용 executor로 spin한다 (rclpy.spin은 전역 executor를 씀). Multi: run() 실행 중에도 cancel 수신.
     # → run() 안에서 DSR_ROBOT2 함수(movej 등)가 전역 executor로 응답을 기다려도
     #   'Executor is already spinning' 충돌이 나지 않는다.
-    executor = SingleThreadedExecutor()
+    executor = MultiThreadedExecutor()
     executor.add_node(node)
     try:
         executor.spin()
