@@ -170,7 +170,7 @@ FIXED_POSES = {
     'home_j': [0.0, 0.0, 90.0, 0.0, 90.0, 0.0],   # HOME 관절 각도 [deg]
     'measure_zone': [300.0, -160.0, 30.0],         # 측정존 x, y, z [mm, base 기준]  z = 박스 파지 TCP 높이 (적재 1층 첫 접촉 Z ≈ 30)
     'place_zones': {                               # 적재 구역 1단 x, y [mm, base 기준]  TODO: 실측 후 입력
-        'A': None,
+        'A': [480.0, -160.0],   # 실측 (11/16, 측정존의 +x 쪽)
         'B': None,
         'C': None,
         'D': None,
