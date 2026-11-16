@@ -40,9 +40,9 @@ UI 비상정지 버튼 (정지 기능)
 
 재고와 UI 적재 이미지 (v0.4)
   update_inventory로 받는 재고는 적재가 실제로 놓은 위치로 잰 수량이다 (관제가 기대값과 비교·기록함).
-  적재 규칙: 1단(가장 안쪽)에 4층까지 → 다 차면 +y로 한 칸 앞 2단에 1층부터 ...
+  적재 규칙: 1자리에 3층까지 → 다 차면 다음 자리(2단)에 1층부터, 구역당 2자리 (common.STACK)
   수량 → 이미지:  from box_comm.common import stack_layout
-                  stack_layout(6) → [4, 2]  (1단 4층, 2단 2층)  → 미리 만든 이미지 선택·표시
+                  stack_layout(5) → [3, 2]  (1자리 3층, 2자리 2층)  → 미리 만든 이미지 선택·표시
 
   실패하면 아무 예외나 raise → 관제에 success=False로 전달된다.
   같은 box_id 중복 무시, status 값 검사는 interface가 이미 처리한다.
@@ -75,7 +75,7 @@ FAKE_SPECS = [
 #        common.py의 FIXED_POSES 기본값도 같은 값으로 맞춰 두면 팀원 단독 테스트가 편하다
 FAKE_POSES = {
     'home_j': [0.0, 0.0, 90.0, 0.0, 90.0, 0.0],
-    'measure_zone': [0.0, 0.0, 0.0],      # TODO: 측정존 실측값
+    'measure_zone': [300.0, -160.0, 30.0],  # 측정존 x, y, z [mm, base]  z = 박스 파지 TCP 높이 (적재 1층 높이)
     'place_zones': {                      # TODO: 구역별 1단 x, y 실측값 [mm, base]
         'A': [300.0, -300.0],
         'B': [400.0, -300.0],

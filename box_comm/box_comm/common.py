@@ -162,12 +162,13 @@ TOOL = {
 #   - Goal에 좌표가 없을 때(팀원 단독 send_goal 테스트 등)만 쓰인다 (경고 로그).
 # None은 아직 미설정
 #
-# place_zones: 클래스별 적재 구역의 '1단' x, y [mm, base 기준]
-#   단은 +y 방향으로 늘어난다 (x는 모든 단이 같음). 단 간격·z·박스 높이는 적재 파트만 가진다.
+# place_zones: 클래스별 적재 구역의 '1단(첫 자리)' x, y [mm, base 기준]
+#   다음 단(자리)의 위치는 적재 설정이 정한다 (box_place/config/place_config.json의 slot_dx_mm,
+#   현재 −x 방향 80mm, y는 같음). 단 간격·z·박스 높이는 적재 파트만 가진다.
 # ----------------------------------------------------------------------
 FIXED_POSES = {
     'home_j': [0.0, 0.0, 90.0, 0.0, 90.0, 0.0],   # HOME 관절 각도 [deg]
-    'measure_zone': None,                          # 측정존 x, y, z [mm, base 기준]  TODO: 실측 후 입력
+    'measure_zone': [300.0, -160.0, 30.0],         # 측정존 x, y, z [mm, base 기준]  z = 박스 파지 TCP 높이 (적재 1층 첫 접촉 Z ≈ 30)
     'place_zones': {                               # 적재 구역 1단 x, y [mm, base 기준]  TODO: 실측 후 입력
         'A': None,
         'B': None,
@@ -206,14 +207,17 @@ def poses_from_msg(msg):
 # ----------------------------------------------------------------------
 # 적재 규칙 (v0.4) — 관제·DB·UI·적재가 모두 같은 규칙으로 수량 ↔ 위치를 해석한다
 #   - 구역 하나에 같은 클래스만 쌓는다.
-#   - 가장 안쪽(1단)에 1층부터 levels층까지 쌓고, 다 차면 바로 앞(+y) 2단에 다시 1층부터.
+#   - 1단(첫 자리)에 1층부터 levels층까지 쌓고, 다 차면 다음 자리(2단)에 다시 1층부터.
+#     다음 자리 방향·간격은 적재 설정(slot_dx_mm)이 정한다.
 #   - 수량 n → n번째 박스 위치 = (n-1)//levels + 1 단, (n-1)%levels + 1 층
-#     예: 6개 → 1단 4개 + 2단 2개
+#     예: 5개 → 1단 3개 + 2단 2개
+#   - 적재 실제 코드(box_place/place_main.py)는 시작할 때 자기 설정(max_layers, slot_count)이
+#     이 값과 같은지 확인한다. 바꿀 때는 두 곳을 같이 바꾼다.
 #   - 적재는 매번 1단부터 내려가며 실제로 확인한다 (재고 숫자로 위치를 정하지 않음).
 # ----------------------------------------------------------------------
 STACK = {
-    'levels': 4,        # 단 하나에 쌓는 층 수
-    'max_tiers': 3,     # 구역당 단 수 (넘으면 NO_SLOT)  TODO: 실제 레이아웃에 맞게
+    'levels': 3,        # 단(자리) 하나에 쌓는 층 수   = place_config.json max_layers
+    'max_tiers': 2,     # 구역당 단(자리) 수 (넘으면 NO_SLOT) = place_config.json slot_count
 }
 
 
@@ -318,6 +322,8 @@ class Reporter:
     report('picking')                              진행 단계 알림 (필수) → 로그 아님
     report.log('집기 실패, 재시도 2/3', 'WARN')     지금 단계 그대로 + 이벤트 로그로 올라감
     report.check()                                 관제가 정지를 요청했으면 여기서 멈춤 (로봇 명령 전에)
+    report.keepalive()                             오래 걸리는 단계 중 '살아 있음' 알림 (check 포함, 로그 없음)
+                                                   → 관제 진행 감시(progress_timeout_sec)가 멈춘 것으로 오인하지 않게
 
     정지: 관제가 Goal을 cancel하면 다음 report(stage) 또는 report.check()에서
     PartError('CANCELED')가 나서 run()을 빠져나온다. 잡지(except) 말고 그대로 두면 된다.
@@ -335,6 +341,11 @@ class Reporter:
         if self._is_canceled():
             self._log.warn(f'[{self._part}] 관제가 정지를 요청함 → 작업 중단 (stage={self.stage})')
             raise PartError('CANCELED', f'관제 정지 요청 (stage={self.stage})')
+
+    def keepalive(self):
+        """지금 단계 그대로 Feedback만 다시 보냄 (로그 안 남김). 1초에 한 번 정도면 충분"""
+        self.check()
+        self._publish(self.stage, '', '')
 
     def __call__(self, stage: str):
         self.check()

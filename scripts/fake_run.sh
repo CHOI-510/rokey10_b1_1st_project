@@ -12,11 +12,17 @@
 #   DB_ARGS="-p estop_at:=2" ./scripts/fake_run.sh          # 2번째 박스 뒤 UI 비상정지 흉내
 #   PLACE_ARGS="-p miscount_at:=2" ./scripts/fake_run.sh    # 재고 불일치 시험
 #   MOTION=1 BOX_COUNT=2 ./scripts/fake_run.sh               # 로봇이 실제로 움직임 (아래 참고)
+#   PLACE_MAIN=1 SIM=1 BOX_COUNT=4 ./scripts/fake_run.sh     # 적재만 실제 코드(place_main), 에뮬레이터
 #
 # MOTION=1 (에뮬레이터·실제 로봇, bringup 필요)
 #   탐지·판별·적재를 fake 대신 test_*_motion 노드로 띄운다 → 로봇이 HOME에서 50mm씩 위아래로 움직임.
 #   DB는 fake 그대로. 관제 기본값: robot_monitor=dsr, 대기 5초.
 #   움직이는 중에 비상정지를 걸어 로봇이 멈추는지 확인하는 용도. 작업공간을 비우고 실행할 것.
+#
+# PLACE_MAIN=1 (에뮬레이터·실제 로봇, bringup 필요)
+#   탐지·판별은 fake(움직이지 않음), 적재만 box_place place_main으로 띄운다.
+#   CLASSES 기본값은 A,B,C (place_main은 D를 받지 않음). 관제 기본값: robot_monitor=dsr, 대기 5초.
+#   SIM=1 → place_main에 -p sim_contact:=true (에뮬레이터는 힘 센서가 없어서 필요). 실제 로봇에서는 SIM 없이.
 #
 # 환경 변수 (기본값)
 #   BOX_COUNT=4  CLASSES="A,B,B,D"  DELAY=0.5
@@ -37,7 +43,11 @@ WS_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"          # src/box_project/scripts 
 LOG_DIR=/tmp/box_fake_logs
 
 BOX_COUNT="${BOX_COUNT:-4}"
-CLASSES="${CLASSES:-A,B,B,D}"
+if [ "${PLACE_MAIN:-0}" = 1 ]; then
+    CLASSES="${CLASSES:-A,B,C}"
+else
+    CLASSES="${CLASSES:-A,B,B,D}"
+fi
 DELAY="${DELAY:-0.5}"
 # fake 노드의 fake_delay_sec는 float 파라미터 → 4처럼 정수로 주면 노드가 타입 오류로 죽음. 4 → 4.0
 [[ "$DELAY" =~ ^[0-9]+$ ]] && DELAY="$DELAY.0"
@@ -51,7 +61,7 @@ else
 fi
 
 # 다른 터미널에서 이미 시험 중이면 멈춤 (서로 노드를 끄는 사고 방지)
-RUNNING_PATTERN='(box_control/(fake_database|fake_scan|fake_judge|fake_place|test_scan_motion|test_judge_motion|test_place_motion|control)( |$))'
+RUNNING_PATTERN='((box_control/(fake_database|fake_scan|fake_judge|fake_place|test_scan_motion|test_judge_motion|test_place_motion|control)|box_place/place_main)( |$))'
 if pgrep -f "$RUNNING_PATTERN" >/dev/null; then
     if [ "${FORCE:-0}" = 1 ]; then
         echo "[fake_run] FORCE=1 → 실행 중인 노드를 끄고 시작합니다."
@@ -117,7 +127,7 @@ start_bg() {      # start_bg 이름 실행파일 [인자...]
     local name="$1"; shift
     # setsid: 노드마다 자기 프로세스 그룹 → 정리할 때 그룹째 신호를 보냄
     # </dev/null: 백그라운드 노드가 키 입력(q/s)을 가로채지 않게
-    setsid ros2 run box_control "$@" >"$LOG_DIR/$name.log" 2>&1 </dev/null &
+    setsid ros2 run "${PKG:-box_control}" "$@" >"$LOG_DIR/$name.log" 2>&1 </dev/null &
     local pid=$!
     disown "$pid" 2>/dev/null          # 끝날 때 'Killed' 같은 job 메시지 안 띄움
     PIDS+=("$pid")
@@ -139,8 +149,20 @@ else
     start_bg scan  fake_scan  --ros-args -p box_count:="$BOX_COUNT" -p fake_delay_sec:="$DELAY" $SCAN_ARGS
     # shellcheck disable=SC2086
     start_bg judge fake_judge --ros-args -p class_sequence:="$CLASSES" -p fake_delay_sec:="$DELAY" $JUDGE_ARGS
-    # shellcheck disable=SC2086
-    start_bg place fake_place --ros-args -p fake_delay_sec:="$DELAY" $PLACE_ARGS
+    if [ "${PLACE_MAIN:-0}" = 1 ]; then
+        SIM_ARG=""
+        if [ "${SIM:-0}" = 1 ]; then
+            SIM_ARG="-p sim_contact:=true"
+            echo "[fake_run] PLACE_MAIN=1 SIM=1 → 적재 실제 코드(place_main, 가상 접촉). 에뮬레이터 전용."
+        else
+            echo "[fake_run] PLACE_MAIN=1 → 적재 실제 코드(place_main). 로봇이 움직입니다. 작업공간을 비우세요."
+        fi
+        # shellcheck disable=SC2086
+        PKG=box_place start_bg place place_main --ros-args $SIM_ARG $PLACE_ARGS
+    else
+        # shellcheck disable=SC2086
+        start_bg place fake_place --ros-args -p fake_delay_sec:="$DELAY" $PLACE_ARGS
+    fi
 fi
 
 # 서버 4개가 뜰 때까지 대기 (최대 20초). 그 사이 죽은 노드가 있으면 로그를 보여 주고 멈춤
@@ -183,7 +205,7 @@ fi
 # 관제 (앞에서 실행). 인자를 주면 그 인자만 쓴다.
 if [ "$#" -gt 0 ]; then
     CONTROL_ARGS=(--ros-args "$@")
-elif [ "${MOTION:-0}" = 1 ]; then
+elif [ "${MOTION:-0}" = 1 ] || [ "${PLACE_MAIN:-0}" = 1 ]; then
     CONTROL_ARGS=(--ros-args -p robot_monitor:=dsr -p start_delay_sec:=5.0)
 else
     CONTROL_ARGS=(--ros-args -p robot_monitor:=fake -p start_delay_sec:=3.0)
