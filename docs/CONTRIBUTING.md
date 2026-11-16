@@ -139,7 +139,10 @@ def run(self, result_class, report) -> int:       # v0.4
 ```python
 def get_job_data(self) -> tuple:           # (specs, inventory) 반환
 def update_inventory(self, box_id, inventory) -> None:
-def set_job_status(self, status) -> None:  # 'BEFORE' / 'RUNNING' / 'DONE'
+def set_job_status(self, status, reason) -> None:
+    # status: 'BEFORE' / 'RUNNING' / 'DONE' / 'ERROR' / 'STOPPED'
+    # reason: ERROR·STOPPED일 때 이유 ('Fail to pick', 'EMERGENCY STOP'), 그 밖에는 ''
+    # UI 표시: f'{status} : {reason}'  (ERROR = 공정 오류, STOPPED = 로봇 정지 → 색을 다르게)
 def get_fixed_poses(self) -> dict:         # DB에 저장된 고정 좌표 (기준값), 없으면 None
     # {'home_j': [6개, deg], 'measure_zone': [x, y, z, mm],
     #  'place_zones': {'A': [x, y], 'B': [x, y], 'C': [x, y], 'D': [x, y]}}   ← v0.4 적재 구역 1단
@@ -277,6 +280,7 @@ ros2 action send_goal /place box_interfaces/action/Place \
 # DB
 ros2 service call /get_job_data box_interfaces/srv/GetJobData "{}"
 ros2 service call /set_job_status box_interfaces/srv/SetJobStatus "{status: 'RUNNING'}"
+ros2 service call /set_job_status box_interfaces/srv/SetJobStatus "{status: 'ERROR', reason: 'Fail to pick'}"
 ros2 service call /update_inventory box_interfaces/srv/UpdateInventory \
   "{box_id: 'box_001', inventory: {a: 1, b: 0, c: 0, d: 0}}"
 ```

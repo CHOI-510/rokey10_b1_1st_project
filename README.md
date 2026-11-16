@@ -129,7 +129,7 @@ Feedback의 `log_level`·`log_msg`는 파트가 `report.log('메시지', 'WARN')
 | --- | --- | --- | --- |
 | `/get_job_data` | 없음 | `success`, `specs`, `inventory`, `poses`, `message` | 작업 시작 시 |
 | `/update_inventory` | `box_id`, `inventory` | `success`, `message` | 적재완료마다 (같은 `box_id`는 한 번만 반영) |
-| `/set_job_status` | `status` | `success` | 작업중, 작업완료 시 |
+| `/set_job_status` | `status`, `reason` | `success` | 작업중, 작업완료, 오류중단·정지 시 |
 
 ### Topic (관제 → DB)
 
@@ -137,7 +137,7 @@ Feedback의 `log_level`·`log_msg`는 파트가 `report.log('메시지', 'WARN')
 | --- | --- | --- |
 | `/event_log` | `LogEvent` | 이벤트 로그. 관제가 보내기만 함(응답 없음, 누락 가능). QoS reliable + transient_local(최근 100개) |
 
-`code`(`box_comm/common.py` `LOG_CODES`): `PART_LOG`(파트 `report.log`), `JOB_START`, `BOX_DONE`, `COUNT_MISMATCH`, `JOB_STOPPED`, `JOB_CANCELED`, `JOB_DONE`
+`code`(`box_comm/common.py` `LOG_CODES`): `PART_LOG`(파트 `report.log`), `JOB_START`, `BOX_DONE`, `COUNT_MISMATCH`, `JOB_ERROR`, `JOB_STOPPED`, `JOB_CANCELED`, `JOB_DONE`
 확인: `ros2 topic echo /event_log` · 시연 기록: `ros2 bag record /event_log`
 
 ### 메시지
@@ -154,7 +154,8 @@ Feedback의 `log_level`·`log_msg`는 파트가 `report.log('메시지', 'WARN')
 
 | 항목 | 값 |
 | --- | --- |
-| `status` | `BEFORE`, `RUNNING`, `DONE` |
+| `status` | `BEFORE`, `RUNNING`, `DONE`, `ERROR`, `STOPPED` (`common.JOB_STATUS`) |
+| `reason` | `ERROR`·`STOPPED`일 때 UI에 보일 이유 (`common.ERROR_TEXT`, 예: `Fail to pick`, `Zone full (B)`, `EMERGENCY STOP`). UI 표시: `{status} : {reason}` |
 | `result_class` | `A`, `B`, `C`, `D` |
 | `error_code` | 성공 `""` / 실패 `NOT_FOUND`, `GRASP_FAILED`, `OVER_FORCE`, `MEASURE_FAILED`, `NO_SLOT`, `PLACE_FAILED`, `ROBOT_SETUP_FAILED` |
 | 좌표·단위 | 로봇 base 기준, mm |
@@ -185,6 +186,9 @@ RUNNING       SetJobStatus(RUNNING)
   │  PLACE_DONE  측정 수량(count) 수신 → 기대값(+1)과 비교·기록 → UpdateInventory(box_id, 측정값 반영 재고)
   └─ 반복
 DONE          SetJobStatus(DONE)
+
+작업 중 오류  → ERROR   SetJobStatus(ERROR, "Fail to pick")       공정 오류 — 로그 확인 후 재시작
+로봇 정지     → STOPPED SetJobStatus(STOPPED, "EMERGENCY STOP")  로봇이 멈춤 — 현장 확인 후 복구
 ```
 
 | 상태 | 한글 | DB 기록 |
@@ -197,12 +201,15 @@ DONE          SetJobStatus(DONE)
 | `JUDGING` / `JUDGE_DONE` | 판별중 / 판별완료 | |
 | `PLACING` / `PLACE_DONE` | 적재중 / 적재완료 | |
 | `DONE` | 작업완료 | ✓ |
+| `ERROR` | 오류중단 (공정 오류, 관제가 판단해서 멈춤) | ✓ |
+| `STOPPED` | 정지 (로봇이 물리적으로 멈춤 — 비상정지, 안전 정지) | ✓ |
 
 - **중단은 두 가지로 통일합니다.**
   - **시작 전 중단** (`RUNNING` 전): 작업 데이터 수신 실패, 사전 점검 FAIL, 카운트다운 중 `q` → 모두 같은 메시지 `작업을 시작하지 않습니다 [단계]: 이유`로 끝나고, 로봇은 움직이지 않으며 DB는 `BEFORE` 그대로입니다.
-  - **작업 중 중단** (`RUNNING` 이후): 파트 오류 등 → `단계에서 중단: error_code | 마지막 stage` 로그
+  - **작업 중 중단** (`RUNNING` 이후, `abort_job()`): 에러 코드로 `ERROR`/`STOPPED`를 정하고 DB에 `status`와 `reason`을 기록합니다(예: `ERROR : Fail to pick`). 로그에는 `단계에서 중단: error_code | 마지막 stage`가 남습니다. **로봇에 정지 명령을 보내지는 않습니다** (정지 기능은 이슈 #1·#3·#12에서 추가).
+  - `STOPPED`가 되는 코드(`common.STOP_CODES`: `EMERGENCY_STOP`, `ROBOT_SAFETY_STOP`, `ROBOT_EMERGENCY_STOP`, `ROBOT_DISCONNECTED`)는 정의만 되어 있고, 감지 경로는 정지 기능 단계에서 연결합니다.
 - `-ING` 상태는 Goal을 보내기 직전, `_DONE` 상태는 Result를 받은 직후에 바뀝니다.
-- 단계 상태는 관제 내부에만 있고, DB에는 `BEFORE` / `RUNNING` / `DONE`과 재고만 기록합니다.
+- 단계 상태는 관제 내부에만 있고, DB에는 `BEFORE` / `RUNNING` / `DONE` / `ERROR` / `STOPPED`와 재고만 기록합니다.
 - 상태 값은 영어(`State` Enum)이고, 로그에는 `===== SCANNING (스캔중) =====`처럼 한글을 함께 표시합니다.
 - 스캔은 물품 유무(`found`)만 알리고, 작업완료 여부는 관제가 판단합니다.
 - **재고 검증 (v0.4)**: 관제는 적재가 잰 수량(`count`)을 기대값(적재 전 재고의 `result_class` 수량 + 1)과 비교합니다. DB에는 **항상 측정값**을 반영하고(실제 적재 상태가 기준), 다르면 `재고 불일치` 경고 로그(기대·측정·차이)를 남긴 뒤 작업을 계속하며, 작업이 끝나면 불일치 건수를 요약해서 출력합니다. 다른 클래스 수량은 그대로 둡니다.

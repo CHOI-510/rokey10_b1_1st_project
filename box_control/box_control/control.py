@@ -22,6 +22,8 @@ control.py — 관제 메인 (예시: 정상 경로만)
     DB에는 항상 '측정값'을 반영한다 (실제 적재 상태가 기준). 다르면 경고 로그를 남기고
     작업을 계속한다. 다른 클래스 수량은 그대로 둔다. (불일치 기록을 DB에 남길지는 DB/UI와 협의 중)
   - 진행 추적: 중단 시 해당 파트의 마지막 Feedback stage와 경과 시간을 함께 기록한다.
+  - 작업 중 중단 (abort_job): DB status를 ERROR(공정 오류) 또는 STOPPED(로봇 정지)로 바꾸고
+    이유를 함께 기록한다 (예: 'ERROR : Fail to pick'). 로봇에 정지 명령을 보내지는 않는다.
   - 이벤트 로그: /event_log 토픽으로 보내기만 한다 (DB가 저장·UI 표시).
     관제 이벤트(JOB_START / BOX_DONE / COUNT_MISMATCH / JOB_STOPPED / JOB_CANCELED / JOB_DONE)와
     파트가 report.log()로 보낸 것(PART_LOG, control_interface가 자동으로 넘김).
@@ -59,7 +61,7 @@ try:                       # 한 글자 입력(q/s)을 Enter 없이 받기 위�
 except ImportError:        # pragma: no cover
     termios = tty = None
 
-from box_comm.common import default_poses
+from box_comm.common import error_text, status_for, default_poses
 from box_comm.control_interface import start
 from box_control import preflight
 
@@ -78,6 +80,8 @@ class State(str, Enum):
     PLACING = 'PLACING'         # 적재중
     PLACE_DONE = 'PLACE_DONE'   # 적재완료
     DONE = 'DONE'               # 작업완료 (DB 기록)
+    ERROR = 'ERROR'             # 오류중단 (DB 기록, 공정 오류 — 관제가 판단해서 멈춤)
+    STOPPED = 'STOPPED'         # 정지     (DB 기록, 로봇이 물리적으로 멈춤 — 정지 기능 단계에서 연결)
 
     @property
     def label(self) -> str:
@@ -96,6 +100,8 @@ _STATE_LABEL = {
     State.PLACING: '적재중',
     State.PLACE_DONE: '적재완료',
     State.DONE: '작업완료',
+    State.ERROR: '오류중단',
+    State.STOPPED: '정지',
 }
 
 
@@ -117,6 +123,7 @@ class Control:
         self.inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
         self.box_seq = 0
         self.job_id = time.strftime('%Y%m%d_%H%M%S')   # 실행마다 고유한 작업 ID
+        self._current_class = ''          # 지금 박스의 판별 결과 (중단 이유 표시용)
         self.count_mismatches = []         # 재고 불일치 기록 (box_id, class, 기대 수량, 측정 수량)
         self.start_delay = float(
             io.declare_parameter('start_delay_sec', 10.0).value)   # 시작 대기 시간(초)
@@ -165,18 +172,19 @@ class Control:
 
         self.set_state(State.RUNNING)
         if err := self.io.set_job_status(State.RUNNING.value):
-            return self.stop(err)
+            return self.abort_job(err)
         self.io.log_event('INFO', 'JOB_START', f'작업 시작 (재고 {self.inventory})', box_id='')
 
         while True:
             box_id = f'{self.job_id}_{self.box_seq + 1:03d}'   # 이번 박스 (적재까지 끝나야 확정)
+            self._current_class = ''
             self.io.set_log_context(box_id=box_id, class_id='')
 
             # ---- 탐지 ----
             self.set_state(State.SCANNING)
             found, err = self.io.scan(self.poses)
             if err:
-                return self.stop(err)
+                return self.abort_job(err)
             if not found:
                 break                      # 물품 없음 → 관제가 작업완료로 판단
             self.set_state(State.SCAN_DONE)
@@ -185,16 +193,17 @@ class Control:
             self.set_state(State.JUDGING)
             result_class, err = self.io.judge(self.specs, self.poses)
             if err:
-                return self.stop(err)
+                return self.abort_job(err)
             self.set_state(State.JUDGE_DONE)
             self.log.info(f'[control] 판별 결과: {result_class}')
+            self._current_class = result_class
             self.io.set_log_context(class_id=result_class)
 
             # ---- 적재 ----
             self.set_state(State.PLACING)
             measured, err = self.io.place(result_class, self.poses)
             if err:
-                return self.stop(err)
+                return self.abort_job(err)
             self.set_state(State.PLACE_DONE)
             self.log.info(f'[control] 적재 측정 수량: {result_class} {measured}개')
 
@@ -202,7 +211,7 @@ class Control:
             self.box_seq += 1
             inventory_new = self.verify_inventory(box_id, result_class, measured)
             if err := self.io.update_inventory(box_id, inventory_new):
-                return self.stop(err)
+                return self.abort_job(err)
             self.inventory = inventory_new
             self.log.info(f'[control] {box_id} 적재 완료 → inventory={self.inventory}')
             self.io.log_event('INFO', 'BOX_DONE',
@@ -301,13 +310,10 @@ class Control:
         return inventory_new
 
     # ------------------------------------------------------------------
-    # 중단
-    # ------------------------------------------------------------------
-    # ------------------------------------------------------------------
     # 중단 — 두 가지로 통일
     #   cancel_start(): RUNNING 전 (데이터 실패 / 사전 점검 실패 / q 취소)
     #                   로봇이 움직이기 전이므로 DB는 BEFORE 그대로 두고 종료
-    #   stop()        : RUNNING 이후 (작업 중 오류)
+    #   abort_job()   : RUNNING 이후 (작업 중 오류) → DB에 ERROR 또는 STOPPED + 이유 기록
     # ------------------------------------------------------------------
     def cancel_start(self, reason):
         where = f'{self.state.value} ({self.state.label})' if self.state else '-'
@@ -316,18 +322,31 @@ class Control:
                       '원인을 해결한 뒤 관제를 다시 실행하세요.')
         self.io.log_event('WARN', 'JOB_CANCELED', f'작업을 시작하지 않음 [{where}]: {reason}')
 
-    def stop(self, err):
-        # TODO: error_code별 정책 (재시도 / 건너뛰기 / ERROR 상태 기록)
+    def abort_job(self, err):
+        """작업 중 오류로 작업을 끝낸다 (로봇을 멈추는 함수가 아님 — 두산 stop()과 다름).
+        err 코드로 ERROR / STOPPED를 정하고, DB에 status·reason을 기록한다.
+          ERROR   : 공정 오류 (GRASP_FAILED, SERVER_DOWN ...)       → 'ERROR : Fail to pick'
+          STOPPED : 로봇 정지 (EMERGENCY_STOP, ROBOT_SAFETY_STOP ...) → 'STOPPED : EMERGENCY STOP'
+        """
+        # TODO: error_code별 정책 (재시도 / 이 박스 건너뛰기) — 지금은 모든 오류에서 작업 종료
         where = f'{self.state.value} ({self.state.label})' if self.state else '-'
-        msg = f'[control] {where} 단계에서 중단: {err}'
         action = _STATE_ACTION.get(self.state)
+        status = status_for(err)
+        reason = error_text(err, part=action or '', class_id=self._current_class)
+
+        msg = f'[control] {where} 단계에서 중단: {err}'
+        stage = ''
         if action:
             stage, sec = self.io.progress(action)
             msg += f' | /{action} 마지막 stage="{stage}" ({sec:.1f}초 전)'
         self.log.error(msg)
-        self.io.log_event('ERROR', 'JOB_STOPPED', msg.replace('[control] ', ''),
-                          stage=stage if action else '')
 
+        self.set_state(State.STOPPED if status == 'STOPPED' else State.ERROR)
+        db_err = self.io.set_job_status(status, reason)      # DB가 원인이어도 한 번은 시도
+        self.log.error(f'[control] ===== {status} : {reason} =====' +
+                       (f' (DB 기록 실패: {db_err})' if db_err else ''))
+        self.io.log_event('ERROR', 'JOB_STOPPED' if status == 'STOPPED' else 'JOB_ERROR',
+                          f'{status} : {reason} — {msg.replace("[control] ", "")}', stage=stage)
 
 def main():
     start(Control)

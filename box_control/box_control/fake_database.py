@@ -59,9 +59,9 @@ class FakeDatabase:
         self.history.append(box_id)
         self._show(f'{box_id} 반영')
 
-    def set_job_status(self, status):
-        self.status = status
-        self._show(f'상태 {status}')
+    def set_job_status(self, status, reason=''):
+        self.status = f'{status} : {reason}' if reason else status
+        self._show(f'상태 {self.status}')
 
     def get_fixed_poses(self):
         if not self.poses_available:

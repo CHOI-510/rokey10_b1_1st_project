@@ -16,7 +16,9 @@ database_template.py — DB·UI 템플릿 (관제 관리, 참고용)
                     'height_mm': .., 'weight_g': ..}, ...]
       inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
   update_inventory(box_id, inventory) -> None
-  set_job_status(status) -> None         status: 'BEFORE' / 'RUNNING' / 'DONE'
+  set_job_status(status, reason) -> None status: 'BEFORE' / 'RUNNING' / 'DONE' / 'ERROR' / 'STOPPED'
+      reason: ERROR·STOPPED일 때 이유 ('Fail to pick', 'Zone full (B)', 'EMERGENCY STOP'), 그 밖에는 ''
+      UI 표시: f'{status} : {reason}'   — ERROR = 공정 오류(로그 확인), STOPPED = 로봇 정지(현장 확인)
   get_fixed_poses() -> dict               DB에 저장된 고정 좌표 — 기준값 (필수)
       {'home_j': [6개, deg], 'measure_zone': [x, y, z, mm],
        'place_zones': {'A': [x, y], 'B': [x, y], 'C': [x, y], 'D': [x, y]}}     ← v0.4
@@ -47,6 +49,7 @@ UI 연동도 이 파일(또는 여기서 import하는 모듈)에서 한다. 관�
 단독 테스트:
   ros2 service call /get_job_data box_interfaces/srv/GetJobData "{}"
   ros2 service call /set_job_status box_interfaces/srv/SetJobStatus "{status: 'RUNNING'}"
+  ros2 service call /set_job_status box_interfaces/srv/SetJobStatus "{status: 'ERROR', reason: 'Fail to pick'}"
   ros2 service call /update_inventory box_interfaces/srv/UpdateInventory \
     "{box_id: 'box_001', inventory: {a: 1, b: 0, c: 0, d: 0}}"
 ================================================================
@@ -89,6 +92,7 @@ class DatabaseWork:
                        'place_zones': {c: list(xy) for c, xy in FAKE_POSES['place_zones'].items()}}
         self._inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
         self._status = 'BEFORE'
+        self._reason = ''
         self._history = []                 # (box_id, inventory) 기록
         self._events = []                  # 이벤트 로그 (UI 로그 창용)
 
@@ -103,8 +107,9 @@ class DatabaseWork:
         self._history.append((box_id, dict(inventory)))
         self.refresh_ui()
 
-    def set_job_status(self, status):
+    def set_job_status(self, status, reason):
         self._status = status
+        self._reason = reason
         self.refresh_ui()
 
     def get_fixed_poses(self):
@@ -125,7 +130,8 @@ class DatabaseWork:
     # ------------------------------------------------------------------
     def refresh_ui(self):
         layout = {c: stack_layout(n) for c, n in self._inventory.items()}   # 적재 이미지용
-        self.log.info(f'[database] UI 갱신: 상태={self._status}, 재고={self._inventory}, '
+        status = f'{self._status} : {self._reason}' if self._reason else self._status
+        self.log.info(f'[database] UI 갱신: 상태={status}, 재고={self._inventory}, '
                       f'적재 상태(단별 층 수)={layout}')
 
 

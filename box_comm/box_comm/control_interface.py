@@ -24,7 +24,8 @@ control_interface.py — 관제 통신 계층
   get_job_data()                 -> (specs: list, inventory: dict, poses: dict|None, err)
     poses = 위와 같은 형식 (DB 값), DB에 없으면 None
   update_inventory(box_id, inv)  -> err
-  set_job_status(status)         -> err
+  set_job_status(status, reason='') -> err
+    status: BEFORE / RUNNING / DONE / ERROR / STOPPED, reason: ERROR·STOPPED일 때 UI 표시 이유
 
   이벤트 로그 (/event_log 토픽, 보내기만 함)
   log_event(level, code, message, box_id='', class_id='', expected=-1, measured=-1)
@@ -182,9 +183,9 @@ class ControlInterface(Node):
             return 'DB_FAILED'
         return None
 
-    def set_job_status(self, status, timeout=None):
+    def set_job_status(self, status, reason='', timeout=None):
         res, err = self._call_service(
-            self._set_status, SetJobStatus.Request(status=status), 'SetJobStatus', timeout)
+            self._set_status, SetJobStatus.Request(status=status, reason=reason), 'SetJobStatus', timeout)
         if err:
             return err
         if not res.success:

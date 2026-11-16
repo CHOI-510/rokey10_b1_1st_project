@@ -14,7 +14,7 @@ database_interface.py — DB 파트 통신 계층
     (관제가 보내기만 하는 로그 — 응답 없음, 누락 가능)
   - 계약 규칙을 여기서 강제한다.
       · 같은 box_id는 한 번만 반영 (중복이면 작업 클래스를 호출하지 않음)
-      · status는 BEFORE / RUNNING / DONE만 허용
+      · status는 BEFORE / RUNNING / DONE / ERROR / STOPPED만 허용 (common.JOB_STATUS)
 
 작업 클래스 약속 (box_database/database.py에서 작성)
   class DatabaseWork:
@@ -26,7 +26,9 @@ database_interface.py — DB 파트 통신 계층
           # inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
       def update_inventory(self, box_id: str, inventory: dict) -> None:
           # DB에 재고 기록 + UI 갱신
-      def set_job_status(self, status: str) -> None:
+      def set_job_status(self, status: str, reason: str) -> None:
+          # reason = ERROR·STOPPED일 때 이유 ('Fail to pick', 'EMERGENCY STOP'), 그 밖에는 ''
+          # UI 표시: f'{status} : {reason}'  (ERROR 주황, STOPPED 빨강 등 status로 색 구분)
           # DB에 작업 상태 기록 + UI 갱신
       def get_fixed_poses(self) -> dict | None:      # 필수 (없거나 None이면 관제가 시작하지 않음)
           # DB에 저장된 고정 좌표 — 기준값 (v0.3: DB가 기준, 관제가 이 값으로 덮어씀)
@@ -52,14 +54,14 @@ from rclpy.node import Node
 from box_interfaces.msg import ClassSpec, FixedPoses, Inventory, LogEvent, PlaceZone
 from box_interfaces.srv import GetJobData, SetJobStatus, UpdateInventory
 
-from box_comm.common import LOG_TOPIC, VALID_CLASSES, log_qos
+from box_comm.common import JOB_STATUS, LOG_TOPIC, VALID_CLASSES, log_qos
 
 NODE_NAME = 'database'
 SRV_GET_JOB_DATA = '/get_job_data'
 SRV_UPDATE_INVENTORY = '/update_inventory'
 SRV_SET_JOB_STATUS = '/set_job_status'
 
-VALID_STATUS = ('BEFORE', 'RUNNING', 'DONE')
+VALID_STATUS = JOB_STATUS
 
 
 def _inv_to_dict(inv: Inventory) -> dict:
@@ -178,9 +180,10 @@ class DatabaseInterface(Node):
         try:
             if request.status not in VALID_STATUS:
                 raise ValueError(f'알 수 없는 status: "{request.status}" (사용 가능: {VALID_STATUS})')
-            self.work.set_job_status(request.status)
+            self.work.set_job_status(request.status, request.reason)
             response.success = True
-            self.get_logger().info(f'[database] SetJobStatus → {request.status}')
+            self.get_logger().info(f'[database] SetJobStatus → {request.status}'
+                                   + (f' : {request.reason}' if request.reason else ''))
         except Exception as e:
             response.success = False
             self.get_logger().error(f'[database] SetJobStatus 실패: {type(e).__name__}: {e}')

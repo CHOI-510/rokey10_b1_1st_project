@@ -29,6 +29,8 @@
 | 11/16 | 판별이 물품 위상을 항상 같게 맞춘 뒤 적재로 넘기는 것을 목표로 함 → 적재는 클래스별 박스 높이 하나로 층 판단 | z로 층을 판단하려면 놓는 방향이 같아야 함 (될지는 시험 필요) |
 | 11/16 | **이벤트 로그는 토픽** `/event_log`(`LogEvent.msg`)로 관제가 보내기만 함(응답 없음, 누락 허용, QoS reliable + transient_local 100). 관제↔DB는 Service 3개(응답 필요) + Topic 1개 | 로그 때문에 작업이 막히지 않게. `ros2 topic echo`·`bag record`로 바로 확인 가능 |
 | 11/16 | **파트 로그는 Feedback으로**: Feedback에 `log_level`·`log_msg` 추가, 파트는 `report.log(msg, level)`. 로그 칸이 채워진 Feedback만 관제가 `/event_log`로 넘김 (`code=PART_LOG`). 관제 이벤트: `JOB_START`·`BOX_DONE`·`COUNT_MISMATCH`·`JOB_STOPPED`·`JOB_CANCELED`·`JOB_DONE` | 허브 구조 유지(파트→DB 직접 없음), stage(진행 추적)와 로그를 분리 |
+| 11/16 | **작업 상태 5개**: `BEFORE`·`RUNNING`·`DONE`·`ERROR`·`STOPPED` + `SetJobStatus.reason`. ERROR = 공정 오류(관제 판단, 로봇 정상), STOPPED = 로봇이 물리적으로 멈춤(비상정지 버튼, 두산 안전 정지·펜던트 비상정지, 연결 끊김). UI 표시 `{status} : {reason}` (예: `ERROR : Fail to pick`, `STOPPED : EMERGENCY STOP`). 이유 문구는 `common.ERROR_TEXT` 한 곳 | 사람이 할 일이 다름 (로그 확인 vs 현장 확인). status로 UI 색 구분 |
+| 11/16 | 관제 `stop()` → **`abort_job()`** 이름 변경. 로봇을 멈추는 함수가 아니라 작업 종료 처리임(두산 `stop()`과 혼동 방지). 이제 DB에 ERROR/STOPPED + 이유를 기록 | 작업 중 멈추면 DB가 RUNNING으로 남던 문제 해결 |
 | 11/16 | UI 적재 이미지는 수량 → `common.stack_layout()`(단별 층 수)으로 그림. DB에 박스별 위치를 저장하지 않음 | 수량에서 위치가 정해지므로 중복 저장 불필요 |
 | 11/14 | 관제 중심 허브 구조. 관제↔파트 Action, 관제↔DB Service (11/16: 로그만 Topic 추가) | 파트 간 결합 제거, 통합 지점 단일화 |
 | 11/14 | 인터페이스 v0.2 확정 (`box_interfaces`) | |
@@ -48,7 +50,7 @@
 | 11/14 | **인터페이스 v0.3 (보강)**: 고정 좌표는 **DB가 기준**. 관제가 `GetJobData`로 받아 `/scan`·`/judge`·`/place` Goal에 매번 `poses`로 실어 보내고, 파트는 `self.poses`로 사용. `common.py` 값은 Goal에 좌표가 없을 때(단독 테스트)의 기본값. 관제는 DB 값으로 **무조건 덮어씀**(비교·경고 없음). DB에 좌표가 없으면 시작 안 함. (Goal에 `poses`를 넣는 변경까지 v0.3에 포함) | 좌표 관리를 DB 한 곳으로, 비교 후 종료하지 않고 DB 값으로 작업 |
 | 11/14 | TCP·툴은 `common.py`에 정의, **파트 interface가 Goal마다 `run()` 직전에 확인·적용** (`box_comm/robot.py`). 파트는 자기 동작 안에서 다른 TCP 사용 가능 | 가상 모드에서 TCP 미등록으로 바닥 충돌한 문제 방지, 팀원 단독 테스트에도 적용 |
 | 11/14 | 시작 전 점검은 `box_control/preflight.py`로 분리, `control.py`는 순서만 | 점검 항목이 늘어도 `control.py`가 비대해지지 않게 |
-| 11/14 | 중단 방식 통일: 시작 전(데이터 실패·점검 실패·`q`)은 `cancel_start()` 하나, 작업 중은 `stop()` | 경우마다 처리가 달라지지 않게 |
+| 11/14 | 중단 방식 통일: 시작 전(데이터 실패·점검 실패·`q`)은 `cancel_start()` 하나, 작업 중은 `stop()` (11/16 `abort_job()`으로 이름 변경) | 경우마다 처리가 달라지지 않게 |
 | 11/14 | 템플릿 3개가 `HOME_J`, `MEASURE_ZONE`을 `common.py`에서 가져다 쓰도록 수정 | 좌표를 파트 코드에 숫자로 적지 않게 |
 | 11/14 | **관제 전용 파일 보호**: `box_comm/`, `box_interfaces/`, `*_template.py`는 commit 훅(팀원 commit 거부) + GitHub Actions(관제 외 push 시 실패 표시)로 보호 | 무료 public 저장소는 경로별 push 제한(push rulesets)이 안 돼서 실수 방지로 대신 |
 | 11/14 | **템플릿 이름 변경**: `scan.py` 등 → `*_template.py` (관제 관리, 참고용, 수정 금지). 담당자는 템플릿을 복사해 자기 메인 코드를 만들고 `setup.py`에 진입점 추가. 관제는 템플릿만 업데이트하고, 담당자가 바뀐 부분을 자기 코드에 반영 | 템플릿 업데이트가 팀원 코드와 충돌하지 않게, 폴더 담당 규칙 유지 |
@@ -59,7 +61,7 @@
 
 | # | 이슈 | 관련 | 상태 |
 | --- | --- | --- | --- |
-| 1 | **비상정지 (필수 목표)**: UI 버튼 → DB → 관제(`/emergency_stop`) → 두산 정지 서비스 경로 설계, `status`에 `STOPPED` 추가. 구현이 어려우면 UI 버튼만 두고 향후 추가 가능으로 정리 | 관제, DB | 정상 경로 이후 |
+| 1 | **비상정지 (필수 목표)**: UI 버튼 → DB → 관제 → 두산 `move_stop` + 파트 Goal cancel → `STOPPED : EMERGENCY STOP`. `STOPPED` 상태·`STOP_CODES`는 정의 완료(11/16). 로봇 안전 정지 감지는 `get_robot_state` 주기 확인(아래 메모) | 관제, DB | 정지 기능 묶음(#1·#3·#12)으로 진행 |
 | 2 | `error_code`별 관제 처리 (재시도 / 건너뛰기 / 정지), 실패 시 무한 루프 방지 | 관제 | 미정 |
 | 3 | Action별 타임아웃과 cancel | 관제 | 미정 |
 | 4 | 미분류 물품 처리 (`result_class`에 `X` 추가 여부, 리젝트 존) | 판별, 적재 | 미정 |
@@ -100,6 +102,22 @@
 - 미분류(`X`)가 생기면 `result_class == 'X'`일 때 기대값 처리 (`expected_count()`에 TODO)
 - 경고 로그를 DB에 남길지(UI 표시 여부)는 DB 담당과 협의
 
+### 메모: 정지 기능 묶음 (#1·#3·#12) — 두산 패키지 확인 결과 (11/16)
+
+관제의 `abort_job()`은 작업 종료 처리일 뿐 로봇을 멈추지 않는다. 필요한 것은 두 가지:
+
+**A. 관제가 로봇을 멈추기**
+- `/dsr01/dsr_controller2/motion/move_stop` (`MoveStop`, `stop_mode` 0 빠른 정지(STO 없음) / 1 빠른 정지 / 2 부드러운 정지 / 3 HOLD). 두산이 별도 콜백 그룹으로 등록 → 파트가 `movel` 대기 중이어도 다른 노드에서 호출 가능
+- `move_pause` / `move_resume`도 있음
+- 주의: `move_stop` 후 로봇은 STANDBY로 돌아가므로 파트 `run()`이 **다음 movel을 그대로 보낸다** → 파트 Goal cancel + box_comm에서 cancel 시 다음 `report()`/로봇 명령 전에 중단하는 처리 필요
+
+**B. 관제가 로봇 정지를 알아차리기**
+- `RobotState.msg`는 정의만 있고 이 버전 컨트롤러는 토픽으로 발행하지 않음 → `/dsr01/dsr_controller2/system/get_robot_state`를 타이머로 주기 호출(예: 0.5초)
+  - 3 SAFE_OFF, 5 SAFE_STOP(충돌 감지·보호 정지), 6 EMERGENCY_STOP(펜던트·하드웨어), 9 SAFE_STOP2, 10 SAFE_OFF2 → `STOPPED`
+- 알람: 컨트롤러가 `error` 토픽(`RobotError`: level, group, code, msg1~3)을 발행 → `reason`에 덧붙이기. 연결 끊김은 `robot_disconnection` 토픽
+  - 정확한 토픽 이름은 로봇 실행 중 `ros2 topic list | grep -i "error\|disconnection"`으로 확인 필요 (`/dsr01/error` 예상)
+- 복구: `system/set_robot_control` (2 = SAFE_STOP 해제 → STANDBY). 나중에 UI 복구 버튼 후보
+
 ### 메모: 이슈 12 Feedback stage 목록 (적용됨, `common.STAGES`)
 
 | 파트 | stage 순서 |
@@ -130,6 +148,7 @@
 
 ### 11/16
 
+- **작업 상태 ERROR/STOPPED**: `SetJobStatus`에 `reason` 추가, `common.JOB_STATUS`·`STOP_CODES`·`ERROR_TEXT`·`status_for()`·`error_text()`, 관제 `stop()` → `abort_job()`(DB에 `ERROR : Fail to pick` 등 기록, `JOB_ERROR`/`JOB_STOPPED` 이벤트), DB interface·템플릿 `set_job_status(status, reason)`. STOPPED 감지 경로는 정지 기능 묶음에서
 - **인터페이스 v0.4** (적재 규칙·재고 측정): `PlaceZone.msg` 추가, `FixedPoses.place_zones`, Place Goal에서 `inventory` 제거, Place Result `count`만
 - `common.py`: `FIXED_POSES['place_zones']` 기본값(미설정), `STACK`(4층·3단), `count_from_position()`·`position_from_count()`·`stack_layout()` 추가
 - `place_interface`: `run(result_class, report)` → 측정 수량(int) 반환, 범위 검사 후 Result로 변환

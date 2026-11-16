@@ -6,6 +6,7 @@ common.py — box_comm 공통 정의
 
 여기에 한 번만 정의하고 모든 *_interface.py와 파트 코드가 import해서 쓴다.
   - ERROR_CODES   : 등록된 error_code 목록 (인터페이스 계약 2.4)
+  - JOB_STATUS    : DB 작업 상태 5개 + ERROR_TEXT(에러 코드 → UI 표시 이유) + status_for()
   - VALID_CLASSES : result_class / inventory 키
   - STAGES        : 파트별 Feedback stage 목록
   - ROBOT         : 로봇 ID, 두산 서비스 네임스페이스
@@ -36,6 +37,60 @@ ERROR_CODES = (
 )
 
 VALID_CLASSES = ('A', 'B', 'C', 'D')
+
+# ----------------------------------------------------------------------
+# 작업 상태 (DB SetJobStatus) — UI 표시: f"{status} : {reason}"
+#   ERROR   : 공정이 실패해서 관제가 판단해 멈춤. 로봇은 정상 → 로그 보고 원인 해결 후 재시작
+#   STOPPED : 로봇이 물리적으로 멈춤 (비상정지 버튼, 두산 안전 정지 등) → 현장 확인 후 복구
+# ----------------------------------------------------------------------
+JOB_STATUS = ('BEFORE', 'RUNNING', 'DONE', 'ERROR', 'STOPPED')
+
+# STOPPED가 되는 코드 (감지·기록 경로는 정지 기능 단계에서 추가 — 지금은 정의만)
+STOP_CODES = (
+    'EMERGENCY_STOP',         # UI 비상정지 버튼
+    'ROBOT_SAFETY_STOP',      # 두산 안전 정지 (충돌 감지, 토크 초과, 보호 정지) — robot_state SAFE_STOP 등
+    'ROBOT_EMERGENCY_STOP',   # 티치 펜던트·하드웨어 비상정지 — robot_state EMERGENCY_STOP
+    'ROBOT_DISCONNECTED',     # 로봇 연결 끊김
+)
+
+# 에러 코드 → UI에 보일 이유 (영어, 짧게). 없는 코드는 코드 이름 그대로 표시
+ERROR_TEXT = {
+    # 파트 Result error_code (ERROR_CODES)
+    'NOT_FOUND': 'Item not found',
+    'GRASP_FAILED': 'Fail to pick',
+    'OVER_FORCE': 'Over force detected',
+    'MEASURE_FAILED': 'Fail to measure',
+    'NO_SLOT': 'Zone full',
+    'PLACE_FAILED': 'Fail to place',
+    'ROBOT_SETUP_FAILED': 'Robot setup failed',
+    # 관제 쪽 통신 오류 (control_interface)
+    'SERVER_DOWN': 'No response',
+    'REJECTED': 'Goal rejected',
+    'TIMEOUT': 'Timeout',
+    'NO_ERROR_CODE': 'Unknown failure',
+    'DB_FAILED': 'DB failed',
+    # STOPPED (STOP_CODES)
+    'EMERGENCY_STOP': 'EMERGENCY STOP',
+    'ROBOT_SAFETY_STOP': 'Robot safety stop',
+    'ROBOT_EMERGENCY_STOP': 'Pendant emergency stop',
+    'ROBOT_DISCONNECTED': 'Robot disconnected',
+}
+
+
+def status_for(code: str) -> str:
+    """중단 원인 코드 → DB status ('STOPPED' 또는 'ERROR')"""
+    return 'STOPPED' if code in STOP_CODES else 'ERROR'
+
+
+def error_text(code: str, part: str = '', class_id: str = '') -> str:
+    """중단 원인 코드 → UI 표시 이유. part·class를 알면 덧붙인다.
+    예: ('SERVER_DOWN', 'place') → 'No response (place)', ('NO_SLOT', '', 'B') → 'Zone full (B)'"""
+    text = ERROR_TEXT.get(code, code or 'Unknown failure')
+    if code == 'NO_SLOT' and class_id:
+        return f'{text} ({class_id})'
+    if code in ('SERVER_DOWN', 'REJECTED', 'TIMEOUT', 'NO_ERROR_CODE') and part:
+        return f'{text} ({part})'
+    return text
 
 # ----------------------------------------------------------------------
 # Feedback stage 목록 — 각 파트는 단계가 바뀔 때마다 report(stage)를 반드시 호출
@@ -193,7 +248,8 @@ LOG_CODES = (
     'JOB_START',        # 작업 시작 (RUNNING)
     'JOB_DONE',         # 작업 완료 (요약 포함)
     'JOB_CANCELED',     # 시작 전 취소 (데이터 실패, 사전 점검 실패, q)
-    'JOB_STOPPED',      # 작업 중 오류로 중단
+    'JOB_ERROR',        # 공정 오류로 중단 (status ERROR)
+    'JOB_STOPPED',      # 로봇 정지로 중단 (status STOPPED)
     'BOX_DONE',         # 박스 하나 적재·재고 반영 완료
     'COUNT_MISMATCH',   # 재고 기대값과 적재 측정값이 다름 (측정값으로 반영)
 )

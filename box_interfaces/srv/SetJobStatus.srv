@@ -1,3 +1,5 @@
-string status          # "BEFORE" / "RUNNING" / "DONE"
+string status          # "BEFORE" / "RUNNING" / "DONE" / "ERROR" / "STOPPED"  (box_comm/common.py JOB_STATUS)
+string reason          # ERROR / STOPPED only, e.g. "Fail to pick", "EMERGENCY STOP" ("" otherwise)
+                       # UI shows: f"{status} : {reason}"
 ---
 bool success
