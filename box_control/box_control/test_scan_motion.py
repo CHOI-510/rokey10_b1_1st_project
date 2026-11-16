@@ -19,8 +19,13 @@ test_scan_motion.py — 실제 두산 동작을 넣은 '/scan' 테스트 노드 
   - 탐지 노드(scan_template 또는 탐지 메인 코드)와 같은 /scan 이름을 쓰므로 동시에 띄우지 않는다.
   - gear_test_v2.py도 같이 돌리지 않는다.
 
+파라미터
+  box_count  (기본 0 = 제한 없음) N이면 N번 움직인 뒤 다음 Goal에 '물품 없음'(found=False)
+             → 관제(control)와 같이 돌릴 때는 꼭 지정 (0이면 관제가 끝나지 않음)
+
 실행 (bringup이 떠 있는 상태에서)
   ros2 run box_control test_scan_motion --ros-args -p robot_setup:=on
+  관제와 함께 (파트 3개 동시 연결 시험): README 7장 '세 파트 동시 연결 시험'
   ros2 action send_goal /scan box_interfaces/action/Scan "{}" --feedback
   또는 ros2 run box_control robot_test  (자동 점검)
 ================================================================
@@ -43,10 +48,15 @@ class ScanMotionTest:
         self.movej, self.movel, self.get_current_posx = dr.movej, dr.movel, dr.get_current_posx
         self._speed = (dr.set_velj, dr.set_accj, dr.set_velx, dr.set_accx)
         self.count = 0
+        self.box_count = int(node.declare_parameter('box_count', 0).value)
         self.log.warn('[test_scan_motion] ⚠ Goal을 받으면 로봇이 실제로 움직입니다 '
                       f'(HOME → 위로 {LIFT_MM:.0f}mm → 아래로 → HOME)')
 
     def run(self, report) -> bool:
+        if self.box_count and self.count >= self.box_count:
+            report('space_scan')
+            self.log.info(f'[test_scan_motion] box_count={self.box_count} 도달 → 물품 없음 (움직이지 않음)')
+            return False
         self.count += 1
         set_velj, set_accj, set_velx, set_accx = self._speed
         try:

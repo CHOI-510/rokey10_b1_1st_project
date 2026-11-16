@@ -306,6 +306,7 @@ fake와 실제 노드는 같은 Action/Service 이름을 쓰므로 **동시에 �
 | 도구 | 내용 |
 | --- | --- |
 | `test_scan_motion` | `scan_interface` + 실제 두산 동작(`connect_dsr`, `movej`/`movel`)이 들어간 `/scan` 노드. Goal마다 HOME → 위로 50mm → 아래로 → HOME. **팀원이 실제 동작을 넣을 때 참고할 예시 코드** |
+| `test_judge_motion` · `test_place_motion` | 같은 구조의 `/judge`·`/place` 노드. 판별은 x ±30mm, 적재는 y ±30mm로 움직여 눈으로 구분. 판별 결과는 A→B→C→D 순서, 적재는 해당 칸 +1 |
 | `robot_test` | `/scan` Goal을 반복해서 보내며 TCP·툴 적용을 점검하고 PASS/FAIL 표 출력. `-p reapply_test:=false`면 컨트롤러 설정을 바꾸는 3번 항목을 건너뜀 |
 
 ```bash
@@ -317,6 +318,19 @@ sleep 3; ros2 run box_control robot_test --ros-args -p reapply_test:=false; pkil
 ros2 run box_control test_scan_motion --ros-args -p robot_setup:=on &
 sleep 3; ros2 run box_control robot_test --ros-args -p reapply_test:=false; pkill -f test_scan_motion
 ```
+
+**세 파트 동시 연결 시험** — 탐지·판별·적재가 각자 두산에 연결해 둔 채 관제가 순서대로 움직이게 합니다 (실제 통합과 같은 구조).
+
+```bash
+ros2 run box_database database_template &
+ros2 run box_control test_scan_motion  --ros-args -p robot_setup:=on -p box_count:=2 &
+ros2 run box_control test_judge_motion --ros-args -p robot_setup:=on &
+ros2 run box_control test_place_motion --ros-args -p robot_setup:=on &
+sleep 5; ros2 run box_control control --ros-args -p start_delay_sec:=5.0
+pkill -f database_template; pkill -f _motion
+```
+
+`test_scan_motion`은 `box_count`를 꼭 지정합니다 (0이면 계속 “물품 있음”이라 관제가 끝나지 않음). 박스 2개 → `DONE`이면 통과.
 
 검증 결과 (11/14): 가상·실제 로봇 모두 통과. HOME에서 TCP 기준 z=214.9, 플랜지 기준 z=423.3 → 차이 208.4 (TCP 오프셋과 일치)
 
