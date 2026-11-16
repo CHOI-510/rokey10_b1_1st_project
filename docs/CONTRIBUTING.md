@@ -147,7 +147,7 @@ def get_fixed_poses(self) -> dict:         # DB에 저장된 고정 좌표 (기�
     # {'home_j': [6개, deg], 'measure_zone': [x, y, z, mm],
     #  'place_zones': {'A': [x, y], 'B': [x, y], 'C': [x, y], 'D': [x, y]}}   ← v0.4 적재 구역 1단
     # 관제가 이 값을 모든 파트 Goal에 실어 보낸다. 없거나 구역이 빠지면 관제가 작업을 시작하지 않음
-# UI 적재 이미지: box_comm.common.stack_layout(수량) → 단별 층 수 (예: 6 → [4, 2])
+# UI 적재 이미지: box_comm.common.stack_layout(수량) → 자리별 층 수 (예: 5 → [3, 2], 3층 x 2자리)
 # UI 비상정지 버튼: self.node.request_emergency_stop('ui')   (관제가 없으면 False)
 ```
 
@@ -220,6 +220,7 @@ report.check()                # ← 동작 사이사이에 넣으면 다음 동�
 self.dr.movel(target)
 ```
 
+- 힘 제어 하강처럼 **오래 걸리는 루프**에서는 매 반복 `report.keepalive()`를 부릅니다 (정지 확인 + 1초에 한 번 진행 알림, 로그 없음). 안 부르면 관제 진행 감시(`progress_timeout_sec`)가 멈춘 것으로 판단할 수 있습니다. 예: `box_place/place_main.py`의 `_keepalive()`
 - `except PartError`로 잡아서 계속 진행하지 마세요. 잡아야 한다면 정리(그리퍼 열기 등)만 하고 다시 `raise` 합니다.
 - `except Exception:`으로 모든 예외를 삼키는 코드도 `CANCELED`를 막으니 피합니다.
 - 한 번에 Goal 하나만 실행됩니다. 실행 중에 온 새 Goal은 `box_comm`이 거절합니다.

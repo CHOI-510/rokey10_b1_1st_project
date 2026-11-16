@@ -484,11 +484,12 @@ class ControlInterface(Node):
     def _on_feedback(self, name, feedback_msg):
         fb = feedback_msg.feedback
         stage = fb.stage
-        self._set_progress(name, stage)
+        prev, _ = self.progress(name)
+        self._set_progress(name, stage)    # 같은 stage가 다시 와도 시각은 갱신 (keepalive)
         if fb.log_msg:                     # report.log()로 보낸 것만 이벤트 로그로 넘김
             self.get_logger().info(f'[control] /{name} log {fb.log_level}: {fb.log_msg}')
             self.log_event(fb.log_level, 'PART_LOG', fb.log_msg, source=name, stage=stage)
-        else:
+        elif stage != prev:                # stage가 바뀔 때만 출력 (keepalive는 조용히)
             self.get_logger().info(f'[control] /{name} feedback: {stage}')
 
     def _wait(self, fut, timeout, stoppable=False):

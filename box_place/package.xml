@@ -9,6 +9,8 @@
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>box_comm</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>dsr_msgs2</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>

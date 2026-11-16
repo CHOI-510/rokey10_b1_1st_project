@@ -33,6 +33,9 @@
 | 11/16 | 관제 `stop()` → **`abort_job()`** 이름 변경. 로봇을 멈추는 함수가 아니라 작업 종료 처리임(두산 `stop()`과 혼동 방지). 이제 DB에 ERROR/STOPPED + 이유를 기록 | 작업 중 멈추면 DB가 RUNNING으로 남던 문제 해결 |
 | 11/16 | **정지 기능**: 비상정지 `/emergency_stop`(DB → 관제, `EmergencyStop.srv`), 관제가 두산 `move_stop`(모드 1, 3초 반복) + 진행 중 파트 Goal cancel. 로봇 상태는 `get_robot_state` 0.5초 주기 확인(`robot_monitor`: dsr / fake / off), 작업 중에만 정지로 처리. 진행 감시 `progress_timeout_sec`(기본 끔) → `ERROR : No progress` | 멈추게 하기와 알아차리기를 둘 다. 상태 토픽이 없는 컨트롤러 버전이라 주기 확인 |
 | 11/16 | 파트는 cancel을 받으면 다음 `report()`/`report.check()`에서 `CANCELED`로 빠져나옴. 파트 노드는 MultiThreadedExecutor + Reentrant로 실행 중에도 cancel 수신, Goal은 한 번에 하나만 | `move_stop` 뒤 STANDBY로 돌아가 파트가 다음 동작을 보내는 문제 대응 |
+| 11/16 | **적재 규칙 변경: 3층 × 2자리** (`STACK`), 다음 자리는 **−x 방향 80mm**(`place_config.json` `slot_dx_mm`, y 같음). 적재 실제 코드 `place_main`이 시작 시 `STACK`과 설정이 같은지 확인 | 적재 담당 실측 결과에 맞춤. 관제·DB·UI·적재가 같은 수량 해석 |
+| 11/16 | **적재 실제 코드 통합**: `box_place/place_main.py` + `config/place_config.json` (entry `place_main`). 정지 대응(`report.check`, 하강 중 `report.keepalive`), 멈춘 뒤 `clear_pending` 복구. 지원 클래스 A/B/C (D·미분류는 수치·좌표가 나오면 추가) | 실제 로봇에서 검증된 힘 제어 적재를 시스템 약속에 맞춤. 동작 로직은 그대로 |
+| 11/16 | **측정존 `[300, -160, 30]`** (z = 박스 파지 TCP 높이 = 적재 1층 첫 접촉 Z). 에뮬레이터 적재 시험은 `place_main -p sim_contact:=true`(힘 대신 가상 높이까지 movel), `fake_run.sh PLACE_MAIN=1 SIM=1` | 측정존 바닥 = 적재 구역 바닥 높이 가정. 에뮬레이터에 힘 센서 값이 없어서 |
 | 11/16 | UI 적재 이미지는 수량 → `common.stack_layout()`(단별 층 수)으로 그림. DB에 박스별 위치를 저장하지 않음 | 수량에서 위치가 정해지므로 중복 저장 불필요 |
 | 11/14 | 관제 중심 허브 구조. 관제↔파트 Action, 관제↔DB Service (11/16: 로그만 Topic 추가) | 파트 간 결합 제거, 통합 지점 단일화 |
 | 11/14 | 인터페이스 v0.2 확정 (`box_interfaces`) | |
@@ -77,9 +80,9 @@
 | 12 | **Feedback 기반 진행 감시**: 개입 로직 완료(11/16, `progress_timeout_sec` 초과 → `move_stop` + cancel → `ERROR : No progress`). 파트가 `report()`를 충분히 자주 부르는지 확인 필요 | 관제, 파트 | 시험 필요 |
 | 13 | 작업 통계 로그 (작업완료 물품 수, 재시도 횟수 등) — `/event_log`로 기반 마련(`JOB_DONE` 요약, `PART_LOG`). DB 저장 형식·UI 로그 창 표시(level·code 필터) | 관제, DB | DB·UI 담당과 협의 |
 | 14 | **TCP·툴 자동 확인** 구현·가상·실제 로봇 테스트 완료(`box_comm/robot.py`). 응답 필드 `info` 확인, 툴 이름 `Tool Weight` 확인, 가상·실제 모두 자동 모드 적용 불가 → 수동 모드 경로로 적용됨 | 관제 | 완료 |
-| 16 | **측정존 좌표 실측** → **DB에 입력** (기준값). `common.py` 기본값도 같은 값으로 맞춰 두면 단독 테스트가 편함 | 관제, DB, 탐지, 판별, 적재 | 실측 필요 |
+| 16 | **측정존 좌표** `[300, -160, 30]` → `common.py` 기본값·DB 템플릿에 입력됨. 남은 것: **DB 실제 코드에 입력**, 탐지·판별도 z를 '박스 파지 TCP 높이'로 쓰는지 확인 | 관제, DB, 탐지, 판별, 적재 | DB 반영 필요 |
 | 17 | DB: `get_fixed_poses()` 구현 (**필수**: 없으면 관제가 시작하지 않음). 인터페이스 v0.3라 전원 `git pull` 후 **다시 빌드** 필요 | DB, 전체 | 공지 필요 |
-| 18 | **적재 실측값**: 구역별 1단 x·y(→ DB), 단 간격 `TIER_PITCH_Y`, 접근 높이 `APPROACH_Z`, 바닥 접촉 z `FLOOR_Z`, 클래스별 박스 높이 `BOX_HEIGHT`, 구역당 단 수 `STACK['max_tiers']` | 적재, DB, 관제 | 실측 필요 |
+| 18 | **적재 실측값**: A/B/C는 `place_config.json`에 반영됨(높이, 자세, 첫 접촉 Z, 자리 간격 −80mm). 남은 것: **A/B/C 구역 1자리 x·y 실측 → DB** (지금 fake 값), **D 수치**, **미분류(구역 좌표·놓는 방식)** | 적재, DB, 관제 | D·미분류 대기 |
 | 19 | **접촉 감지 방식**: 박스를 쥔 채 내려가다 멈춘 z를 얻는 방법 (DSR 순응 제어 + 힘 조건 / 조금씩 내리며 외력 확인), 층 판단 허용 오차 `LEVEL_TOL` | 적재 | 구현·시험 필요 |
 | 20 | **판별 → 적재 위상 고정**: 판별이 항상 같은 방향으로 내려놓아야 박스 높이 하나로 층 판단 가능 (이슈 6과 연결) | 판별, 적재 | 시험 필요 |
 | 21 | **수량 측정의 한계**: 앞 단은 모두 찼다고 보고 셈. 안쪽 단에서 박스를 빼면 빈자리부터 채우며 실제보다 적게 셀 수 있음. 모든 단이 차면(`NO_SLOT`) 박스를 쥔 채 끝남 → 측정존 복귀 등은 에러 정책(이슈 2)과 함께 | 적재, 관제 | 시연 범위에서는 허용 |
@@ -161,6 +164,9 @@
 
 ### 11/16
 
+- **에뮬레이터 적재 시험 통과** (`PLACE_MAIN=1 SIM=1`, A×4 + B×1): A 1자리 1·2·3층 → 만재 감지 후 2자리 1층(수량 4), B 1자리 1층, 재고 `A 4, B 1`, 적재 이미지 `A[3, 1] B[1]`, 불일치 0, `DONE`. 적재 중 CLI 비상정지 → `STOPPED : EMERGENCY STOP — by cli` 확인. 박스당 적재 약 33초(첫 박스 41초, HOME 이동). **실제 접촉 감지·실제 파지는 실제 로봇에서 확인 필요**
+- 측정존 `[300, -160, 30]` 입력(`common.FIXED_POSES`, DB 템플릿). `place_main`에 `sim_contact`(에뮬레이터 전용, 상태 파일 분리), `fake_run.sh`에 `PLACE_MAIN=1`·`SIM=1`
+- **적재 실제 코드 통합**: `place_main.py`·`place_config.json`을 `box_place`에 추가(entry `place_main`, 설정 설치), `STACK` 3층×2자리, 템플릿 −x 방향, `place_main`: 설정 경로(설치 폴더), `STACK` 일치 검사, 지원 클래스 검사(A/B/C), 모든 이동 전 `report.check()`, 하강 루프 `report.keepalive()`, `clear_pending`, 정지 실패 시에도 `CANCELED` 유지. `Reporter.keepalive()` 추가, 관제는 stage가 바뀔 때만 feedback 출력. ROS 없이 연결부 시험 통과, **실제 로봇 시험은 아직**
 - **정지 기능**: `EmergencyStop.srv` + 관제 `/emergency_stop`, 관제 `request_stop()`(두산 `move_stop` 3초 반복 + 파트 Goal cancel), 로봇 상태 감시(`robot_monitor` dsr/fake/off, `get_robot_state` 0.5초), 두산 알람·연결 끊김 구독, 진행 감시(`progress_timeout_sec`), 사전 점검 '로봇 상태', 카운트다운 중 비상정지 → 시작 안 함. 파트 interface: cancel 수신(MultiThreaded + Reentrant), Goal 하나만, `report.check()`·`CANCELED`. DB `request_emergency_stop()`, `fake_database estop_at`. ROS 없이 로직 시험 통과, **ROS·에뮬레이터·실제 로봇 시험은 아직**
 - **작업 상태 ERROR/STOPPED**: `SetJobStatus`에 `reason` 추가, `common.JOB_STATUS`·`STOP_CODES`·`ERROR_TEXT`·`status_for()`·`error_text()`, 관제 `stop()` → `abort_job()`(DB에 `ERROR : Fail to pick` 등 기록, `JOB_ERROR`/`JOB_STOPPED` 이벤트), DB interface·템플릿 `set_job_status(status, reason)`. STOPPED 감지 경로는 정지 기능 묶음에서
 - **인터페이스 v0.4** (적재 규칙·재고 측정): `PlaceZone.msg` 추가, `FixedPoses.place_zones`, Place Goal에서 `inventory` 제거, Place Result `count`만

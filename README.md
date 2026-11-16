@@ -175,11 +175,13 @@ Feedback의 `log_level`·`log_msg`는 파트가 `report.log('메시지', 'WARN')
 ### 적재 규칙 (v0.4, `box_comm/common.py` `STACK`)
 
 - 구역 하나에 같은 클래스만 쌓습니다(A 물품 → A 구역).
-- 가장 안쪽 **1단**에 1층부터 4층까지 쌓고, 다 차면 **+y 방향으로 한 칸 앞(2단)** 에 다시 1층부터 쌓습니다. x는 모든 단이 같습니다. 구역당 최대 단 수는 `STACK['max_tiers']`(기본 3), 넘으면 `NO_SLOT`.
+- **1단(첫 자리)** 에 1층부터 **3층**까지 쌓고, 다 차면 **다음 자리(2단)** 에 다시 1층부터 쌓습니다. 구역당 **2자리** (`STACK` = 3층 × 2자리, 최대 6개), 넘으면 `NO_SLOT`.
+- 다음 자리 위치는 적재 설정 `box_place/config/place_config.json`의 `slot_dx_mm`(현재 **−x 방향 80mm**, y는 같음)로 정합니다.
+- `STACK`과 적재 설정(`max_layers`, `slot_count`)은 같아야 합니다. 다르면 `place_main`이 시작하지 않습니다.
 - 적재는 **매번 1단부터** 박스를 쥔 채 위에서 내려가, 더 내려가지 않는 높이(z)로 층을 판단합니다. 5층 높이에서 닿으면 그 단은 꽉 찬 것이므로 놓지 않고 다음 단으로 갑니다.
 - 놓은 위치로 수량을 계산합니다: `수량 = (단-1) × 4 + 층` (예: 2단 2층 → 6개). 앞 단은 모두 찼다고 봅니다.
 - 관제·DB는 **1단 x·y와 수량만** 알고, 단 간격·z·박스 높이는 적재 파트만 가집니다.
-- UI 적재 이미지는 수량에서 바로 그립니다: `stack_layout(6)` → `[4, 2]` (1단 4층, 2단 2층).
+- UI 적재 이미지는 수량에서 바로 그립니다: `stack_layout(5)` → `[3, 2]` (1자리 3층, 2자리 2층).
 
 ---
 
@@ -324,6 +326,24 @@ ros2 run box_control control
 - `0`으로 주면 대기 없이 바로 시작합니다.
 - 관제가 터미널 입력을 받을 수 없는 환경(launch 등)에서는 `q` 없이 대기 후 시작합니다. 비상정지 서비스는 대기 중에도 동작합니다(시작 안 함).
 
+### 적재 실제 로봇 실행 (`place_main`)
+
+적재 실제 코드는 `box_place/box_place/place_main.py`, 설정은 `box_place/config/place_config.json`입니다 (빌드하면 `share/box_place/config/`에 설치).
+
+```bash
+ros2 run box_place place_main                                        # 기본 설정 파일
+ros2 run box_place place_main --ros-args -p show_force:=true         # 하강 중 힘·Z 출력
+ros2 run box_place place_main --ros-args -p clear_pending:=true      # 멈춘 뒤 확인 완료 (아래)
+ros2 run box_place place_main --ros-args -p sim_contact:=true        # 에뮬레이터 전용 (아래)
+```
+
+- 지원 클래스는 설정에 있는 것만입니다 (현재 **A/B/C**). D가 오면 `PLACE_FAILED` (`D: place_config.json에 설정이 없습니다`).
+- Goal의 측정존이 `(0,0,0)`이면 움직이지 않고 실패합니다 → DB에 실제 측정존·구역 좌표가 있어야 합니다.
+- 정지: 모든 이동 전과 힘 제어 하강 중에 관제 정지 요청을 확인합니다 → `CANCELED`로 빠져나오며 힘·순응제어 해제 + `move_stop`. 하강 중에는 1초마다 keepalive를 보내 진행 감시가 오인하지 않습니다.
+- 측정존 z는 **박스를 쥐는 TCP 높이**입니다. 현재 측정존 `[300, -160, 30]` (z 30 = 적재 1층 첫 접촉 Z, 측정존 바닥이 적재 구역 바닥과 같은 높이라는 가정).
+- **`sim_contact` (에뮬레이터 전용)**: 에뮬레이터는 힘 센서 값이 없어 '닿을 때까지 하강'이 끝나지 않습니다. `true`면 힘 제어 대신 가상으로 쌓인 높이까지 `movel`로 내려가 닿았다고 칩니다(층 판단·만재 시 다음 자리·수량 계산은 원래 코드). 가상 적재 수는 노드가 켜질 때 0, 상태 파일은 `~/.ros/place_sim_state.json`으로 분리. **실제 로봇에서는 켜지 않습니다.**
+- **멈춘 뒤 복구**: 작업 중 멈추면 상태 파일(`~/.ros/place_real_v04_state.json`)에 미완료 작업이 남아 다음 적재를 거부합니다. 그리퍼(물건을 쥐고 있는지)와 적재 상태를 확인하고 `-p clear_pending:=true`로 한 번 실행하세요.
+
 ### 정지 기능 (비상정지 · 로봇 정지 감지 · 진행 감시)
 
 관제의 `abort_job()`은 작업을 끝내는 처리이고, 로봇을 멈추는 것은 아래 정지 기능이 합니다.
@@ -366,6 +386,29 @@ ros2 param set /control fake_robot_state 5      # 5 = SAFE_STOP, 6 = EMERGENCY_S
 ### 로봇 없이 실행 (fake)
 
 `box_control`의 fake 노드로 전체 흐름을 로봇 없이 확인할 수 있습니다.
+
+**터미널 하나로 (추천)** — fake 노드 4개는 백그라운드, 관제는 앞에서 실행. 관제가 끝나거나 Ctrl+C면 모두 정리됩니다.
+
+```bash
+cd ~/ws_cobot_pjt/ws_dsr/src/box_project
+./scripts/fake_run.sh                                        # 기본: robot_monitor=fake, 대기 3초
+BOX_COUNT=6 CLASSES="A,A,B,C,D,D" ./scripts/fake_run.sh
+DB_ARGS="-p estop_at:=2" ./scripts/fake_run.sh               # 2번째 박스 뒤 UI 비상정지 흉내
+PLACE_ARGS="-p miscount_at:=2" ./scripts/fake_run.sh         # 재고 불일치
+./scripts/fake_run.sh -p robot_monitor:=fake -p progress_timeout_sec:=5.0   # 관제 파라미터 직접 지정
+MOTION=1 BOX_COUNT=2 ./scripts/fake_run.sh                   # 탐지·판별·적재를 test_*_motion으로 (로봇이 위아래로 움직임)
+PLACE_MAIN=1 SIM=1 BOX_COUNT=5 CLASSES="A,A,A,A,B" ./scripts/fake_run.sh   # 적재만 place_main, 에뮬레이터 (가상 접촉)
+PLACE_MAIN=1 BOX_COUNT=1 CLASSES="A" ./scripts/fake_run.sh   # 적재만 place_main, 실제 로봇 (실제 구역 좌표 필요)
+./scripts/fake_stop.sh                                       # 남은 노드 강제 정리
+```
+
+fake 노드 출력은 `/tmp/box_fake_logs/*.log`에 남습니다 (`tail -f /tmp/box_fake_logs/database.log`).
+
+- `MOTION=1`, `PLACE_MAIN=1`은 bringup(에뮬레이터 또는 실제 로봇)이 필요하고, 관제 기본값이 `robot_monitor=dsr`, 대기 5초로 바뀝니다.
+- `PLACE_MAIN=1`: 탐지·판별은 fake(움직이지 않음), 적재만 `box_place place_main`. `CLASSES` 기본값 `A,B,C`(D 미지원). `SIM=1`이면 `-p sim_contact:=true`.
+- `PLACE_MAIN=1`로 멈췄다가 다시 돌릴 때는 미완료 기록부터 지웁니다: 에뮬레이터 `rm -f ~/.ros/place_sim_state.json`, 실제 로봇은 그리퍼·적재 상태 확인 후 `PLACE_ARGS="-p clear_pending:=true"`.
+
+**터미널을 따로 띄울 때**
 
 ```bash
 ros2 run box_control fake_database

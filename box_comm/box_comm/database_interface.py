@@ -41,7 +41,7 @@ database_interface.py — DB 파트 통신 계층
           # event = {'stamp', 'job_id', 'source', 'stage', 'level', 'code', 'box_id',
           #          'class_id', 'expected', 'measured', 'message'}
           # DB에 저장 + UI 로그 창에 message 표시. code·level로 걸러서 보여 주면 됨
-  재고 → UI 적재 이미지: box_comm.common.stack_layout(수량) → 단별 층 수 (예: 6 → [4, 2])
+  재고 → UI 적재 이미지: box_comm.common.stack_layout(수량) → 단별 층 수 (예: 5 → [3, 2], 3층 x 2자리)
   실패하면 아무 예외나 raise → success=False, message에 사유가 담긴다.
 
 실행

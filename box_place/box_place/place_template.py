@@ -2,7 +2,8 @@
 """
 place_template.py — 적재 템플릿 (관제 관리, 참고용)
 ================================================================
-  이 파일은 직접 수정하지 않는다. 담당(정수현)은 이 파일을 참고해 자기 메인 코드(예: place.py)를 만든다.
+  이 파일은 직접 수정하지 않는다. 담당(정수현)은 이 파일을 참고해 자기 메인 코드를 만든다.
+  실제 로봇 구현: box_place/place_main.py (+ box_place/config/place_config.json)
   관제가 인터페이스·공통 규칙을 바꾸면 이 파일을 업데이트한다.
   pull 후 바뀐 부분 확인:  git log -p -- box_place/box_place/place_template.py
   → 바뀐 내용을 자기 메인 코드에 직접 반영한다.
@@ -10,11 +11,12 @@ place_template.py — 적재 템플릿 (관제 관리, 참고용)
 ================================================================
 적재 규칙 (v0.4, box_comm/common.py STACK)
   - 구역 하나에 같은 클래스만. 구역의 '1단' x, y는 DB 값 → self.poses['place_zones'][class]
-  - 가장 안쪽 1단에 1층부터 4층까지, 다 차면 +y 방향으로 한 칸 앞(2단)에 다시 1층부터
+  - 1단(첫 자리)에 1층부터 STACK['levels']층(현재 3)까지, 다 차면 다음 자리(2단)에 다시 1층부터
+    다음 자리 위치 = 1단 x + (단-1) * TIER_PITCH_X, y는 같음 (현재 −x 방향 80mm, place_config의 slot_dx_mm)
   - 놓을 자리는 '재고 숫자'로 정하지 않고 실제로 확인한다 (매번 1단부터):
       1단 위로 가서 박스를 쥔 채 내려감 → 더 내려가지 않는 높이(z)에서 층 계산
-        z가 1~4층 높이  → 그 자리에 놓음
-        z가 5층 높이    → 1단이 꽉 참 → 놓지 않고 올라가서 2단에서 다시 시도
+        z가 1~3층 높이  → 그 자리에 놓음
+        z가 4층 높이    → 1단이 꽉 참 → 놓지 않고 올라가서 2단에서 다시 시도
       놓은 (단, 층)으로 수량 계산: (단-1)*4 + 층   예: 2단 2층 → 6개
   - 관제에는 이 수량만 보낸다. 단·층·z는 이 파트 안에서만 쓰고 로그로 남긴다.
   - 이 수량이 관제 → DB → UI로 올라가는 '실제 재고'다. 관제가 기대값(+1)과 비교·기록한다.
@@ -63,8 +65,8 @@ from box_comm.place_interface import PartError, STACK, count_from_position, star
 # ----------------------------------------------------------------------
 # 적재 파트만 가지는 값 — 실측 후 수정 (단위 mm, 로봇 base 기준)
 # ----------------------------------------------------------------------
-TIER_PITCH_Y = 80.0      # 단 간격: n단 y = 1단 y + (n-1) * TIER_PITCH_Y  (+y 방향, 넉넉하게)
-APPROACH_Z = 350.0       # 구역 위 접근 높이 (TCP z). 4층 + 쥔 박스 1개 + 여유보다 높게
+TIER_PITCH_X = -80.0     # 단(자리) 간격: n단 x = 1단 x + (n-1) * TIER_PITCH_X, y는 같음 (−x 방향)
+APPROACH_Z = 350.0       # 구역 위 접근 높이 (TCP z). 최대 층 + 쥔 박스 1개 + 여유보다 높게
 FLOOR_Z = 120.0          # 박스를 쥔 채 '바닥'에 닿았을 때 TCP z (1층 기준) — 실측
 BOX_HEIGHT = {           # 놓는 방향 기준 박스 높이 (판별이 위상을 고정해서 넘긴다는 전제) — 실측
     'A': 40.0,
@@ -75,7 +77,7 @@ BOX_HEIGHT = {           # 놓는 방향 기준 박스 높이 (판별이 위상�
 LEVEL_TOL = 0.35         # 층 판단 허용 오차 (박스 높이 대비 비율). 넘으면 기울어짐 등으로 보고 경고
 PLACE_RPY = [0.0, 180.0, 0.0]   # 적재 자세 a, b, c [deg] — 실제 그리퍼 방향에 맞게
 
-LEVELS = STACK['levels']         # 4층 (common.py, 전 파트 공통)
+LEVELS = STACK['levels']         # 층 수 (common.py, 전 파트 공통 — 현재 3)
 MAX_TIERS = STACK['max_tiers']   # 구역당 단 수 (common.py, 전 파트 공통)
 
 
@@ -103,9 +105,9 @@ class PlaceWork:
     # 약속된 함수
     # ------------------------------------------------------------------
     def run(self, result_class, report) -> int:
-        x, y1 = self._zone_xy(result_class)
+        x1, y = self._zone_xy(result_class)
         h = BOX_HEIGHT[result_class]
-        self.log.info(f'[place] {result_class} 구역 1단 x={x}, y={y1}, 박스 높이 {h}mm')
+        self.log.info(f'[place] {result_class} 구역 1단 x={x1}, y={y}, 박스 높이 {h}mm')
 
         # 1. 측정존 물품 픽업
         report('picking')
@@ -113,19 +115,19 @@ class PlaceWork:
 
         # 2. 구역 1단 위로 이동
         report('moving')
-        self.move_above(x, y1)
+        self.move_above(x1, y)
 
         # 3. 1단부터 내려가며 놓을 자리 찾기
         report('placing')
         for tier in range(1, MAX_TIERS + 1):
             report.check()                         # 정지 요청이면 여기서 멈춤 (로봇 명령 전에)
-            y = y1 + (tier - 1) * TIER_PITCH_Y
+            x = x1 + (tier - 1) * TIER_PITCH_X
             if tier > 1:
                 self.move_above(x, y)
             z = self.descend_until_contact(result_class, tier)
             level = self.level_from_z(z, h)
 
-            if level > LEVELS:                     # 이 단은 이미 4층까지 참 → 놓지 않고 다음 단
+            if level > LEVELS:                     # 이 단은 이미 꽉 참 → 놓지 않고 다음 단
                 self.log.info(f'[place] {tier}단 꽉 참 (z={z:.1f} → {level}층 높이) → 다음 단')
                 report.log(f'{result_class} 구역 {tier}단 꽉 참 → {tier + 1}단으로')
                 self.move_above(x, y)              # 쥔 채로 올라감

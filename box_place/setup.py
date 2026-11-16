@@ -1,3 +1,5 @@
+from glob import glob
+
 from setuptools import find_packages, setup
 
 package_name = 'box_place'
@@ -9,6 +11,7 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/config', glob('config/*.json')),   # place_config.json
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -19,6 +22,7 @@ setup(
     entry_points={
         'console_scripts': [
             'place_template = box_place.place_template:main',
+            'place_main = box_place.place_main:main',          # 실제 로봇 적재
         ],
     },
 )

@@ -6,7 +6,7 @@
 QUIET=0
 [ "${1:-}" = "--quiet" ] && QUIET=1
 
-PATTERN='(box_control/(fake_database|fake_scan|fake_judge|fake_place|test_scan_motion|test_judge_motion|test_place_motion|control)( |$))|(ros2 run box_control (fake_database|fake_scan|fake_judge|fake_place|test_scan_motion|test_judge_motion|test_place_motion|control)( |$))'
+PATTERN='((box_control/(fake_database|fake_scan|fake_judge|fake_place|test_scan_motion|test_judge_motion|test_place_motion|control)|box_place/place_main)( |$))|(ros2 run (box_control (fake_database|fake_scan|fake_judge|fake_place|test_scan_motion|test_judge_motion|test_place_motion|control)|box_place place_main)( |$))'
 
 if pgrep -f "$PATTERN" >/dev/null; then
     [ "$QUIET" = 1 ] || echo "[fake_stop] 정리할 노드:"
