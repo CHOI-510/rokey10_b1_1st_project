@@ -20,6 +20,7 @@ scan_interface.py — 탐지 파트 통신 계층
       # self.poses = {'home_j': [6], 'measure_zone': [x, y, z]}  ← interface가 Goal마다 넣어 줌 (DB 값)
       def run(self, report) -> bool:
           # 단계가 바뀔 때마다 report(stage) 호출 (필수, stage 목록은 common.STAGES['scan'])
+          # 남길 일이 있으면 report.log('집기 실패, 재시도 2/3', 'WARN') → 관제가 /event_log로 넘김
           # 물품을 측정존에 두었으면 True, 물품이 없으면 False
           # 실패하면 raise PartError('GRASP_FAILED', '이유')
 
@@ -36,7 +37,7 @@ from rclpy.node import Node
 from box_interfaces.action import Scan
 
 from box_comm.robot import RobotSetup
-from box_comm.common import SETUP_STAGE, ERROR_CODES, PartError, STAGES, default_poses, poses_from_msg  # noqa: F401  (PartError는 scan.py가 여기서 import)
+from box_comm.common import Reporter, SETUP_STAGE, ERROR_CODES, PartError, STAGES, default_poses, poses_from_msg  # noqa: F401  (PartError는 scan.py가 여기서 import)
 
 NODE_NAME = 'scan'
 ACTION_NAME = '/scan'
@@ -56,13 +57,11 @@ class ScanInterface(Node):
         self.get_logger().info('[scan] Goal 수신: 시작명령')
         result = Scan.Result()
 
-        def report(stage: str):
-            stage = str(stage)
-            if stage not in STAGES['scan']:
-                self.get_logger().warn(
-                    f'[scan] 등록되지 않은 stage: "{stage}" (사용 가능: {STAGES["scan"]})')
-            goal_handle.publish_feedback(Scan.Feedback(stage=stage))
-            self.get_logger().info(f'[scan] stage={stage}')
+        report = Reporter(
+            'scan',
+            lambda stage, level, msg: goal_handle.publish_feedback(
+                Scan.Feedback(stage=stage, log_level=level, log_msg=msg)),
+            self.get_logger())
 
         try:
             # 고정 좌표: 관제가 Goal에 실어 보낸 DB 값 → 작업 클래스의 self.poses

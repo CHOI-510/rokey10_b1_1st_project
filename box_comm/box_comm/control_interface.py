@@ -17,12 +17,22 @@ control_interface.py — 관제 통신 계층
 
   scan(poses)                         -> (found: bool, err)
   judge(specs, poses)                 -> (result_class: str, err)
-  place(result_class, inventory, poses) -> (inventory_after: dict, err)
-    poses = {'home_j': [6], 'measure_zone': [3]} (DB 값). 모든 Goal에 실어 보낸다.
+  place(result_class, poses)      -> (count: int|None, err)
+    count = 적재가 실제로 놓은 위치로 잰 result_class 수량 (v0.4)
+    poses = {'home_j': [6], 'measure_zone': [3], 'place_zones': {'A': [x, y], ...}} (DB 값).
+            모든 Goal에 실어 보낸다.
   get_job_data()                 -> (specs: list, inventory: dict, poses: dict|None, err)
-    poses = {'home_j': [6], 'measure_zone': [3]} (DB 사본), DB에 없으면 None
+    poses = 위와 같은 형식 (DB 값), DB에 없으면 None
   update_inventory(box_id, inv)  -> err
   set_job_status(status)         -> err
+
+  이벤트 로그 (/event_log 토픽, 보내기만 함)
+  log_event(level, code, message, box_id='', class_id='', expected=-1, measured=-1)
+    관제 자신의 판단(작업 시작·완료·중단, 재고 불일치 등)을 올린다.
+  set_log_context(job_id, box_id='', class_id='')
+    지금 처리 중인 박스. 파트 Feedback 로그에 이 값이 붙는다.
+  파트 Feedback에 log_msg가 있으면(report.log) 자동으로 /event_log에 넘긴다 (code=PART_LOG).
+  진행만 알리는 Feedback(report(stage))은 넘기지 않는다.
 
   진행 추적 (Feedback 기반)
   progress(name)                 -> (last_stage: str, seconds_since: float)
@@ -51,7 +61,9 @@ from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 
 from box_interfaces.action import Judge, Place, Scan
-from box_interfaces.msg import ClassSpec, FixedPoses, Inventory
+from box_interfaces.msg import ClassSpec, FixedPoses, Inventory, LogEvent, PlaceZone
+
+from box_comm.common import LOG_LEVELS, LOG_TOPIC, log_qos, poses_from_msg
 from box_interfaces.srv import GetJobData, SetJobStatus, UpdateInventory
 
 NODE_NAME = 'control'
@@ -83,6 +95,8 @@ def _dict_to_poses(d) -> FixedPoses:
     msg.available = True
     msg.home_j = [float(v) for v in d['home_j']]
     msg.measure_zone = [float(v) for v in d['measure_zone']]
+    msg.place_zones = [PlaceZone(class_id=c, x=float(xy[0]), y=float(xy[1]))
+                       for c, xy in (d.get('place_zones') or {}).items() if xy is not None]
     return msg
 
 
@@ -105,11 +119,15 @@ class ControlInterface(Node):
         self._update_inv = self.create_client(UpdateInventory, '/update_inventory', callback_group=cb)
         self._set_status = self.create_client(SetJobStatus, '/set_job_status', callback_group=cb)
 
+        # 이벤트 로그 (보내기만 함)
+        self._log_pub = self.create_publisher(LogEvent, LOG_TOPIC, log_qos())
+        self._log_ctx = {'job_id': '', 'box_id': '', 'class_id': ''}
+
         # Feedback 진행 추적: name -> (stage, 받은 시각)
         self._progress_lock = threading.Lock()
         self._progress = {}
 
-        self.get_logger().info('[control] 클라이언트 준비 (Action 3, Service 3)')
+        self.get_logger().info(f'[control] 클라이언트 준비 (Action 3, Service 3, 로그 토픽 {LOG_TOPIC})')
 
     # ==================================================================
     # 파트 (Action)
@@ -131,15 +149,14 @@ class ControlInterface(Node):
             return '', res.error_code or 'NO_ERROR_CODE'
         return res.result_class, None
 
-    def place(self, result_class, inventory, poses=None, timeout=None):
-        goal = Place.Goal(result_class=result_class, inventory=_dict_to_inv(inventory),
-                          poses=_dict_to_poses(poses))
+    def place(self, result_class, poses=None, timeout=None):
+        goal = Place.Goal(result_class=result_class, poses=_dict_to_poses(poses))
         res, err = self._call_action(self._place, goal, 'place', timeout)
         if err:
-            return dict(inventory), err
+            return None, err
         if not res.success:
-            return _inv_to_dict(res.inventory), res.error_code or 'NO_ERROR_CODE'
-        return _inv_to_dict(res.inventory), None
+            return None, res.error_code or 'NO_ERROR_CODE'
+        return int(res.count), None
 
     # ==================================================================
     # DB (Service)
@@ -151,10 +168,7 @@ class ControlInterface(Node):
         if not res.success:
             self.get_logger().error(f'[control] GetJobData 실패: {res.message}')
             return [], {}, None, 'DB_FAILED'
-        poses = None
-        if res.poses.available:
-            poses = {'home_j': list(res.poses.home_j),
-                     'measure_zone': list(res.poses.measure_zone)}
+        poses = poses_from_msg(res.poses)      # available=False면 None
         return ([_spec_to_dict(s) for s in res.specs], _inv_to_dict(res.inventory),
                 poses, None)
 
@@ -176,6 +190,30 @@ class ControlInterface(Node):
         if not res.success:
             return 'DB_FAILED'
         return None
+
+    # ==================================================================
+    # 이벤트 로그
+    # ==================================================================
+    def set_log_context(self, job_id=None, box_id=None, class_id=None):
+        for k, v in (('job_id', job_id), ('box_id', box_id), ('class_id', class_id)):
+            if v is not None:
+                self._log_ctx[k] = str(v)
+
+    def log_event(self, level, code, message, box_id=None, class_id=None,
+                  expected=-1, measured=-1, source='control', stage=''):
+        """/event_log에 한 줄 발행. 실패해도 예외를 밖으로 내보내지 않는다 (작업을 막지 않음)."""
+        try:
+            level = level if level in LOG_LEVELS else 'INFO'
+            msg = LogEvent(
+                stamp=time.strftime('%Y-%m-%d %H:%M:%S'),
+                job_id=self._log_ctx['job_id'],
+                source=str(source), stage=str(stage), level=level, code=str(code),
+                box_id=self._log_ctx['box_id'] if box_id is None else str(box_id),
+                class_id=self._log_ctx['class_id'] if class_id is None else str(class_id),
+                expected=int(expected), measured=int(measured), message=str(message))
+            self._log_pub.publish(msg)
+        except Exception as e:      # 로그 때문에 작업이 멈추면 안 됨
+            self.get_logger().warn(f'[control] 이벤트 로그 발행 실패: {type(e).__name__}: {e}')
 
     # ==================================================================
     # 진행 추적
@@ -227,9 +265,14 @@ class ControlInterface(Node):
         return fut.result(), None
 
     def _on_feedback(self, name, feedback_msg):
-        stage = feedback_msg.feedback.stage
+        fb = feedback_msg.feedback
+        stage = fb.stage
         self._set_progress(name, stage)
-        self.get_logger().info(f'[control] /{name} feedback: {stage}')
+        if fb.log_msg:                     # report.log()로 보낸 것만 이벤트 로그로 넘김
+            self.get_logger().info(f'[control] /{name} log {fb.log_level}: {fb.log_msg}')
+            self.log_event(fb.log_level, 'PART_LOG', fb.log_msg, source=name, stage=stage)
+        else:
+            self.get_logger().info(f'[control] /{name} feedback: {stage}')
 
     @staticmethod
     def _wait(fut, timeout):

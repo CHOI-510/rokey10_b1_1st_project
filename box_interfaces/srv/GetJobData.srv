@@ -3,5 +3,5 @@
 bool success
 ClassSpec[] specs
 Inventory inventory
-FixedPoses poses       # DB copy of fixed poses (compared with common.py in preflight)
+FixedPoses poses       # DB fixed poses incl. place_zones (control overwrites its own with these)
 string message

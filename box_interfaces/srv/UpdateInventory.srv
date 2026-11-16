@@ -1,6 +1,6 @@
 # Called by control after each place result (same box_id is applied only once)
 string box_id
-Inventory inventory    # full inventory after placing
+Inventory inventory    # full inventory after placing (v0.4: measured count from place)
 ---
 bool success
 string message

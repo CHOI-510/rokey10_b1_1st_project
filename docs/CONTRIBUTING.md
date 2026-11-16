@@ -125,11 +125,13 @@ def run(self, specs, report) -> str:
 **적재 — `place.py`**
 
 ```python
-def run(self, result_class, inventory, report) -> dict:
+def run(self, result_class, report) -> int:       # v0.4
     # result_class = 'B'
-    # inventory    = {'A': 1, 'B': 0, 'C': 2, 'D': 0}   (적재 전)
-    # 적재 후 inventory를 같은 형식으로 반환
-    # 슬롯 배정·좌표는 이 파일 안에서만 다룸
+    # 매번 1단부터 박스를 쥔 채 내려가며 놓을 자리를 찾고(5층 높이에서 닿으면 다음 단),
+    # 놓은 위치로 잰 수량을 반환: count_from_position(단, 층)  예: 2단 2층 → 6
+    # 단·층·z는 관제에 보내지 않음 (자기 로그로만 남김)
+    # 구역 1단 x, y는 self.poses['place_zones']['B'] (DB 값)
+    # 단 간격·z·박스 높이는 이 파일 안에서만 다룸
 ```
 
 **DB — `database.py`**
@@ -139,14 +141,27 @@ def get_job_data(self) -> tuple:           # (specs, inventory) 반환
 def update_inventory(self, box_id, inventory) -> None:
 def set_job_status(self, status) -> None:  # 'BEFORE' / 'RUNNING' / 'DONE'
 def get_fixed_poses(self) -> dict:         # DB에 저장된 고정 좌표 (기준값), 없으면 None
-    # {'home_j': [6개, deg], 'measure_zone': [x, y, z, mm]}
-    # 관제가 이 값을 모든 파트 Goal에 실어 보낸다. 없으면 관제가 작업을 시작하지 않음
+    # {'home_j': [6개, deg], 'measure_zone': [x, y, z, mm],
+    #  'place_zones': {'A': [x, y], 'B': [x, y], 'C': [x, y], 'D': [x, y]}}   ← v0.4 적재 구역 1단
+    # 관제가 이 값을 모든 파트 Goal에 실어 보낸다. 없거나 구역이 빠지면 관제가 작업을 시작하지 않음
+# UI 적재 이미지: box_comm.common.stack_layout(수량) → 단별 층 수 (예: 6 → [4, 2])
 ```
 
 ### 2-2-1. Feedback stage (필수)
 
 `run()` 안에서 단계가 바뀔 때마다 `report('stage')`를 호출합니다. 값은 아래 목록에서만 씁니다. (`box_comm/common.py`의 `STAGES`)
 목록에 없는 값을 보내면 경고 로그가 남습니다. 새 stage가 필요하면 관제에게 요청합니다.
+
+**DB·UI에 남길 일은 `report.log()`** 로 보냅니다. 관제가 받아서 `/event_log` 토픽으로 DB에 넘깁니다. (파트가 DB에 직접 보내지 않음)
+
+```python
+report('picking')                                  # 진행 단계 → 로그로 안 올라감
+report.log('집기 실패, 재시도 2/3', 'WARN')         # 지금 단계 그대로 + 로그로 올라감
+report.log('정렬 완료 (90° 회전)')                  # level 기본값 'INFO'
+```
+
+- level: `'INFO'` / `'WARN'` / `'ERROR'`
+- 남길 만한 것: 스캔 결과, 집기 재시도, 정렬·회전, 단 꽉 참 등 나중에 확인하고 싶은 일. 매 단계마다 쓸 필요는 없습니다.
 
 | 파트 | stage 순서 |
 | --- | --- |
@@ -167,7 +182,7 @@ def run(self, report) -> bool:
 ```
 
 - 판별의 길이 측정은 물품 방향에 따라 가로·세로·높이가 달라질 수 있어 번호로 구분합니다. 템플릿의 `classify()`는 측정한 길이 3개와 기준 W·D·H를 각각 **크기순으로 정렬해서** 비교하므로, 측정 순서가 바뀌어도 판별에는 영향이 없습니다.
-- 적재가 반환한 재고는 관제가 검증합니다. **적재 전 재고에서 `result_class` 칸만 +1**이어야 하며, 다르면 관제가 자기 계산값으로 DB에 반영하고 경고를 남깁니다.
+- 적재가 잰 수량은 관제가 검증합니다. 기대값(**적재 전 재고의 `result_class` 수량 + 1**)과 다르면 관제가 **측정값**으로 DB에 반영하고 경고를 남깁니다 (v0.4: 실제 적재 상태가 기준).
 
 ### 2-3. 실패 처리
 
@@ -206,13 +221,14 @@ raise PartError('GRASP_FAILED', '두 번 시도했지만 못 집음')
 - 자기 동작 안에서 다른 TCP가 필요하면 바꿔도 됩니다. (예: 무게 측정용 기준점) 다음 Goal에서 기본값으로 돌아갑니다.
   단, **로봇에 등록된 이름**이어야 합니다. 등록되지 않은 이름은 조용히 실패해서 플랜지 기준으로 움직입니다. 새 TCP가 필요하면 관제에게 요청하세요.
 
-**공통 좌표(HOME, 측정존)는 `self.poses`로 읽습니다.** 직접 숫자를 적지 않습니다.
+**공통 좌표(HOME, 측정존, 적재 구역)는 `self.poses`로 읽습니다.** 직접 숫자를 적지 않습니다.
 관제가 DB 값을 Goal에 실어 보내면, `box_comm`이 Goal을 받을 때마다 작업 클래스의 `self.poses`에 넣어 줍니다.
 
 ```python
 def run(self, report):
     home = self.poses['home_j']          # HOME 관절 각도 [deg]
     zone = self.poses['measure_zone']    # 측정존 x, y, z [mm] (None 또는 (0,0,0)이면 미설정 → 움직이지 말 것)
+    xy = self.poses['place_zones']['B']  # (적재) B 구역 1단 x, y [mm] (None이면 미설정)
     self.dr.movej(home)
 ```
 
@@ -253,9 +269,10 @@ ros2 action send_goal /judge box_interfaces/action/Judge \
   "{specs: [{class_id: 'A', width_mm: 40.0, depth_mm: 40.0, height_mm: 40.0, weight_g: 100.0},
             {class_id: 'B', width_mm: 60.0, depth_mm: 40.0, height_mm: 30.0, weight_g: 150.0}]}" --feedback
 
-# 적재
+# 적재 (v0.4: 구역 좌표가 필요하므로 poses를 넣어서 보냄)
 ros2 action send_goal /place box_interfaces/action/Place \
-  "{result_class: 'B', inventory: {a: 1, b: 0, c: 2, d: 0}}" --feedback
+  "{result_class: 'B', poses: {available: true, home_j: [0,0,90,0,90,0], measure_zone: [400,0,100],
+    place_zones: [{class_id: 'B', x: 300.0, y: -200.0}]}}" --feedback
 
 # DB
 ros2 service call /get_job_data box_interfaces/srv/GetJobData "{}"

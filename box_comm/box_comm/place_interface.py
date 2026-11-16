@@ -6,25 +6,27 @@ place_interface.py — 적재 파트 통신 계층
 
 하는 일
   - Action 서버 /place (box_interfaces/action/Place)를 띄운다.
-  - Goal의 result_class와 inventory를 파이썬 값으로 바꿔 작업 클래스의 run()에 넘긴다.
-  - Goal의 고정 좌표(poses, DB 값)를 작업 클래스의 self.poses에 넣는다.
+  - Goal의 result_class를 작업 클래스의 run()에 넘긴다. (v0.4: Goal에 inventory 없음)
+  - Goal의 고정 좌표(poses, DB 값 — HOME, 측정존, 적재 구역 1단 x,y)를 작업 클래스의 self.poses에 넣는다.
     Goal에 좌표가 없으면(단독 테스트) common.py 기본값을 쓰고 경고를 남긴다.
   - run() 직전에 기본 TCP·툴을 확인·적용한다 (box_comm/robot.py, stage 'robot_setup').
     실패하면 run()을 부르지 않고 ROBOT_SETUP_FAILED로 끝낸다. 파라미터 robot_setup=auto/on/off
   - run()의 반환값/예외를 Result로 바꿔 관제에 보낸다.
-  - 실패하면 적재 전 inventory를 그대로 돌려준다.
+  - 반환값(수량)을 검사한다 (정수, 1 ~ 구역 최대 수량). 어긋나면 PLACE_FAILED.
 
 작업 클래스 약속 (box_place/place.py에서 작성)
   class PlaceWork:
       def __init__(self, node): ...
-      # self.poses = {'home_j': [6], 'measure_zone': [x, y, z]}  ← interface가 Goal마다 넣어 줌 (DB 값)
-      def run(self, result_class, inventory, report) -> dict:
+      # self.poses = {'home_j': [6], 'measure_zone': [x, y, z],
+      #               'place_zones': {'A': [x, y], ...}}   ← interface가 Goal마다 넣어 줌 (DB 값)
+      def run(self, result_class, report) -> dict:
           # result_class = 'A' / 'B' / 'C' / 'D'
-          # inventory    = {'A': 1, 'B': 0, 'C': 2, 'D': 0}   (적재 전)
-          # 적재 후 inventory dict를 같은 형식으로 반환
-          # 슬롯 배정·좌표는 이 안에서만 처리 (인터페이스에 나오지 않음)
-          # 실패하면 raise PartError('PLACE_FAILED', '이유')
+          # 1단부터 내려가며 실제로 놓을 자리를 찾고, 놓은 위치로 잰 수량(int)을 반환
+          #   수량 = common.count_from_position(단, 층)   예: 2단 2층 → 6
+          # 단·층·z·단 간격·박스 높이는 이 안에서만 처리 (관제에는 수량만 감)
+          # 실패하면 raise PartError('PLACE_FAILED' 또는 'NO_SLOT', '이유')
           # 단계가 바뀔 때마다 report(stage) 호출 (필수, stage 목록은 common.STAGES['place'])
+          # 남길 일이 있으면 report.log('집기 실패, 재시도 2/3', 'WARN') → 관제가 /event_log로 넘김
 
 실행
   box_place/place.py의 main()에서 start(PlaceWork) 호출
@@ -37,24 +39,24 @@ from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.node import Node
 
 from box_interfaces.action import Place
-from box_interfaces.msg import Inventory
 
 from box_comm.robot import RobotSetup
-from box_comm.common import SETUP_STAGE, ERROR_CODES, PartError, STAGES, default_poses, poses_from_msg, VALID_CLASSES  # noqa: F401
+from box_comm.common import (Reporter, SETUP_STAGE, ERROR_CODES, PartError, STACK, STAGES,  # noqa: F401
+                             count_from_position, default_poses, poses_from_msg,
+                             stack_capacity, VALID_CLASSES)
 
 NODE_NAME = 'place'
 ACTION_NAME = '/place'
 DEFAULT_ERROR = 'PLACE_FAILED'   # 예상 못 한 예외일 때 보내는 코드
 
 
-def _inv_to_dict(inv: Inventory) -> dict:
-    return {'A': inv.a, 'B': inv.b, 'C': inv.c, 'D': inv.d}
-
-
-def _dict_to_inv(d: dict) -> Inventory:
-    if set(d.keys()) != set(VALID_CLASSES):
-        raise ValueError(f'inventory는 {VALID_CLASSES} 키를 모두 가져야 함 (받은 값: {d!r})')
-    return Inventory(a=int(d['A']), b=int(d['B']), c=int(d['C']), d=int(d['D']))
+def _check_count(count) -> int:
+    """run() 반환값(측정 수량) 검사"""
+    if isinstance(count, bool) or not isinstance(count, int):
+        raise ValueError(f'run()은 수량(int)을 반환해야 함 (받은 값: {count!r})')
+    if not 1 <= count <= stack_capacity():
+        raise ValueError(f'수량 범위 밖: {count} (1~{stack_capacity()})')
+    return count
 
 
 class PlaceInterface(Node):
@@ -69,18 +71,14 @@ class PlaceInterface(Node):
     def _execute(self, goal_handle):
         req = goal_handle.request
         result_class = req.result_class
-        inv_before = _inv_to_dict(req.inventory)
-        self.get_logger().info(
-            f'[place] Goal 수신: class={result_class}, inventory(전)={inv_before}')
+        self.get_logger().info(f'[place] Goal 수신: class={result_class}')
         result = Place.Result()
 
-        def report(stage: str):
-            stage = str(stage)
-            if stage not in STAGES['place']:
-                self.get_logger().warn(
-                    f'[place] 등록되지 않은 stage: "{stage}" (사용 가능: {STAGES["place"]})')
-            goal_handle.publish_feedback(Place.Feedback(stage=stage))
-            self.get_logger().info(f'[place] stage={stage}')
+        report = Reporter(
+            'place',
+            lambda stage, level, msg: goal_handle.publish_feedback(
+                Place.Feedback(stage=stage, log_level=level, log_msg=msg)),
+            self.get_logger())
 
         try:
             if result_class not in VALID_CLASSES:
@@ -99,24 +97,25 @@ class PlaceInterface(Node):
                 raise PartError('ROBOT_SETUP_FAILED', setup_msg)
             self.get_logger().info(f'[place] robot_setup: {setup_msg}')
 
-            inv_after = self.work.run(result_class, dict(inv_before), report)
+            try:
+                count = _check_count(self.work.run(result_class, report))
+            except ValueError as e:
+                raise PartError('PLACE_FAILED', f'run() 반환값 오류: {e}')
             result.success = True
-            result.inventory = _dict_to_inv(inv_after)
+            result.count = count
             result.error_code = ''
             goal_handle.succeed()
-            self.get_logger().info(f'[place] Result: inventory(후)={inv_after}')
+            self.get_logger().info(f'[place] Result: {result_class} 측정 수량 {count}')
 
         except PartError as e:
             self.get_logger().error(f'[place] 실패 {e.code}: {e}')
             result.success = False
-            result.inventory = req.inventory
             result.error_code = e.code
             goal_handle.abort()
 
         except Exception as e:
             self.get_logger().error(f'[place] 예외: {type(e).__name__}: {e}')
             result.success = False
-            result.inventory = req.inventory
             result.error_code = DEFAULT_ERROR
             goal_handle.abort()
 

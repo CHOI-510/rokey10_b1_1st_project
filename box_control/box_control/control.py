@@ -16,10 +16,15 @@ control.py — 관제 메인 (예시: 정상 경로만)
     모든 Action Goal(/scan, /judge, /place)에 실어 보내고, 파트는 그 값으로 움직인다.
   - box_id는 '<작업 시작 시각>_<순번>' (예: 20261114_130512_001).
     관제를 다시 실행해도 이전 작업의 box_id와 겹치지 않는다.
-  - 재고 검증: 적재 Result의 inventory를 관제 기대값(적재 전 재고에서
-    result_class 칸만 +1)과 비교한다. 다르면 관제 기대값으로 DB에 반영하고
-    경고 로그를 남긴 뒤 작업을 계속한다. (작업 로그를 DB에 남길지는 DB/UI와 협의 중)
+  - 재고 검증 (v0.4): 적재는 실제로 놓은 위치로 잰 result_class 수량(count)만 돌려준다.
+    (단·층·z는 적재 내부 정보라 관제는 모른다)
+    관제는 기대값(적재 전 재고의 result_class 수량 + 1)과 비교해서 기록하고,
+    DB에는 항상 '측정값'을 반영한다 (실제 적재 상태가 기준). 다르면 경고 로그를 남기고
+    작업을 계속한다. 다른 클래스 수량은 그대로 둔다. (불일치 기록을 DB에 남길지는 DB/UI와 협의 중)
   - 진행 추적: 중단 시 해당 파트의 마지막 Feedback stage와 경과 시간을 함께 기록한다.
+  - 이벤트 로그: /event_log 토픽으로 보내기만 한다 (DB가 저장·UI 표시).
+    관제 이벤트(JOB_START / BOX_DONE / COUNT_MISMATCH / JOB_STOPPED / JOB_CANCELED / JOB_DONE)와
+    파트가 report.log()로 보낸 것(PART_LOG, control_interface가 자동으로 넘김).
 
 사전 점검 (PREFLIGHT) — box_control/preflight.py
   분류 기준, 고정 좌표(DB 값이 있는지, 형식이 맞는지) 등을 점검한다.
@@ -112,7 +117,7 @@ class Control:
         self.inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
         self.box_seq = 0
         self.job_id = time.strftime('%Y%m%d_%H%M%S')   # 실행마다 고유한 작업 ID
-        self.count_mismatches = []         # 재고 불일치 기록 (box_id, 기대값, 받은 값)
+        self.count_mismatches = []         # 재고 불일치 기록 (box_id, class, 기대 수량, 측정 수량)
         self.start_delay = float(
             io.declare_parameter('start_delay_sec', 10.0).value)   # 시작 대기 시간(초)
 
@@ -141,6 +146,7 @@ class Control:
         # BEFORE: 물품값과 재고 받아오기
         self.set_state(State.BEFORE)
         self.log.info(f'[control] job_id={self.job_id}')
+        self.io.set_log_context(job_id=self.job_id)
         self.specs, self.inventory, db_poses, err = self.io.get_job_data()
         if err:
             return self.cancel_start(f'작업 데이터를 받지 못함 ({err})')
@@ -160,8 +166,12 @@ class Control:
         self.set_state(State.RUNNING)
         if err := self.io.set_job_status(State.RUNNING.value):
             return self.stop(err)
+        self.io.log_event('INFO', 'JOB_START', f'작업 시작 (재고 {self.inventory})', box_id='')
 
         while True:
+            box_id = f'{self.job_id}_{self.box_seq + 1:03d}'   # 이번 박스 (적재까지 끝나야 확정)
+            self.io.set_log_context(box_id=box_id, class_id='')
+
             # ---- 탐지 ----
             self.set_state(State.SCANNING)
             found, err = self.io.scan(self.poses)
@@ -178,30 +188,38 @@ class Control:
                 return self.stop(err)
             self.set_state(State.JUDGE_DONE)
             self.log.info(f'[control] 판별 결과: {result_class}')
+            self.io.set_log_context(class_id=result_class)
 
             # ---- 적재 ----
             self.set_state(State.PLACING)
-            inventory_after, err = self.io.place(result_class, self.inventory, self.poses)
+            measured, err = self.io.place(result_class, self.poses)
             if err:
                 return self.stop(err)
             self.set_state(State.PLACE_DONE)
+            self.log.info(f'[control] 적재 측정 수량: {result_class} {measured}개')
 
             # ---- 재고 검증 → 반영 (Place Result를 받은 뒤에만) ----
             self.box_seq += 1
-            box_id = f'{self.job_id}_{self.box_seq:03d}'
-            inventory_new = self.verify_inventory(box_id, result_class, inventory_after)
+            inventory_new = self.verify_inventory(box_id, result_class, measured)
             if err := self.io.update_inventory(box_id, inventory_new):
                 return self.stop(err)
             self.inventory = inventory_new
             self.log.info(f'[control] {box_id} 적재 완료 → inventory={self.inventory}')
+            self.io.log_event('INFO', 'BOX_DONE',
+                              f'{result_class} 적재 완료 → {result_class} {measured}개')
 
         # DONE
+        self.io.set_log_context(box_id='', class_id='')
         self.set_state(State.DONE)
         self.io.set_job_status(State.DONE.value)
+        self.io.log_event('INFO', 'JOB_DONE',
+                          f'작업 완료: {self.box_seq}개 처리, 재고 {self.inventory}, '
+                          f'불일치 {len(self.count_mismatches)}건')
         self.log.info(f'[control] 총 {self.box_seq}개 처리, 최종 inventory={self.inventory}')
         if self.count_mismatches:
             self.log.warn(f'[control] 재고 불일치 {len(self.count_mismatches)}건 — 확인 필요: '
-                          + ', '.join(b for b, _, _ in self.count_mismatches))
+                          + ', '.join(f'{b}({c} 기대 {e}/측정 {m})'
+                                      for b, c, e, m in self.count_mismatches))
 
     # ------------------------------------------------------------------
     # 시작 대기 (카운트다운)
@@ -255,25 +273,32 @@ class Control:
     # ------------------------------------------------------------------
     # 재고 검증
     # ------------------------------------------------------------------
-    def expected_inventory(self, result_class) -> dict:
-        """적재 전 재고에서 result_class 칸만 +1 한 값"""
-        expected = dict(self.inventory)
-        expected[result_class] += 1
+    def expected_count(self, result_class) -> int:
+        """기대 수량 = 적재 전 재고의 result_class 수량 + 1"""
         # TODO: 미분류('X')가 생기면 그때는 변화 0을 기대값으로
-        return expected
+        return self.inventory[result_class] + 1
 
-    def verify_inventory(self, box_id, result_class, received) -> dict:
-        """적재 Result와 관제 기대값 비교. DB에 반영할 값을 돌려준다 (관제 기대값 우선)."""
-        expected = self.expected_inventory(result_class)
-        if received == expected:
-            return received
+    def verify_inventory(self, box_id, result_class, measured) -> dict:
+        """적재가 잰 수량(measured)과 기대값 비교 → DB에 반영할 재고를 돌려준다.
+        정책 (a): 항상 측정값 반영 (실제 선반 상태가 기준), 불일치는 기록 + 경고 후 계속."""
+        expected = self.expected_count(result_class)
+        inventory_new = dict(self.inventory)
+        inventory_new[result_class] = int(measured)
+        if measured == expected:
+            return inventory_new
 
-        self.count_mismatches.append((box_id, expected, received))
+        self.count_mismatches.append((box_id, result_class, expected, measured))
         self.log.warn(
-            f'[control] 재고 카운팅 오류 ({time.strftime("%H:%M:%S")}) {box_id}: '
-            f'class={result_class}, 적재 전={self.inventory}, '
-            f'기대={expected}, 적재 Result={received} → 기대값으로 반영, 확인 필요')
-        return expected
+            f'[control] 재고 불일치 ({time.strftime("%H:%M:%S")}) {box_id}: '
+            f'class={result_class}, 적재 전 {self.inventory[result_class]}개, '
+            f'기대 {expected}개, 적재 측정 {measured}개 (차이 {measured - expected:+d}) '
+            f'→ 측정값으로 반영, 확인 필요')
+        self.io.log_event('WARN', 'COUNT_MISMATCH',
+                          f'{result_class} 재고 불일치: 기대 {expected}, 측정 {measured} '
+                          f'({measured - expected:+d}) → 측정값 반영',
+                          box_id=box_id, class_id=result_class,
+                          expected=expected, measured=measured)
+        return inventory_new
 
     # ------------------------------------------------------------------
     # 중단
@@ -289,6 +314,7 @@ class Control:
         self.log.warn(f'[control] ===== 작업을 시작하지 않습니다 [{where}]: {reason} =====')
         self.log.warn('[control] 로봇은 움직이지 않았고, DB 상태는 BEFORE 그대로입니다. '
                       '원인을 해결한 뒤 관제를 다시 실행하세요.')
+        self.io.log_event('WARN', 'JOB_CANCELED', f'작업을 시작하지 않음 [{where}]: {reason}')
 
     def stop(self, err):
         # TODO: error_code별 정책 (재시도 / 건너뛰기 / ERROR 상태 기록)
@@ -299,6 +325,8 @@ class Control:
             stage, sec = self.io.progress(action)
             msg += f' | /{action} 마지막 stage="{stage}" ({sec:.1f}초 전)'
         self.log.error(msg)
+        self.io.log_event('ERROR', 'JOB_STOPPED', msg.replace('[control] ', ''),
+                          stage=stage if action else '')
 
 
 def main():

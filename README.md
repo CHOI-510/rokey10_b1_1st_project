@@ -36,11 +36,14 @@
   (DB·UI)    GetJobData        (관제)    /scan            judge  (판별)
              UpdateInventory             /judge           place  (적재)
              SetJobStatus                /place
+                 Topic
+            ◀───────────────
+             /event_log  (로그, 관제 → DB 보내기만)
 ```
 
 - 관제 ↔ 탐지/판별/적재: **Action** (로봇이 움직여 오래 걸리고, 진행·결과가 필요)
-- 관제 ↔ DB: **Service** (짧은 요청·응답)
-- 토픽은 쓰지 않습니다. 파트끼리는 직접 통신하지 않고, 파트는 DB와 UI를 모릅니다.
+- 관제 ↔ DB: 응답이 필요하면 **Service** (작업 데이터, 재고 반영, 상태 기록), 알리기만 하면 **Topic** (이벤트 로그 `/event_log`)
+- 파트끼리는 직접 통신하지 않고, 파트는 DB와 UI를 모릅니다. 파트 로그도 Feedback으로 관제에 보내면 관제가 `/event_log`로 넘깁니다.
 - 실행되는 노드는 5개입니다: `/control`, `/scan`, `/judge`, `/place`, `/database`
 
 <!-- TODO: 노드 구조도, 통신 시퀀스 그림 -->
@@ -89,17 +92,19 @@ box_project/
 
 ---
 
-## 4. 인터페이스 (`box_interfaces` v0.3)
+## 4. 인터페이스 (`box_interfaces` v0.4)
 
 ### Action (관제 → 파트)
 
 | 이름 | Goal | Result | Feedback |
 | --- | --- | --- | --- |
-| `/scan` | `poses` (시작명령) | `success`, `found`, `error_code` | `stage` |
-| `/judge` | `specs: ClassSpec[]`, `poses` | `success`, `result_class`, `error_code` | `stage` |
-| `/place` | `result_class`, `inventory`, `poses` | `success`, `inventory`(적재 후), `error_code` | `stage` |
+| `/scan` | `poses` (시작명령) | `success`, `found`, `error_code` | `stage`, `log_level`, `log_msg` |
+| `/judge` | `specs: ClassSpec[]`, `poses` | `success`, `result_class`, `error_code` | `stage`, `log_level`, `log_msg` |
+| `/place` | `result_class`, `poses` | `success`, `count`(측정 수량), `error_code` | `stage`, `log_level`, `log_msg` |
 
-모든 Goal의 `poses`(`FixedPoses`)는 관제가 DB에서 받은 고정 좌표(HOME, 측정존)입니다. 파트는 이 값으로 움직입니다.
+모든 Goal의 `poses`(`FixedPoses`)는 관제가 DB에서 받은 고정 좌표(HOME, 측정존, 적재 구역 1단 x·y)입니다. 파트는 이 값으로 움직입니다.
+
+`/place`의 `count`는 적재가 **실제로 놓은 위치(단·층)로 잰** `result_class` 수량입니다(v0.4). 단·층·z는 적재 내부 정보라 Result에 넣지 않고 적재 로그에만 남깁니다. 아래 "적재 규칙" 참고.
 
 `/scan`의 `found=False`는 "더 이상 물품 없음"이며 실패가 아닙니다(`success=True`).
 
@@ -113,6 +118,8 @@ box_project/
 | `/judge` | `measuring_length1` → `measuring_length2` → `measuring_length3` → `measuring_weight` → (`measuring_materiality`, 옵션) → `judging` |
 | `/place` | `picking` → `moving` → `placing` |
 
+Feedback의 `log_level`·`log_msg`는 파트가 `report.log('메시지', 'WARN')`으로 채웁니다. 이 칸이 채워진 Feedback만 관제가 `/event_log`로 넘기고, `report(stage)`로 진행만 알린 Feedback은 로그로 올라가지 않습니다.
+
 모든 Action은 맨 앞에 `robot_setup`(기본 TCP·툴 확인, `box_comm`이 자동으로 보냄)이 먼저 옵니다.
 판별의 길이 측정은 물품 방향에 따라 가로·세로·높이가 달라질 수 있어 번호로 구분합니다.
 
@@ -124,13 +131,24 @@ box_project/
 | `/update_inventory` | `box_id`, `inventory` | `success`, `message` | 적재완료마다 (같은 `box_id`는 한 번만 반영) |
 | `/set_job_status` | `status` | `success` | 작업중, 작업완료 시 |
 
+### Topic (관제 → DB)
+
+| 이름 | 메시지 | 내용 |
+| --- | --- | --- |
+| `/event_log` | `LogEvent` | 이벤트 로그. 관제가 보내기만 함(응답 없음, 누락 가능). QoS reliable + transient_local(최근 100개) |
+
+`code`(`box_comm/common.py` `LOG_CODES`): `PART_LOG`(파트 `report.log`), `JOB_START`, `BOX_DONE`, `COUNT_MISMATCH`, `JOB_STOPPED`, `JOB_CANCELED`, `JOB_DONE`
+확인: `ros2 topic echo /event_log` · 시연 기록: `ros2 bag record /event_log`
+
 ### 메시지
 
 | 메시지 | 필드 |
 | --- | --- |
 | `Inventory` | `a`, `b`, `c`, `d`: int32 — 분류별 재고 수 |
 | `ClassSpec` | `class_id`: string, `width_mm`, `depth_mm`, `height_mm`, `weight_g`: float32 |
-| `FixedPoses` | `available`: bool, `home_j`: float64[6] (deg), `measure_zone`: float64[3] (x, y, z mm) — 고정 좌표. **기준은 DB**. `GetJobData`로 받아 모든 Action Goal에 실어 보냄 |
+| `FixedPoses` | `available`: bool, `home_j`: float64[6] (deg), `measure_zone`: float64[3] (x, y, z mm), `place_zones`: `PlaceZone[]` — 고정 좌표. **기준은 DB**. `GetJobData`로 받아 모든 Action Goal에 실어 보냄 |
+| `LogEvent` | `stamp`, `job_id`, `source`(control/scan/judge/place), `stage`, `level`(INFO/WARN/ERROR), `code`, `box_id`, `class_id`: string, `expected`, `measured`: int32 (-1 = 해당 없음), `message`: string |
+| `PlaceZone` | `class_id`: string, `x`, `y`: float64 (mm) — 클래스별 적재 구역의 **1단** 위치 (v0.4) |
 
 ### 공통 값
 
@@ -141,21 +159,30 @@ box_project/
 | `error_code` | 성공 `""` / 실패 `NOT_FOUND`, `GRASP_FAILED`, `OVER_FORCE`, `MEASURE_FAILED`, `NO_SLOT`, `PLACE_FAILED`, `ROBOT_SETUP_FAILED` |
 | 좌표·단위 | 로봇 base 기준, mm |
 
+### 적재 규칙 (v0.4, `box_comm/common.py` `STACK`)
+
+- 구역 하나에 같은 클래스만 쌓습니다(A 물품 → A 구역).
+- 가장 안쪽 **1단**에 1층부터 4층까지 쌓고, 다 차면 **+y 방향으로 한 칸 앞(2단)** 에 다시 1층부터 쌓습니다. x는 모든 단이 같습니다. 구역당 최대 단 수는 `STACK['max_tiers']`(기본 3), 넘으면 `NO_SLOT`.
+- 적재는 **매번 1단부터** 박스를 쥔 채 위에서 내려가, 더 내려가지 않는 높이(z)로 층을 판단합니다. 5층 높이에서 닿으면 그 단은 꽉 찬 것이므로 놓지 않고 다음 단으로 갑니다.
+- 놓은 위치로 수량을 계산합니다: `수량 = (단-1) × 4 + 층` (예: 2단 2층 → 6개). 앞 단은 모두 찼다고 봅니다.
+- 관제·DB는 **1단 x·y와 수량만** 알고, 단 간격·z·박스 높이는 적재 파트만 가집니다.
+- UI 적재 이미지는 수량에서 바로 그립니다: `stack_layout(6)` → `[4, 2]` (1단 4층, 2단 2층).
+
 ---
 
 ## 5. 관제 흐름
 
 ```
 BEFORE        GetJobData로 분류 기준(specs), 재고, 고정 좌표(poses, DB 기준) 수신
-PREFLIGHT     시작 전 점검 (분류 기준, DB 고정 좌표 유무·형식) → FAIL이면 시작 안 함
+PREFLIGHT     시작 전 점검 (분류 기준, DB 고정 좌표 유무·형식, 적재 구역 A~D) → FAIL이면 시작 안 함
 STANDBY       시작 대기 카운트다운 (작업공간 안전 확인, q: 취소 / s: 바로 시작)
 RUNNING       SetJobStatus(RUNNING)
   ┌─ SCANNING    /scan Goal ──▶ found=False(물품 없음)면 관제가 작업완료로 판단
   │  SCAN_DONE
   │  JUDGING     /judge Goal(specs)
   │  JUDGE_DONE  result_class 수신
-  │  PLACING     /place Goal(result_class, inventory)
-  │  PLACE_DONE  적재 후 inventory 수신 → UpdateInventory(box_id, inventory)
+  │  PLACING     /place Goal(result_class, poses)
+  │  PLACE_DONE  측정 수량(count) 수신 → 기대값(+1)과 비교·기록 → UpdateInventory(box_id, 측정값 반영 재고)
   └─ 반복
 DONE          SetJobStatus(DONE)
 ```
@@ -178,7 +205,7 @@ DONE          SetJobStatus(DONE)
 - 단계 상태는 관제 내부에만 있고, DB에는 `BEFORE` / `RUNNING` / `DONE`과 재고만 기록합니다.
 - 상태 값은 영어(`State` Enum)이고, 로그에는 `===== SCANNING (스캔중) =====`처럼 한글을 함께 표시합니다.
 - 스캔은 물품 유무(`found`)만 알리고, 작업완료 여부는 관제가 판단합니다.
-- **재고 검증**: 관제는 적재 Result의 재고를 기대값(적재 전 재고에서 `result_class` 칸만 +1)과 비교합니다. 다르면 기대값으로 DB에 반영하고 `재고 카운팅 오류` 경고 로그를 남긴 뒤 작업을 계속하며, 작업이 끝나면 불일치 건수를 요약해서 출력합니다.
+- **재고 검증 (v0.4)**: 관제는 적재가 잰 수량(`count`)을 기대값(적재 전 재고의 `result_class` 수량 + 1)과 비교합니다. DB에는 **항상 측정값**을 반영하고(실제 적재 상태가 기준), 다르면 `재고 불일치` 경고 로그(기대·측정·차이)를 남긴 뒤 작업을 계속하며, 작업이 끝나면 불일치 건수를 요약해서 출력합니다. 다른 클래스 수량은 그대로 둡니다.
 - **중단 기록**: 오류로 중단되면 해당 파트의 마지막 Feedback stage와 경과 시간을 함께 로그로 남깁니다. (예: `SCANNING (스캔중) 단계에서 중단: GRASP_FAILED | /scan 마지막 stage="picking" (4.2초 전)`)
 - `box_id`는 관제가 `<작업 시작 시각>_<순번>` 형식으로 붙입니다. (예: `20261114_130512_001`)
   관제를 다시 실행해도 이전 작업과 겹치지 않으므로, DB 노드를 켜 둔 채 관제만 재실행해도 됩니다.
@@ -189,8 +216,9 @@ DONE          SetJobStatus(DONE)
 | --- | --- | --- |
 | 분류 기준 | A~D 중 빠진 것, 0 이하 값 | |
 | 고정 좌표 | DB에 좌표 없음 → "DB에 고정 좌표가 없습니다. DB에 HOME·측정존 좌표를 설정한 뒤 실행해 주세요.", 형식 오류 | 측정존이 (0, 0, 0) |
+| 적재 구역 | A~D 중 1단 x·y가 없는 구역 | 구역 좌표가 (0, 0) |
 
-고정 좌표(HOME, 측정존)는 **DB가 기준**입니다(v0.3). 관제는 `GetJobData`로 받은 DB 값으로 자기 좌표를 **무조건 덮어쓰고**(비교·중단 없음, 로그만 남김), 그 값을 `/scan`, `/judge`, `/place` Goal에 매번 실어 보내고, 각 파트는 그 값(`self.poses`)으로 움직입니다. `box_comm/common.py`의 `FIXED_POSES`는 **기본값**으로, Goal에 좌표가 없을 때(팀원이 혼자 `send_goal`로 테스트할 때)만 쓰입니다.
+고정 좌표(HOME, 측정존, 적재 구역 1단 x·y)는 **DB가 기준**입니다(v0.3, 적재 구역은 v0.4). 관제는 `GetJobData`로 받은 DB 값으로 자기 좌표를 **무조건 덮어쓰고**(비교·중단 없음, 로그만 남김), 그 값을 `/scan`, `/judge`, `/place` Goal에 매번 실어 보내고, 각 파트는 그 값(`self.poses`)으로 움직입니다. `box_comm/common.py`의 `FIXED_POSES`는 **기본값**으로, Goal에 좌표가 없을 때(팀원이 혼자 `send_goal`로 테스트할 때)만 쓰입니다.
 점검을 추가할 때는 `preflight.py`에 함수를 만들고 `CHECKS`에 넣습니다.
 
 ---
@@ -293,7 +321,7 @@ ros2 run box_control control --ros-args -p start_delay_sec:=3.0     # 테스트�
 | --- | --- |
 | `fake_scan` | `box_count` (박스 개수, 기본 3), `fake_delay_sec` |
 | `fake_judge` | `class_sequence` (`"A,B,B,D"`처럼 주면 그 순서로 판별, 비우면 무작위), `fake_delay_sec` |
-| `fake_place` | `fake_delay_sec`, `miscount_at` (N번째 적재에서 일부러 틀린 재고 반환 — 관제 재고 검증 테스트용, 기본 0=끔) |
+| `fake_place` | `fake_delay_sec`, `fake_start` (A~D 구역에 처음부터 쌓인 개수, 기본 `[0,0,0,0]`), `miscount_at` (N번째 적재에서 수량을 일부러 +1 틀리게 측정 — 관제 불일치 처리 테스트용, 기본 0=끔) |
 | `fake_database` | `pose_offset` (고정 좌표에 값을 더해서 반환 → DB 값이 Goal로 전달되는지 확인), `poses_available` (False면 좌표 없음 → 사전 점검 FAIL) |
 
 fake와 실제 노드는 같은 Action/Service 이름을 쓰므로 **동시에 띄우지 않습니다.**
@@ -306,7 +334,7 @@ fake와 실제 노드는 같은 Action/Service 이름을 쓰므로 **동시에 �
 | 도구 | 내용 |
 | --- | --- |
 | `test_scan_motion` | `scan_interface` + 실제 두산 동작(`connect_dsr`, `movej`/`movel`)이 들어간 `/scan` 노드. Goal마다 HOME → 위로 50mm → 아래로 → HOME. **팀원이 실제 동작을 넣을 때 참고할 예시 코드** |
-| `test_judge_motion` · `test_place_motion` | 같은 구조의 `/judge`·`/place` 노드. 판별은 x ±30mm, 적재는 y ±30mm로 움직여 눈으로 구분. 판별 결과는 A→B→C→D 순서, 적재는 해당 칸 +1 |
+| `test_judge_motion` · `test_place_motion` | 같은 구조의 `/judge`·`/place` 노드. 판별은 x ±30mm, 적재는 y ±30mm로 움직여 눈으로 구분. 판별 결과는 A→B→C→D 순서, 적재는 클래스별 카운터 +1로 단·층 반환 |
 | `robot_test` | `/scan` Goal을 반복해서 보내며 TCP·툴 적용을 점검하고 PASS/FAIL 표 출력. `-p reapply_test:=false`면 컨트롤러 설정을 바꾸는 3번 항목을 건너뜀 |
 
 ```bash

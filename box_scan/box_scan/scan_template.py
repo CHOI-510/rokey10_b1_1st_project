@@ -16,6 +16,9 @@ scan_template.py — 탐지 템플릿 (관제 관리, 참고용)
     - 작업공간에 물품이 없으면 False
     - 실패하면 raise PartError('GRASP_FAILED', '이유')  (등록된 코드만)
     - 단계가 바뀔 때마다 report(stage)를 반드시 호출 (관제가 진행 상황을 추적)
+    - 기록할 일이 있으면 report.log('메시지', 'INFO'/'WARN'/'ERROR') — 관제가 /event_log로 DB·UI에 넘김
+      예: report.log('집기 실패, 재시도 2/3', 'WARN'), report.log('정렬 완료 (90° 회전)')
+      진행만 알리는 report(stage)는 로그로 올라가지 않는다
       stage: 'space_scan' → 'picking' → 'moving' → 'placing'  (box_comm/common.py STAGES)
 
 [FAKE] 표시된 부분을 실제 로봇 동작으로 바꾸면 된다.
@@ -74,12 +77,14 @@ class ScanWork:
         # 1-1 작업공간 스캔, 1-2 물품 감지
         report('space_scan')
         if not self.detect_box():
+            report.log('작업공간에 물품 없음')                 # 이벤트 로그 예시 → DB·UI
             self.go_home()
             return False
+        report.log('물품 감지')                               # 실제: 감지 위치 x, y도 함께 적으면 좋음
 
         # 1-3 픽업 (실패 시 raise PartError('GRASP_FAILED', ...))
         report('picking')
-        self.pick()
+        self.pick()       # 재시도를 넣으면 실패할 때마다 report.log(f'집기 실패, 재시도 {n}/{max}', 'WARN')
 
         # 1-4 측정존 이동
         report('moving')

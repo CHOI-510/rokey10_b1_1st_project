@@ -10,18 +10,32 @@ database_template.py — DB·UI 템플릿 (관제 관리, 참고용)
 ================================================================
 아래는 메인 코드가 지킬 약속과 예시다. 통신은 database_interface.py가 처리한다.
 
-지킬 약속은 네 개:
+지킬 약속은 네 개 (+ 선택 하나):
   get_job_data() -> (specs, inventory)
       specs     = [{'class_id': 'A', 'width_mm': .., 'depth_mm': ..,
                     'height_mm': .., 'weight_g': ..}, ...]
       inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
   update_inventory(box_id, inventory) -> None
   set_job_status(status) -> None         status: 'BEFORE' / 'RUNNING' / 'DONE'
-  get_fixed_poses() -> dict               DB에 저장된 고정 좌표 사본
-      {'home_j': [6개, deg], 'measure_zone': [x, y, z, mm]}
-      원본은 box_comm/common.py의 FIXED_POSES. 관제가 작업 시작 전에 둘을 비교해서
-      다르면 "측정존 설정값이 DB와 다릅니다"로 시작하지 않는다.
-      저장된 값이 없으면 None 반환 (관제는 경고만 남기고 진행)
+  get_fixed_poses() -> dict               DB에 저장된 고정 좌표 — 기준값 (필수)
+      {'home_j': [6개, deg], 'measure_zone': [x, y, z, mm],
+       'place_zones': {'A': [x, y], 'B': [x, y], 'C': [x, y], 'D': [x, y]}}     ← v0.4
+      DB가 기준이다 (v0.3). 관제는 이 값으로 자기 좌표를 덮어쓰고 모든 파트 Goal에 실어 보낸다.
+      place_zones = 클래스별 적재 구역 '1단' x, y [mm, base]. 단 간격·z는 적재만 가진다.
+      None을 반환하거나 구역이 하나라도 빠지면 관제가 작업을 시작하지 않는다 (사전 점검 FAIL).
+
+  on_event(event) -> None                (선택) 이벤트 로그 한 줄 — /event_log 토픽 (관제가 보냄)
+      event = {'stamp', 'job_id', 'source', 'stage', 'level', 'code', 'box_id',
+               'class_id', 'expected', 'measured', 'message'}
+      DB에 저장 + UI 로그 창에 message 표시. code 목록은 box_comm/common.py LOG_CODES
+      예: level='WARN', code='COUNT_MISMATCH', message='B 재고 불일치: 기대 4, 측정 6 (+2) → 측정값 반영'
+      응답은 없다 (보내기만 하는 로그). 늦게 켜지면 최근 100개까지만 받는다.
+
+재고와 UI 적재 이미지 (v0.4)
+  update_inventory로 받는 재고는 적재가 실제로 놓은 위치로 잰 수량이다 (관제가 기대값과 비교·기록함).
+  적재 규칙: 1단(가장 안쪽)에 4층까지 → 다 차면 +y로 한 칸 앞 2단에 1층부터 ...
+  수량 → 이미지:  from box_comm.common import stack_layout
+                  stack_layout(6) → [4, 2]  (1단 4층, 2단 2층)  → 미리 만든 이미지 선택·표시
 
   실패하면 아무 예외나 raise → 관제에 success=False로 전달된다.
   같은 box_id 중복 무시, status 값 검사는 interface가 이미 처리한다.
@@ -38,6 +52,7 @@ UI 연동도 이 파일(또는 여기서 import하는 모듈)에서 한다. 관�
 ================================================================
 """
 
+from box_comm.common import stack_layout
 from box_comm.database_interface import start
 
 # [FAKE] 임시 기준값 — 실제 물품 실측값으로 교체 (RG2 개구 폭 이내로)
@@ -48,11 +63,17 @@ FAKE_SPECS = [
     {'class_id': 'D', 'width_mm': 100.0, 'depth_mm': 80.0, 'height_mm': 50.0, 'weight_g': 400.0},
 ]
 
-# [FAKE] DB에 저장된 고정 좌표 사본 — 실제로는 DB에서 읽어 온다
-#        값은 box_comm/common.py의 FIXED_POSES와 같아야 한다
+# [FAKE] DB에 저장된 고정 좌표 — 실제로는 DB에서 읽어 온다 (기준값)
+#        common.py의 FIXED_POSES 기본값도 같은 값으로 맞춰 두면 팀원 단독 테스트가 편하다
 FAKE_POSES = {
     'home_j': [0.0, 0.0, 90.0, 0.0, 90.0, 0.0],
-    'measure_zone': [0.0, 0.0, 0.0],      # TODO: 측정존 실측값 (common.py와 같은 값으로)
+    'measure_zone': [0.0, 0.0, 0.0],      # TODO: 측정존 실측값
+    'place_zones': {                      # TODO: 구역별 1단 x, y 실측값 [mm, base]
+        'A': [300.0, -300.0],
+        'B': [400.0, -300.0],
+        'C': [500.0, -300.0],
+        'D': [600.0, -300.0],
+    },
 }
 
 
@@ -63,10 +84,13 @@ class DatabaseWork:
 
         # [FAKE] 메모리 저장소 — 노드를 끄면 사라짐
         self._specs = [dict(s) for s in FAKE_SPECS]
-        self._poses = {k: list(v) for k, v in FAKE_POSES.items()}
+        self._poses = {'home_j': list(FAKE_POSES['home_j']),
+                       'measure_zone': list(FAKE_POSES['measure_zone']),
+                       'place_zones': {c: list(xy) for c, xy in FAKE_POSES['place_zones'].items()}}
         self._inventory = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
         self._status = 'BEFORE'
         self._history = []                 # (box_id, inventory) 기록
+        self._events = []                  # 이벤트 로그 (UI 로그 창용)
 
     # ------------------------------------------------------------------
     # 약속된 함수
@@ -84,13 +108,25 @@ class DatabaseWork:
         self.refresh_ui()
 
     def get_fixed_poses(self):
-        return {k: list(v) for k, v in self._poses.items()}
+        return {'home_j': list(self._poses['home_j']),
+                'measure_zone': list(self._poses['measure_zone']),
+                'place_zones': {c: list(xy) for c, xy in self._poses['place_zones'].items()}}
+
+    def on_event(self, event):
+        # [FAKE] 실제로는 DB 테이블에 저장하고 UI 로그 창에 추가
+        self._events.append(event)
+        log = {'INFO': self.log.info, 'WARN': self.log.warn, 'ERROR': self.log.error}.get(
+            event['level'], self.log.info)
+        log(f'[database] 로그 {event["stamp"]} [{event["source"]}/{event["code"]}] '
+            f'{event["box_id"]} {event["message"]}')
 
     # ------------------------------------------------------------------
     # [FAKE] UI 갱신 자리
     # ------------------------------------------------------------------
     def refresh_ui(self):
-        self.log.info(f'[database] UI 갱신: 상태={self._status}, 재고={self._inventory}')
+        layout = {c: stack_layout(n) for c, n in self._inventory.items()}   # 적재 이미지용
+        self.log.info(f'[database] UI 갱신: 상태={self._status}, 재고={self._inventory}, '
+                      f'적재 상태(단별 층 수)={layout}')
 
 
 def main():

@@ -3,3 +3,4 @@
 bool available           # false = not provided (parts fall back to box_comm/common.py defaults)
 float64[6] home_j        # HOME joint angles [deg]
 float64[3] measure_zone  # measure zone position x, y, z [mm, robot base frame]
+PlaceZone[] place_zones  # v0.4: 1st-tier x, y of each class zone (A~D). Used by place

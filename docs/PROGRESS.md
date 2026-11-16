@@ -13,7 +13,7 @@
 | 관제 | 최은정 | 정상 경로 + 재고 검증 + 진행 추적 + 사전 점검 + 시작 대기 + TCP·툴 자동 확인 | 에러 정책·타임아웃·비상정지 미구현 |
 | 탐지 | 김창균 | fake | |
 | 판별 | 송현석 | fake | |
-| 적재 | 정수현 | fake | |
+| 적재 | 정수현 | fake | v0.4 템플릿(1단부터 측정 적재)으로 메인 코드 작성 |
 | DB·UI | 이승재 | fake | |
 
 ---
@@ -22,7 +22,15 @@
 
 | 날짜 | 결정 | 이유 |
 | --- | --- | --- |
-| 11/14 | 관제 중심 허브 구조. 관제↔파트 Action, 관제↔DB Service, 토픽 없음 | 파트 간 결합 제거, 통합 지점 단일화 |
+| 11/16 | **적재 규칙 확정**: 구역은 클래스별 고정(A→A 구역). 1단(가장 안쪽)에 4층까지 → 다 차면 +y로 한 칸 앞 2단에 1층부터. x는 모든 단 동일. 구역당 단 수는 `STACK['max_tiers']`(기본 3) | 수량만 알면 위치가 정해지는 단순한 규칙 |
+| 11/16 | **적재가 재고를 측정**: 매번 1단부터 박스를 쥔 채 내려가 닿은 z로 층 판단, 5층 높이면 놓지 않고 다음 단. 놓은 (단, 층) → 수량 `(단-1)*4 + 층` 을 관제에 반환 | 계산값이 아니라 실제 선반 상태를 재고로 씀 |
+| 11/16 | **인터페이스 v0.4**: `PlaceZone.msg` 추가(`class_id`, 1단 `x`, `y`), `FixedPoses`에 `place_zones` 추가(DB 기준), Place Goal에서 `inventory` 제거, Place Result는 **`count`(측정 수량)만**. 단·층·z·단 간격·박스 높이는 적재만 가짐(적재 로그에만 남김) | 관제·DB는 1단 x·y와 수량만 알면 됨 |
+| 11/16 | ~~재고 검증: 관제 기대값 우선~~ → **측정값 우선 (정책 a)**: 기대값(+1)과 다르면 측정값을 DB에 반영, 불일치는 경고 로그로 기록하고 작업 계속 | 실제 적재 상태가 기준. 선반·DB가 어긋나도 자동으로 바로잡힘 |
+| 11/16 | 판별이 물품 위상을 항상 같게 맞춘 뒤 적재로 넘기는 것을 목표로 함 → 적재는 클래스별 박스 높이 하나로 층 판단 | z로 층을 판단하려면 놓는 방향이 같아야 함 (될지는 시험 필요) |
+| 11/16 | **이벤트 로그는 토픽** `/event_log`(`LogEvent.msg`)로 관제가 보내기만 함(응답 없음, 누락 허용, QoS reliable + transient_local 100). 관제↔DB는 Service 3개(응답 필요) + Topic 1개 | 로그 때문에 작업이 막히지 않게. `ros2 topic echo`·`bag record`로 바로 확인 가능 |
+| 11/16 | **파트 로그는 Feedback으로**: Feedback에 `log_level`·`log_msg` 추가, 파트는 `report.log(msg, level)`. 로그 칸이 채워진 Feedback만 관제가 `/event_log`로 넘김 (`code=PART_LOG`). 관제 이벤트: `JOB_START`·`BOX_DONE`·`COUNT_MISMATCH`·`JOB_STOPPED`·`JOB_CANCELED`·`JOB_DONE` | 허브 구조 유지(파트→DB 직접 없음), stage(진행 추적)와 로그를 분리 |
+| 11/16 | UI 적재 이미지는 수량 → `common.stack_layout()`(단별 층 수)으로 그림. DB에 박스별 위치를 저장하지 않음 | 수량에서 위치가 정해지므로 중복 저장 불필요 |
+| 11/14 | 관제 중심 허브 구조. 관제↔파트 Action, 관제↔DB Service (11/16: 로그만 Topic 추가) | 파트 간 결합 제거, 통합 지점 단일화 |
 | 11/14 | 인터페이스 v0.2 확정 (`box_interfaces`) | |
 | 11/14 | 통신 코드를 `box_comm`으로 분리, 각 파트는 `run()`만 구현 | 인터페이스 변경 시 한 곳만 수정, Result 누락 방지 |
 | 11/14 | 저장소 하나에 패키지 7개, Git은 `main` 하나 + 각자 자기 폴더만 수정 | 폴더가 나뉘어 충돌이 거의 없음, 초기 학습 부담 최소화 |
@@ -31,7 +39,7 @@
 | 11/14 | `box_id`를 `<작업 시작 시각>_<순번>`으로 변경 | 관제 재실행 시 DB가 새 박스를 중복으로 보고 재고를 반영하지 않던 문제 해결 |
 | 11/14 | 관제 상태 이름을 영어로 변경 (`SCANNING`, `SCAN_DONE` …), 로그에만 한글 병기 | DB status·Feedback stage와 표기 통일, 코드 호환성 |
 | 11/14 | 스캔은 물품 유무(`found`)만 알리고, 작업완료 판단은 관제가 함 | 시작·완료 판단은 관제의 역할 |
-| 11/14 | **재고 검증 적용**: 관제 기대값 우선으로 DB 반영, 불일치는 관제 경고 로그로 기록하고 작업 계속 | 사이클은 멈추지 않고, 카운팅 문제는 사람이 확인 |
+| 11/14 | ~~**재고 검증 적용**: 관제 기대값 우선으로 DB 반영~~ → 11/16 측정값 우선으로 변경 | |
 | 11/14 | **Feedback stage 필수화**, stage 목록을 `common.STAGES`로 확정, 관제가 마지막 stage·경과 시간 추적 | 지연·멈춤 위치 파악, 이후 safety 개입의 기반 |
 | 11/14 | **시작 대기(STANDBY) 카운트다운**: 관제 실행 시 터미널에 경고 + 카운트다운, `q` 취소 / `s` 바로 시작 / 무응답 시 자동 시작. 기본 10초(`start_delay_sec`), 실제 운용 10분 상정 | 로봇 작동 전 작업공간에 사람·파손 위험 물품이 없는지 확인 |
 | 11/14 | 비상정지는 **필수 구현 목표**. 안 되면 UI 버튼만 두고 "향후 추가 가능"으로 정리 | 안전 기능은 시연에서 반드시 설명해야 함 |
@@ -60,28 +68,36 @@
 | 7 | 측정존 비우기, 상태 확인·환경 세팅 (WBS 0-2, 0-3) 위치 | 관제 | 미정 |
 | 8 | 탐지·판별·적재 3개 프로세스의 두산 로봇 동시 연결 확인 — 시험 도구 `test_scan_motion`(box_count)·`test_judge_motion`·`test_place_motion` 추가 (README 7장) | 관제 | 가상·실제 로봇에서 시험 예정 |
 | 9 | DB 방식(SQLite 권장)과 UI 방식(웹 / PyQt) — PyQt를 노드 안에 띄우면 `box_comm` 수정 필요 | DB | 미정 |
-| 10 | **재고 검증**: 관제 쪽 기능은 적용 완료. 불일치 기록을 DB 작업 로그로 남길지(통계만 / 상세 기록), UI 표시 여부 | 관제, DB | DB·UI 담당과 협의 |
+| 10 | **재고 검증 (v0.4, 측정값 우선)**: 관제 쪽 적용 완료. 불일치 기록을 DB 작업 로그로 남길지(통계만 / 상세 기록), UI 표시 여부. 차이가 클 때(예: ±2 이상) 중단할지 | 관제, DB | DB·UI 담당과 협의 |
 | 11 | **집기 최종 실패 처리**: 파트 내부 재시도 후에도 실패하면 `GRASP_FAILED`. 같은 박스를 계속 다시 찾는 무한 루프 방지 필요 (연속 실패 상한, 해당 위치 건너뛰기 여부) | 관제, 탐지 | 탐지 담당과 협의 |
 | 12 | **Feedback 기반 진행 감시**: stage 목록·필수화·관제 추적은 적용 완료. 일정 시간 소식이 없을 때의 **개입 로직**(cancel, 두산 정지) | 관제 | `common`의 safety 항목으로 추가 예정 |
-| 13 | 작업 통계 로그 (작업완료 물품 수, 재시도 횟수 등) 형식 | 관제, DB | DB·UI 담당과 협의 |
+| 13 | 작업 통계 로그 (작업완료 물품 수, 재시도 횟수 등) — `/event_log`로 기반 마련(`JOB_DONE` 요약, `PART_LOG`). DB 저장 형식·UI 로그 창 표시(level·code 필터) | 관제, DB | DB·UI 담당과 협의 |
 | 14 | **TCP·툴 자동 확인** 구현·가상·실제 로봇 테스트 완료(`box_comm/robot.py`). 응답 필드 `info` 확인, 툴 이름 `Tool Weight` 확인, 가상·실제 모두 자동 모드 적용 불가 → 수동 모드 경로로 적용됨 | 관제 | 완료 |
 | 16 | **측정존 좌표 실측** → **DB에 입력** (기준값). `common.py` 기본값도 같은 값으로 맞춰 두면 단독 테스트가 편함 | 관제, DB, 탐지, 판별, 적재 | 실측 필요 |
 | 17 | DB: `get_fixed_poses()` 구현 (**필수**: 없으면 관제가 시작하지 않음). 인터페이스 v0.3라 전원 `git pull` 후 **다시 빌드** 필요 | DB, 전체 | 공지 필요 |
+| 18 | **적재 실측값**: 구역별 1단 x·y(→ DB), 단 간격 `TIER_PITCH_Y`, 접근 높이 `APPROACH_Z`, 바닥 접촉 z `FLOOR_Z`, 클래스별 박스 높이 `BOX_HEIGHT`, 구역당 단 수 `STACK['max_tiers']` | 적재, DB, 관제 | 실측 필요 |
+| 19 | **접촉 감지 방식**: 박스를 쥔 채 내려가다 멈춘 z를 얻는 방법 (DSR 순응 제어 + 힘 조건 / 조금씩 내리며 외력 확인), 층 판단 허용 오차 `LEVEL_TOL` | 적재 | 구현·시험 필요 |
+| 20 | **판별 → 적재 위상 고정**: 판별이 항상 같은 방향으로 내려놓아야 박스 높이 하나로 층 판단 가능 (이슈 6과 연결) | 판별, 적재 | 시험 필요 |
+| 21 | **수량 측정의 한계**: 앞 단은 모두 찼다고 보고 셈. 안쪽 단에서 박스를 빼면 빈자리부터 채우며 실제보다 적게 셀 수 있음. 모든 단이 차면(`NO_SLOT`) 박스를 쥔 채 끝남 → 측정존 복귀 등은 에러 정책(이슈 2)과 함께 | 적재, 관제 | 시연 범위에서는 허용 |
+| 17-1 | DB: `get_fixed_poses()`에 `place_zones`(A~D 1단 x·y) 추가 (**필수**: 빠지면 사전 점검 FAIL). 인터페이스 v0.4라 전원 `git pull` 후 **다시 빌드** 필요, 적재 `run()` 형식 변경 | DB, 적재, 전체 | 공지 필요 |
 | 15 | (옵션) **UI 작업 시작 버튼**: 누르면 시작 대기 팝업(실제 10분, 데모 10초) 후 자동 시작. 사실상 원격 시작이라 UI↔DB↔관제 경로가 필요 → 아이디어 단계 | 관제, DB | 아이디어 |
 
-### 메모: 이슈 10 재고 검증 (적용됨)
+### 메모: 이슈 10 재고 검증 (v0.4, 측정값 우선)
 
 ```
-보낸 값:  inventory = {A:1, B:0, C:2, D:0},  result_class = 'C'
-기대값:   {A:1, B:0, C:3, D:0}          ← result_class 칸만 +1
-받은 값:  적재 Result의 inventory
+적재 전 재고:  B = 3,  result_class = 'B'
+기대값:        B = 4                       ← 적재 전 + 1
+측정값:        적재 Result의 count (놓은 단·층으로 계산, 예: 1단 4층 → 4)
 일치   → 그대로 DB 반영
-불일치 → 기대값으로 DB 반영 + 경고 로그 "HH:MM box_id 카운팅 오류, 확인 필요 (기대 …, 받음 …)", 작업 계속
+불일치 → 측정값으로 DB 반영 + 경고 로그 "재고 불일치 HH:MM:SS box_id: 기대 4개, 측정 6개 (차이 +2) → 측정값으로 반영", 작업 계속
+         다른 클래스 수량은 그대로
 ```
 
-- 구현: `control.py`의 `expected_inventory()`, `verify_inventory()`. 작업 끝에 불일치 건수 요약 출력
-- 테스트: `ros2 run box_control fake_place --ros-args -p miscount_at:=2` (2번째 적재에서 일부러 틀린 재고 반환)
-- 미분류(`X`)가 생기면 `result_class == 'X'`일 때만 변화 0을 허용 (`expected_inventory()`에 TODO)
+- 구현: `control.py`의 `expected_count()`, `verify_inventory()`. 작업 끝에 불일치 건수 요약 출력
+- 테스트:
+  - `ros2 run box_control fake_place --ros-args -p miscount_at:=2` (2번째 적재에서 수량을 일부러 +1 틀리게 측정)
+  - `fake_database -p start_inventory:="[0,5,0,0]"` + `fake_place` (선반은 비었는데 DB 재고가 남아 있는 상황 → 첫 B 적재에서 측정 1로 바로잡힘)
+- 미분류(`X`)가 생기면 `result_class == 'X'`일 때 기대값 처리 (`expected_count()`에 TODO)
 - 경고 로그를 DB에 남길지(UI 표시 여부)는 DB 담당과 협의
 
 ### 메모: 이슈 12 Feedback stage 목록 (적용됨, `common.STAGES`)
@@ -114,6 +130,15 @@
 
 ### 11/16
 
+- **인터페이스 v0.4** (적재 규칙·재고 측정): `PlaceZone.msg` 추가, `FixedPoses.place_zones`, Place Goal에서 `inventory` 제거, Place Result `count`만
+- `common.py`: `FIXED_POSES['place_zones']` 기본값(미설정), `STACK`(4층·3단), `count_from_position()`·`position_from_count()`·`stack_layout()` 추가
+- `place_interface`: `run(result_class, report)` → 측정 수량(int) 반환, 범위 검사 후 Result로 변환
+- 관제: 재고 검증을 **측정값 우선**으로 변경, 사전 점검에 적재 구역 A~D 확인 추가
+- 적재 템플릿: 1단부터 내려가며 자리 찾기(5층 높이면 다음 단), z → 층 계산, FAKE 스택(`fake_start`)
+- DB 템플릿: `get_fixed_poses()`에 `place_zones`, UI 갱신 로그에 `stack_layout` 표시. 옛 v0.3 이전 설명(비교 후 중단) 정리
+- fake 노드: `fake_place`(`fake_start`, `miscount_at` 측정 오차), `fake_database`(`start_inventory`, 가짜 구역 좌표), `test_place_motion` 새 Result 형식
+- **이벤트 로그**: `LogEvent.msg`, `/event_log` 토픽(관제 발행, DB 구독 → `on_event()`), Action 3개 Feedback에 `log_level`·`log_msg`, `common.Reporter`(`report(stage)` + `report.log()`), 관제 이벤트 6종, 템플릿·`fake_scan`에 `report.log()` 예시
+- ROS 없이 로직 확인: 1단 꽉 참 → 2단, 3단 모두 참 → `NO_SLOT`, 구역 좌표 없음 → `PLACE_FAILED`, 측정값 반영·불일치 기록, 사전 점검 FAIL. **ROS 빌드·실행 시험은 아직**
 - 세 파트 동시 연결 시험 도구: `test_judge_motion`, `test_place_motion` 추가, `test_scan_motion`에 `box_count` 파라미터 추가 (관제와 함께 돌릴 때 종료되도록)
 - 템플릿 4개 + 관제: 로봇 없이 / 가상 로봇(robot_test 전체 PASS, test_scan_motion 동작, 전체 루프 + TCP 확인) 통과
 

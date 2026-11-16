@@ -5,4 +5,6 @@ bool success
 bool found             # false = no more items
 string error_code
 ---
-string stage           # see box_comm/common.py STAGES['scan']
+string stage           # see box_comm/common.py STAGES
+string log_level       # "" = not a log (progress only) / "INFO" / "WARN" / "ERROR"
+string log_msg         # set by report.log(); control forwards it to /event_log

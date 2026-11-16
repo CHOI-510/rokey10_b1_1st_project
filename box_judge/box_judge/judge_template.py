@@ -17,6 +17,9 @@ judge_template.py — 판별 템플릿 (관제 관리, 참고용)
     - 측정존 물품을 측정하고 'A' / 'B' / 'C' / 'D' 중 하나를 반환
     - 실패하면 raise PartError('MEASURE_FAILED', '이유')  (등록된 코드만)
     - 단계가 바뀔 때마다 report(stage)를 반드시 호출 (관제가 진행 상황을 추적)
+    - 기록할 일이 있으면 report.log('메시지', 'INFO'/'WARN'/'ERROR') — 관제가 /event_log로 DB·UI에 넘김
+      예: report.log('집기 실패, 재시도 2/3', 'WARN'), report.log('정렬 완료 (90° 회전)')
+      진행만 알리는 report(stage)는 로그로 올라가지 않는다
       stage: 'measuring_length1' → 'measuring_length2' → 'measuring_length3'
              → 'measuring_weight' → ('measuring_materiality', 옵션) → 'judging'
       (box_comm/common.py STAGES)
@@ -88,10 +91,14 @@ class JudgeWork:
 
         self.log.info(f'[judge] 측정값 L1={lengths[0]:.1f} L2={lengths[1]:.1f} '
                       f'L3={lengths[2]:.1f} mm, {weight:.1f} g')
+        report.log(f'측정값 {lengths[0]:.1f} x {lengths[1]:.1f} x {lengths[2]:.1f} mm, '
+                   f'{weight:.1f} g')                       # 이벤트 로그 예시 → DB·UI
 
         # 2-4 판별
         report('judging')
         result_class = self.classify(specs, lengths, weight)
+        report.log(f'판별 결과 {result_class}')
+        # 위상 정렬을 넣으면: report.log('정렬 완료 (90° 회전)')
 
         self.go_home()
         return result_class

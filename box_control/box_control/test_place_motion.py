@@ -8,7 +8,8 @@ test_place_motion.py — 실제 두산 동작을 넣은 '/place' 테스트 노�
   test_scan_motion(/scan) + test_judge_motion(/judge) + test_place_motion(/place) + control
 
 동작 (Goal 한 번당) — 파트마다 방향을 달리해서 눈으로 구분
-  HOME → y +30mm → HOME → y -30mm → HOME (적재 흉내), 재고는 result_class 칸만 +1
+  HOME → y +30mm → HOME → y -30mm → HOME (적재 흉내)
+  수량은 측정하지 않고 노드 안 카운터(클래스별, 0부터)로 +1 해서 돌려준다 (v0.4 Result 형식)
   HOME에서 수평으로만 움직이므로 바닥에 닿지 않는다.
 
 주의
@@ -21,6 +22,7 @@ test_place_motion.py — 실제 두산 동작을 넣은 '/place' 테스트 노�
 """
 
 from box_comm.robot import connect_dsr
+from box_comm.common import position_from_count
 from box_comm.place_interface import PartError, start
 
 DR_MV_MOD_REL = 1
@@ -34,10 +36,11 @@ class PlaceMotionTest:
         self.movej, self.movel = dr.movej, dr.movel
         self._speed = (dr.set_velj, dr.set_accj, dr.set_velx, dr.set_accx)
         self.count = 0
+        self.stack = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
         self.log.warn('[test_place_motion] ⚠ Goal을 받으면 로봇이 실제로 움직입니다 '
                       f'(HOME → y ±{STEP_MM:.0f}mm → HOME)')
 
-    def run(self, result_class, inventory, report) -> dict:
+    def run(self, result_class, report) -> int:
         self.count += 1
         set_velj, set_accj, set_velx, set_accx = self._speed
         home = self.poses['home_j']
@@ -55,9 +58,11 @@ class PlaceMotionTest:
         except Exception as e:
             raise PartError('PLACE_FAILED', f'DSR 동작 실패: {type(e).__name__}: {e}')
 
-        inventory[result_class] = inventory.get(result_class, 0) + 1
-        self.log.info(f'[test_place_motion] #{self.count} 동작 완료 → {inventory}')
-        return inventory
+        self.stack[result_class] += 1
+        tier, level = position_from_count(self.stack[result_class])
+        self.log.info(f'[test_place_motion] #{self.count} 동작 완료 → {result_class} '
+                      f'{tier}단 {level}층 (수량 {self.stack[result_class]})')
+        return self.stack[result_class]
 
 
 def main():

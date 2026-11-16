@@ -5,11 +5,13 @@ fake_database.py — 관제 테스트용 가짜 DB 노드
 database_template / 담당 메인 코드 대신 띄워서 관제(control.py)를 테스트한다.
 데이터는 메모리에만 있고, 노드를 끄면 사라진다.
 UI 대신 상태·재고가 바뀔 때마다 로그로 보여 준다.
-고정 좌표 사본은 box_comm/common.py의 FIXED_POSES를 그대로 복사해서 돌려준다.
+고정 좌표는 box_comm/common.py의 FIXED_POSES를 복사해서 돌려준다.
+미설정(None)인 측정존·적재 구역은 아래 FAKE 값으로 채운다 (사전 점검 통과용).
 
 파라미터 (preflight 테스트용)
   pose_offset      (float, 기본 0.0)  고정 좌표에 이 값을 더해서 돌려줌 → 불일치 테스트
   poses_available  (bool,  기본 True) False면 좌표 없음(available=False)으로 응답
+  start_inventory  (int[4], 기본 [0,0,0,0]) A~D 처음 재고 → fake_place의 fake_start와 다르게 주면 불일치 테스트
 
 실행
   ros2 run box_control fake_database
@@ -17,7 +19,7 @@ UI 대신 상태·재고가 바뀔 때마다 로그로 보여 준다.
 ================================================================
 """
 
-from box_comm.common import FIXED_POSES
+from box_comm.common import FIXED_POSES, stack_layout
 from box_comm.database_interface import start
 
 FAKE_SPECS = [
@@ -26,6 +28,11 @@ FAKE_SPECS = [
     {'class_id': 'C', 'width_mm': 80.0,  'depth_mm': 60.0, 'height_mm': 40.0, 'weight_g': 250.0},
     {'class_id': 'D', 'width_mm': 100.0, 'depth_mm': 80.0, 'height_mm': 50.0, 'weight_g': 400.0},
 ]
+
+
+# 미설정일 때 쓰는 가짜 적재 구역 1단 x, y [mm]
+FAKE_PLACE_ZONES = {'A': [300.0, -300.0], 'B': [400.0, -300.0],
+                    'C': [500.0, -300.0], 'D': [600.0, -300.0]}
 
 
 class FakeDatabase:
@@ -37,6 +44,9 @@ class FakeDatabase:
         self.history = []
         node.declare_parameter('pose_offset', 0.0)
         node.declare_parameter('poses_available', True)
+        node.declare_parameter('start_inventory', [0, 0, 0, 0])   # A~D 처음 재고 (불일치 테스트용)
+        self.inventory = dict(zip('ABCD', [int(n) for n in
+                                            node.get_parameter('start_inventory').value]))
         self.pose_offset = float(node.get_parameter('pose_offset').value)
         self.poses_available = bool(node.get_parameter('poses_available').value)
         self._show('시작')
@@ -62,12 +72,19 @@ class FakeDatabase:
         zone = [v + off for v in zone]
         if off:
             self.log.warn(f'[fake_db] (테스트) 고정 좌표에 {off} 더해서 반환')
-        return {'home_j': home, 'measure_zone': zone}
+        zones = {c: list(FIXED_POSES['place_zones'].get(c) or FAKE_PLACE_ZONES[c])
+                 for c in 'ABCD'}
+        return {'home_j': home, 'measure_zone': zone, 'place_zones': zones}
+
+    def on_event(self, event):
+        log = {'WARN': self.log.warn, 'ERROR': self.log.error}.get(event['level'], self.log.info)
+        log(f'[fake_db] 로그 [{event["source"]}/{event["code"]}] {event["box_id"]} {event["message"]}')
 
     def _show(self, event):
         self.log.info(
             f'[fake_db] ({event}) 상태={self.status} | 재고={self.inventory} '
-            f'| 처리 {len(self.history)}개')
+            f'| 처리 {len(self.history)}개 | 적재 이미지 '
+            + ' '.join(f'{c}{stack_layout(n)}' for c, n in self.inventory.items()))
 
 
 def main():

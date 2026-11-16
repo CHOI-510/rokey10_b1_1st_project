@@ -36,6 +36,7 @@ class FakeScan:
             self.log.info('[fake_scan] 남은 박스 없음 → found=False')
             return False
 
+        report.log(f'물품 감지 (남은 박스 {self.remaining}개)')      # 이벤트 로그 예시
         report('picking')
         time.sleep(self.delay)
         report('moving')

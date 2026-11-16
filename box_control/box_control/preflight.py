@@ -9,6 +9,7 @@ control.py가 GetJobData 직후, 시작 대기(STANDBY) 전에 run_all()을 한 
   1. 분류 기준(specs)  : A~D가 모두 있고 값이 양수인지
   2. 고정 좌표          : DB에서 받은 HOME·측정존 좌표가 있고 형식이 맞는지 (기준은 DB, v0.3)
                          관제는 DB 값으로 이미 덮어쓴 상태 → common.py와 비교하지 않음
+  3. 적재 구역 (v0.4)  : A~D 구역 1단 x, y가 모두 있는지 (없으면 FAIL, (0, 0)이면 WARN)
   (추가 예정) safety 항목들
 
 점검 추가하는 법
@@ -64,9 +65,29 @@ def check_fixed_poses(ctrl):
     return results
 
 
+# ----------------------------------------------------------------------
+# 점검 3: 적재 구역 (v0.4, 기준 = DB)
+#   클래스마다 1단 x, y가 있어야 한다. 없으면 그 클래스를 적재할 수 없으므로 FAIL
+# ----------------------------------------------------------------------
+def check_place_zones(ctrl):
+    zones = (ctrl.poses or {}).get('place_zones') or {}
+    missing = [c for c in VALID_CLASSES if zones.get(c) is None]
+    if missing:
+        return [(FAIL, f'적재 구역 {missing}의 1단 x, y가 DB에 없습니다. DB에 설정한 뒤 실행해 주세요.')]
+    results = []
+    for c in VALID_CLASSES:
+        x, y = zones[c]
+        if abs(x) < POSE_TOLERANCE and abs(y) < POSE_TOLERANCE:
+            results.append((WARN, f'{c} 구역: (0, 0) — 아직 설정하지 않은 값으로 보입니다'))
+        else:
+            results.append((OK, f'{c} 구역 1단: x={x:.1f}, y={y:.1f}'))
+    return results
+
+
 CHECKS = [
     ('분류 기준', check_specs),
     ('고정 좌표', check_fixed_poses),
+    ('적재 구역', check_place_zones),
 ]
 
 

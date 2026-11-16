@@ -8,7 +8,9 @@ find_package(action_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Inventory.msg"
   "msg/ClassSpec.msg"
+  "msg/PlaceZone.msg"
   "msg/FixedPoses.msg"
+  "msg/LogEvent.msg"
   "srv/GetJobData.srv"
   "srv/UpdateInventory.srv"
   "srv/SetJobStatus.srv"

@@ -5,4 +5,6 @@ bool success
 string result_class    # "A" / "B" / "C" / "D"
 string error_code
 ---
-string stage           # see box_comm/common.py STAGES['judge']
+string stage           # see box_comm/common.py STAGES
+string log_level       # "" = not a log (progress only) / "INFO" / "WARN" / "ERROR"
+string log_msg         # set by report.log(); control forwards it to /event_log

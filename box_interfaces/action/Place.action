@@ -1,9 +1,12 @@
+# v0.4: place measures the real stack and reports the count (no inventory in Goal)
 string result_class
-Inventory inventory    # inventory before placing
-FixedPoses poses       # home_j, measure_zone (from DB via control)
+FixedPoses poses       # home_j, measure_zone, place_zones (from DB via control)
 ---
 bool success
-Inventory inventory    # inventory after placing
+int32 count            # measured count of result_class in its zone after placing (this box included)
+                       # tier/level/z stay inside the place part (logged there)
 string error_code
 ---
-string stage           # see box_comm/common.py STAGES['place']
+string stage           # see box_comm/common.py STAGES
+string log_level       # "" = not a log (progress only) / "INFO" / "WARN" / "ERROR"
+string log_msg         # set by report.log(); control forwards it to /event_log
