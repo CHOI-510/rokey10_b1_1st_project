@@ -128,8 +128,8 @@ def run(self, specs, report) -> str:
 ```python
 def run(self, result_class, report) -> int:       # v0.4
     # result_class = 'B'
-    # 매번 1단부터 박스를 쥔 채 내려가며 놓을 자리를 찾고(5층 높이에서 닿으면 다음 단),
-    # 놓은 위치로 잰 수량을 반환: count_from_position(단, 층)  예: 2단 2층 → 6
+    # 매번 1단부터 박스를 쥔 채 내려가며 놓을 자리를 찾고(4층 높이에서 닿으면 다음 단),
+    # 놓은 위치로 잰 수량을 반환: count_from_position(단, 층)  예: 2단 2층 → 5
     # 단·층·z는 관제에 보내지 않음 (자기 로그로만 남김)
     # 구역 1단 x, y는 self.poses['place_zones']['B'] (DB 값)
     # 단 간격·z·박스 높이는 이 파일 안에서만 다룸

@@ -23,7 +23,7 @@ place_interface.py — 적재 파트 통신 계층
           # result_class = 'A' / 'B' / 'C' / 'D' / 'U'
           # U(미분류, v0.5): 미분류 투하 위치에 놓기만 하고 0을 반환 (수량은 관제가 셈)
           # 1단부터 내려가며 실제로 놓을 자리를 찾고, 놓은 위치로 잰 수량(int)을 반환
-          #   수량 = common.count_from_position(단, 층)   예: 2단 2층 → 6
+          #   수량 = common.count_from_position(단, 층)   예: 2단 2층 → 5 (3층 × 2자리)
           # 단·층·z·단 간격·박스 높이는 이 안에서만 처리 (관제에는 수량만 감)
           # 실패하면 raise PartError('PLACE_FAILED' 또는 'NO_SLOT', '이유')
           # 단계가 바뀔 때마다 report(stage) 호출 (필수, stage 목록은 common.STAGES['place'])

@@ -255,7 +255,7 @@ def position_from_count(count: int):
 
 
 def stack_layout(count: int) -> list:
-    """수량 → 단별 층 수 리스트 (UI 적재 이미지용). 예: 6 → [4, 2], 0 → []"""
+    """수량 → 단별 층 수 리스트 (UI 적재 이미지용). 예: 5 → [3, 2], 0 → []"""
     n, lv = max(int(count), 0), STACK['levels']
     return [min(lv, n - i) for i in range(0, n, lv)]
 
