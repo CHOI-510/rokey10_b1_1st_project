@@ -10,7 +10,7 @@ recovery.py — 관제 복구 동작 모음 (관제 전용)
       1. 그리퍼 열고 안전 높이(safe_z)로 수직 상승
       2. push_path 첫 점 위로 이동 → 그리퍼 닫고 push_path를 차례로 movel (박스를 스캔 공간으로 밀어냄)
       3. 안전 높이로 → 측정존이 비었는지 확인
-         (측정존 위에서 그리퍼를 열고 파지 높이까지 내려가 닫아 봄 → 잡히면 아직 박스가 있음, 가운데 근처만 확인)
+         (측정존 위에서 그리퍼를 열고 바닥 + probe_above_floor_mm까지 내려가 닫아 봄 → 잡히면 아직 박스가 있음, 가운데 근처만 확인)
       설정: common.RECOVERY. push_path가 None(미정)이면 움직이지 않고 실패 → 사람이 비움
 나중에 붙일 것 (예): 안전 높이 복귀, 그리퍼 열기, 측정존 상태 확인만 하기 ...
 
@@ -149,7 +149,8 @@ class Recovery:
         abc = list(cfg['probe_orientation'] or robot.pose()[3:6])
         robot.grip_open()
         robot.movel([zone[0], zone[1], cfg['safe_z'], *abc], vel=cfg['speed'], acc=cfg['acc'])
-        robot.movel([zone[0], zone[1], zone[2], *abc], vel=cfg['speed'] / 2, acc=cfg['acc'])
+        robot.movel([zone[0], zone[1], zone[2] + cfg['probe_above_floor_mm'], *abc],   # 측정존 z = 바닥 (11/18)
+                    vel=cfg['speed'] / 2, acc=cfg['acc'])
         result = robot.grip_close()
         robot.grip_open()
         self._rise(robot)

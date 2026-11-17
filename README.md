@@ -83,7 +83,8 @@ box_project/
 ├─ box_control/      관제: control.py (순서) + preflight.py (시작 전 점검)
 │                    + recovery.py (관제 복구 동작: 측정존 비우기 등, 관제가 직접 로봇을 움직임)
 │                    + 테스트용 fake_*.py 4개, test_scan_motion.py, robot_test.py
-├─ box_scan/         탐지: scan_template.py (관제 관리 참고용) + 담당 메인 코드
+├─ box_scan/         탐지: scan_template.py + scan_algorithm.py·scan_config.py·scan_main.py (담당)
+│                    + scan_original.py (담당 원본 단독 실행본, 비교용) + test/test_scan_flow.py
 ├─ box_judge/        판별: judge_template.py + judge_algorithm.py·judge_main.py·rg2_sync_grip.py (담당)
 ├─ box_place/        적재: place_template.py + place_algorithm.py·place_main.py (담당)
 ├─ box_database/     DB·UI: database_template.py + 담당 메인 코드
@@ -95,9 +96,9 @@ box_project/
 | `box_interfaces` | 메시지 정의 | - | - |
 | `box_comm` | 공용 통신 코드 | - | import 전용 |
 | `box_control` | 관제 | `/control` | `ros2 run box_control control` |
-| `box_scan` | 탐지 | `/scan` | `ros2 run box_scan scan_template` |
-| `box_judge` | 판별 | `/judge` | `ros2 run box_judge judge_template` |
-| `box_place` | 적재 | `/place` | `ros2 run box_place place_template` |
+| `box_scan` | 탐지 | `/scan` | `ros2 run box_scan scan_main` (참고용 `scan_template`) |
+| `box_judge` | 판별 | `/judge` | `ros2 run box_judge judge_main` (참고용 `judge_template`) |
+| `box_place` | 적재 | `/place` | `ros2 run box_place place_main` (참고용 `place_template`) |
 | `box_database` | DB·UI | `/database` | `ros2 run box_database database_template` |
 
 ---
@@ -343,6 +344,27 @@ ros2 run box_control control
 - `0`으로 주면 대기 없이 바로 시작합니다.
 - 관제가 터미널 입력을 받을 수 없는 환경(launch 등)에서는 `q` 없이 대기 후 시작합니다. 비상정지 서비스는 대기 중에도 동작합니다(시작 안 함).
 
+### 탐지 실제 코드 (`scan_main`, 11/17)
+
+탐지 담당 원본(`m0609_scan_final.py`, 실로봇에서 스캔·인식·픽업·이동 확인)을 팀 구조로 옮긴 것입니다. 알고리즘 `box_scan/box_scan/scan_algorithm.py`(`ScanAlgorithm`), 설정·보정표 `scan_config.py`, 진입점 `scan_main.py`. 원본은 `scan_original.py`로 그대로 두었습니다(`ros2 run box_scan scan_original`, 그리퍼 DO 방식이라 비교용·관제와 동시 실행 금지).
+
+```bash
+ros2 run box_scan scan_main
+ros2 run box_scan scan_main --ros-args -p csv_dir:=~/ROkEY_협동1/04_실험데이터     # 탐색 Fy CSV 기록 (보정표 재측정용)
+ros2 run box_scan scan_main --ros-args -p sim_boxes:="420,100,50;510,-20,60"     # 에뮬레이터 전용 (아래)
+python3 box_scan/test/test_scan_flow.py                                          # ROS 없이 흐름 시험 (저장소 루트에서)
+```
+
+- **Goal 한 번 = 물품 1개.** HOME → 그리퍼 닫기(핑거가 탐침) → X 270~570 / 30mm 간격 11선을 Y 240↔−90 지그재그로 훑으며 경로별 Fy 보정표와 비교, `|Fy − 기준| ≥ 1.5 N`이면 빠른 정지(접촉) → 접촉점 앞 부채꼴 최대 4점을 Force 하강해 윗면 높이 탐지 → 처음 찾은 점에서 **윗면 − 15mm**(그리퍼 팁 길이) 높이를 그리퍼 0° → 45° → 90°로 최대 3번 집기 → 측정존 위에서 천천히 내려가 닿으면 놓기 → HOME → `True`.
+- **이어서 탐색**: 노드가 켜져 있는 동안 마지막 접촉 선·위치를 기억하고, 다음 Goal은 그 접촉 Y −50mm부터(첫 15mm는 판정 제외) 이어서 훑습니다. 전체를 다 훑으면 `False`(물품 없음)를 보내고 처음으로 돌아갑니다. 노드를 다시 켜면 처음부터.
+- **집기 실패**: 3번 다 못 잡으면 그리퍼를 열고 높이 100mm 이상에서 `GRASP_FAILED` → 관제가 공간 스캔부터 다시(같은 접촉점 −50mm부터 이어서).
+- **스캔공간 막힘**: 4점 모두 유효 높이가 없으면 Y−50으로 돌아가 계속 훑는데, 같은 자리(같은 선, Y 30mm 안)에서 3번이면 `스캔공간 막힘` ERROR 로그 + `SCAN_FAILED`(임시, 처리 방식 팀 결정 대기 — `scan_algorithm.py` `_on_scan_blocked`).
+- 측정존은 Goal의 `measure_zone`을 씁니다(**z = 측정존 바닥 Z**). 예상 접촉 높이(`z + 집은 높이 − Z0`) 15mm 위부터 10mm/s로 내려가며 Fz +5N이면 멈추고 놓습니다. 하한은 바닥 + 2mm.
+- 집는 높이(11/18): 원본의 '윗면 높이의 50%' 대신 **윗면 − 15mm**(`GRIP_DEPTH_FROM_TOP_MM`). 박스가 겹쳐 있어도 맨 위 박스만 잡고, 가장 얇은 박스(20mm)도 바닥에 닿지 않습니다. 높이 탐지 하한도 `Z0 + 17mm`(15 + 여유 2)로 낮춤.
+- 설정은 전부 `scan_config.py` (원본 값 그대로, 집기 각도 `GRIP_RETRY_ANGLES`, 막힘 횟수 `HEIGHT_MISS_LIMIT` 등). 로봇 연결·TCP·HOME·측정존은 관제(box_comm)·DB 값을 씁니다.
+- **`sim_boxes` (에뮬레이터 전용)**: 에뮬레이터는 힘 센서가 0이라 그대로 돌리면 보정표 때문에 시작하자마자 가짜 접촉이 납니다. 가상 박스 `"x,y,높이;..."`를 주면 탐색 Fy를 보정표 값 + 가상 접촉으로 흉내 내고, 높이 탐지·집기 접근·내려놓기는 가상 높이까지 `movel`. 집은 박스는 목록에서 빠집니다. **실제 로봇에서는 켜지 않습니다.**
+- `robot`에 추가한 명령(11/17): `amovel`(절대 비동기 직선, 회전 속도 지정), `movejx`(TCP 목표 관절 보간), `motion_state()`(check_motion).
+
 ### 적재 실제 로봇 실행 (`place_main`)
 
 적재 실제 코드는 알고리즘 `box_place/box_place/place_algorithm.py`(적재 담당) + 실행 진입점 `place_main.py`, 설정은 `box_place/config/place_config.json`입니다 (빌드하면 `share/box_place/config/`에 설치). 로봇 명령·정지 확인은 `box_comm/dsr_io.py`, 실패 시 정지·결과 변환은 `box_comm/place_interface.py`(관제)가 맡습니다 — 구조는 CONTRIBUTING '적재 실제 코드 구조' 참고.
@@ -358,7 +380,8 @@ ros2 run box_place place_main --ros-args -p sim_contact:=true        # 에뮬레
 - **미분류 `U`**: `place_config.json`의 `unclassified`(`enabled`, `release_pose` [x, y, z, rx, ry, rz], `approach_z`) 위치로 가서 힘 제어 없이 놓고 0을 돌려줍니다. 현재 `[670, -43, 144, 160, 180, 162]`, 접근 높이 160.
 - Goal의 측정존이 `(0,0,0)`이면 움직이지 않고 실패합니다 → DB에 실제 측정존·구역 좌표가 있어야 합니다.
 - 정지: `dsr_io`가 모든 로봇 명령 전과 힘 제어 하강 중(`force_z`)에 관제 정지 요청을 확인합니다 → `CANCELED`로 빠져나오고 `place_interface`가 힘·순응제어 해제 + `move_stop`. 하강 중에는 1초마다 keepalive를 보내 진행 감시가 오인하지 않습니다.
-- 측정존 z는 **박스를 쥐는 TCP 높이**입니다. 현재 측정존 `[300, -160, 30]` (z 30 = 적재 1층 첫 접촉 Z, 측정존 바닥이 적재 구역 바닥과 같은 높이라는 가정).
+- **측정존 z = 측정존 바닥 Z** (11/18 세 파트 통일, 현재 `[300, -160, 30]`, 판별 실측 30.9). 적재는 **바닥 + `pick_above_floor_mm`(5mm)** 높이에서 집습니다(핑거 끝이 바닥에 닿아 안전 정지가 나지 않게). 판별이 항상 눕혀서 주므로 박스 높이는 20/25mm뿐이라 고정값 하나로 충분합니다.
+- 그만큼 높게 집으면 적재 구역에서 닿는 TCP Z도 5mm 올라가므로, 층 판단·첫 접촉 Z 학습은 **TCP Z − `pick_above_floor_mm`** 로 계산합니다 → 기존 `first_contact_z_mm`(30.19 등)과 상태 파일을 그대로 씁니다. 로그: `A 1번 자리 1층 적재 → 수량 1 (TCP Z=35.19, 기준 Z=30.19)`.
 - **`sim_contact` (에뮬레이터 전용)**: 에뮬레이터는 힘 센서 값이 없어 '닿을 때까지 하강'이 끝나지 않습니다. `true`면 힘 제어 대신 가상으로 쌓인 높이까지 `movel`로 내려가 닿았다고 칩니다(층 판단·만재 시 다음 자리·수량 계산은 원래 코드). 가상 적재 수는 노드가 켜질 때 0, 상태 파일은 `~/.ros/place_sim_state.json`으로 분리. **실제 로봇에서는 켜지 않습니다.**
 - **멈춘 뒤 복구**: 작업 중 멈추면 상태 파일(`~/.ros/place_real_v04_state.json`)에 미완료 작업이 남아 다음 적재를 거부합니다. 그리퍼(물건을 쥐고 있는지)와 적재 상태를 확인하고 `-p clear_pending:=true`로 한 번 실행하세요.
 
@@ -368,7 +391,7 @@ ros2 run box_place place_main --ros-args -p sim_contact:=true        # 에뮬레
 - 폭과 잡힘 여부를 읽을 수 있어 **집기 실패 감지**와 판별 폭 측정에 씁니다. 설정은 `common.GRIPPER`(열 폭 100mm, 여는 힘 20N, 잡는 힘 20N, 빈손 기준 패드 사이 간격 5mm, 폭 보정 = 판별 실측값).
 - Compute Box는 **동시 접속 1개**입니다. `robot`(DsrIO)이 그리퍼 명령을 처음 쓸 때 접속하고 Goal이 끝나면 끊어서, 탐지·판별·적재가 번갈아 씁니다.
 - **실제 로봇**: `m0609_rg2_bringup mode:=real`로 띄우면 OnRobot 드라이버(`OnRobotRGControllerServer`)가 먼저 접속을 잡습니다 → `ros2 node list | grep -i onrobot`으로 확인하고 `pkill -f OnRobotRGControllerServer`로 끕니다(RViz 손가락 표시만 멈춤). 사전 점검이 접속을 확인해 막혀 있으면 FAIL.
-- **에뮬레이터·fake**: 환경변수 `BOX_GRIPPER=fake` → 가짜 그리퍼(닫으면 잡힌 것으로). `BOX_FAKE_GRIP_FAILS=N`이면 처음 N번 닫기가 빈손. `fake_run.sh`는 기본 fake(실제 적재 `PLACE_MAIN=1`을 SIM 없이 돌릴 때만 modbus).
+- **에뮬레이터·fake**: 환경변수 `BOX_GRIPPER=fake` → 가짜 그리퍼(닫으면 잡힌 것으로). `BOX_FAKE_GRIP_FAILS=N`이면 처음 N번 닫기가 빈손. `fake_run.sh`는 기본 fake(`PLACE_MAIN=1`·`SCAN_MAIN=1`을 SIM 없이 돌리거나 `JUDGE_MAIN=1`일 때만 modbus).
 - 처음 한 번: `sudo apt install python3-pymodbus`
 
 ### 정지 기능 (비상정지 · 로봇 정지 감지 · 진행 감시)
@@ -429,12 +452,18 @@ PLACE_ARGS="-p miscount_at:=2" ./scripts/fake_run.sh         # 재고 불일치
 MOTION=1 BOX_COUNT=2 ./scripts/fake_run.sh                   # 탐지·판별·적재를 test_*_motion으로 (로봇이 위아래로 움직임)
 PLACE_MAIN=1 SIM=1 BOX_COUNT=5 CLASSES="A,A,A,A,B" ./scripts/fake_run.sh   # 적재만 place_main, 에뮬레이터 (가상 접촉)
 PLACE_MAIN=1 BOX_COUNT=1 CLASSES="A" ./scripts/fake_run.sh   # 적재만 place_main, 실제 로봇 (실제 구역 좌표 필요)
+SCAN_MAIN=1 SIM=1 ./scripts/fake_run.sh                      # 탐지만 scan_main, 에뮬레이터 (가상 박스 2개)
+SCAN_MAIN=1 SIM=1 SIM_BOXES="420,100,10" ./scripts/fake_run.sh   # 낮은 박스(17mm 미만) → 높이 3회 실패 → 스캔공간 막힘
+BOX_FAKE_GRIP_FAILS=4 SCAN_MAIN=1 SIM=1 ./scripts/fake_run.sh    # 탐지 집기 3회 실패 → 재스캔 → 성공
+SCAN_MAIN=1 SIM=1 PLACE_MAIN=1 CLASSES="A,B" ./scripts/fake_run.sh   # 탐지·적재 실제 코드, 판별만 fake (에뮬레이터)
+SCAN_MAIN=1 BOX_COUNT=1 ./scripts/fake_run.sh                # 탐지 scan_main, 실제 로봇 (작업공간에 박스, SIM 없이)
 ./scripts/fake_stop.sh                                       # 남은 노드 강제 정리
 ```
 
 fake 노드 출력은 `/tmp/box_fake_logs/*.log`에 남습니다 (`tail -f /tmp/box_fake_logs/database.log`).
 
-- `MOTION=1`, `PLACE_MAIN=1`은 bringup(에뮬레이터 또는 실제 로봇)이 필요하고, 관제 기본값이 `robot_monitor=dsr`, 대기 5초로 바뀝니다.
+- `MOTION=1`, `PLACE_MAIN=1`, `SCAN_MAIN=1`, `JUDGE_MAIN=1`은 bringup(에뮬레이터 또는 실제 로봇)이 필요하고, 관제 기본값이 `robot_monitor=dsr`, 대기 5초로 바뀝니다.
+- `SCAN_MAIN=1`: 탐지를 `box_scan scan_main`으로. `SIM=1`이면 `-p sim_boxes:="$SIM_BOXES"`(기본 `420,100,50;510,-20,60`). 탐지 Goal은 박스가 없을 때 11선을 다 훑어 1~2분 걸립니다. 판별 실제 코드(`judge_main`)는 시뮬 모드가 없어 에뮬레이터에서는 fake로 둡니다.
 - `PLACE_MAIN=1`: 탐지·판별은 fake(움직이지 않음), 적재만 `box_place place_main`. `CLASSES` 기본값 `A,B,C`(D 미지원). `SIM=1`이면 `-p sim_contact:=true`.
 - `PLACE_MAIN=1`로 멈췄다가 다시 돌릴 때는 미완료 기록부터 지웁니다: 에뮬레이터 `rm -f ~/.ros/place_sim_state.json`, 실제 로봇은 그리퍼·적재 상태 확인 후 `PLACE_ARGS="-p clear_pending:=true"`.
 

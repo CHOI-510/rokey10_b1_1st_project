@@ -11,9 +11,9 @@
 | 파트 | 담당 | 상태 | 현재 작업 / 비고 |
 | --- | --- | --- | --- |
 | 관제 | 최은정 | 정상 경로 + 재고 검증 + 진행 추적 + 사전 점검 + 시작 대기 + TCP·툴 자동 확인 + 정지 기능(비상정지·로봇 상태 감시·진행 감시) + 집기 실패 재스캔 + 그리퍼 Modbus 공용화 | 측정존 밀어내기 경로 미정, 그 밖의 에러 정책 |
-| 탐지 | 김창균 | fake | |
+| 탐지 | 김창균 | 통합 완료 (에뮬레이터) | 담당 원본(실로봇 확인)을 `scan_algorithm`·`scan_config`·`scan_main`으로 통합(11/17). 에뮬레이터 + 관제로 정상·이어서 탐색·집기 실패 재스캔·스캔공간 막힘 확인. **실물 확인 남음** (접촉 감지, Force 하강, Modbus 집기, 측정존 내려놓기) |
 | 판별 | 송현석 | 구현 중 | 높이·가로·세로 측정(1~4단계) 저장소 반영, 관제 연동(robot 명령으로 교체) 완료. 물성(D)·정렬·집기 재시도 남음. 실물 연동 시험 필요 |
-| 적재 | 정수현 | fake | v0.4 템플릿(1단부터 측정 적재)으로 메인 코드 작성 |
+| 적재 | 정수현 | 통합 완료 | `place_main` 실제 로봇 A 1~3층 확인(11/16), 탐지 실제 코드와 에뮬레이터 연동 확인(11/17). B·C 구역 이동 중 특이점 알림(2-3205) — 실물에서 경로 확인 |
 | DB·UI | 이승재 | fake | |
 
 ---
@@ -22,8 +22,10 @@
 
 | 날짜 | 결정 | 이유 |
 | --- | --- | --- |
+| 11/18 | **측정존 z = 바닥 Z로 통일, 집는 높이는 파트별**: DB `measure_zone` z는 측정존 바닥(판별 해석과 같음). 탐지는 작업공간에서 **윗면 − 15mm**(그리퍼 팁 길이, `GRIP_DEPTH_FROM_TOP_MM`)로 집고(원본 50% → 겹친 박스 대비) 높이 탐지 하한 Z0+40 → Z0+17, 측정존에는 닿을 때까지 내려놓기(하한 바닥 + 2). 적재는 **바닥 + 5mm**(`pick_above_floor_mm`)에서 집고 층 판단은 TCP Z − 5로(기존 첫 접촉 Z 기준 그대로 사용). 관제 측정존 확인도 바닥 + 5mm(`RECOVERY probe_above_floor_mm`). 판별의 '들어 올리면서 집기'는 길이 측정용이라 판별만 | 적재가 바닥 높이(30, 실측 바닥 30.9보다 0.9 아래)로 movel해 집어서 핑거 끝이 바닥을 눌러 안전 정지가 날 수 있었음. 탐지는 50% 높이를 잡으면 겹친 박스의 아래까지 걸림. 공유는 '바닥 위치' 사실 하나, 잡는 방식은 파트 몫(11/17 원칙과 같음) |
+| 11/17 | **탐지 통합**: 담당 원본 `m0609_scan_final.py`(1파일)와 분리본(9파일)을 받아, 원본 기준으로 판별·적재와 같은 3파일 구조(`scan_algorithm`·`scan_config`·`scan_main`)로 통합. 원본의 로봇 연결·TCP 등록·인자·JSON 기록은 관제(box_comm)가 맡으므로 삭제. **Goal 한 번 = 물품 1개** + 탐색 커서(이어서 탐색). 그리퍼 DO → Modbus, 집기는 높이를 찾은 첫 지점에서 0/45/90° 3번(원본은 점마다 3번, 최대 12번), 측정존 내려놓기는 판별 방식(천천히 내려가 닿으면 놓기). 높이 탐지 같은 자리 3회 실패 → 스캔공간 막힘(임시 `SCAN_FAILED`). `DsrIO`에 `amovel`·`movejx`·`motion_state` 추가. 에뮬레이터 `sim_boxes`, `fake_run.sh` `SCAN_MAIN`. 원본은 `scan_original.py`로 보관 | 분리본은 관제 없이 혼자 돌기 위한 코드(ROS·TCP·정지)가 대부분이라 파일만 많아짐. 집기 각도는 팀 논의안(±30°)이 실물 시험 전이라 보류하고 원본 시험값(0/45/90°) 사용 |
 | 11/17 | **그리퍼 세 파트 모두 Modbus**(`box_comm/gripper.py`, 판별 RG2 코드를 옮김). `robot.grip_open/grip_close/gripper_width/gripper`, 기존 `grip()` 이름 유지. Goal 동안만 접속(동시 접속 1개), DO 1·2는 끔. 설정 `common.GRIPPER`. `BOX_GRIPPER=fake`로 가짜 그리퍼. 실제 로봇은 OnRobot 드라이버를 꺼야 함 | 폭·잡힘 여부를 읽어 집기 실패를 감지하려고. DO는 미리 정한 잡기/놓기뿐이라 판별 폭 측정도 불가 |
-| 11/17 | **집기 실패 처리**: 파트가 `GRIP_RETRY`(3)번 다시 집고 포기 → `GRASP_FAILED`. 파트 Goal은 거기서 끝. 판별·적재였으면 **관제가** 상태 `CLEARING`에서 직접 로봇을 움직여 측정존을 밀어내고 비었는지 확인(`box_control/recovery.py` = 관제 복구 동작 모음, 못 하면 `RECOVERY_FAILED` = 측정존 사용 불가 → 종료). 관제는 `GRASP_FAILED`면 공간 스캔부터 다시(`BOX_RETRY` 로그), 연속 `RECOVER_LIMIT`(3) 초과 → `RETRY_LIMIT` 종료. 탐지 기본 오류 코드 `GRASP_FAILED` → **`SCAN_FAILED`**(새 코드) | 다시 집는 방법은 파트마다 다르고(탐지 ±30° 회전, 판별·적재 그대로), 측정존 비우기·흐름 되돌리기는 공통이라 관제가 맡음. 처음엔 파트 노드 안(box_comm)에서 비웠다가, 파트는 실패까지만·그 뒤는 관제로 경계를 정리(관제도 로봇을 움직이는 복구 동작이 앞으로 더 필요). 예상 못 한 오류가 재스캔으로 이어지지 않게 코드 분리 |
+| 11/17 | **집기 실패 처리**: 파트가 `GRIP_RETRY`(3)번 다시 집고 포기 → `GRASP_FAILED`. 파트 Goal은 거기서 끝. 판별·적재였으면 **관제가** 상태 `CLEARING`에서 직접 로봇을 움직여 측정존을 밀어내고 비었는지 확인(`box_control/recovery.py` = 관제 복구 동작 모음, 못 하면 `RECOVERY_FAILED` = 측정존 사용 불가 → 종료). 관제는 `GRASP_FAILED`면 공간 스캔부터 다시(`BOX_RETRY` 로그), 연속 `RECOVER_LIMIT`(3) 초과 → `RETRY_LIMIT` 종료. 탐지 기본 오류 코드 `GRASP_FAILED` → **`SCAN_FAILED`**(새 코드) | 다시 집는 방법은 파트마다 다르고(탐지 그리퍼 회전, 판별·적재 그대로), 측정존 비우기·흐름 되돌리기는 공통이라 관제가 맡음. 처음엔 파트 노드 안(box_comm)에서 비웠다가, 파트는 실패까지만·그 뒤는 관제로 경계를 정리(관제도 로봇을 움직이는 복구 동작이 앞으로 더 필요). 예상 못 한 오류가 재스캔으로 이어지지 않게 코드 분리 |
 | 11/17 | **판별 연동**: 판별 코드 3개(`judge_main`, `judge_algorithm`, `rg2_sync_grip`) 저장소 반영, 판별이 직접 부르던 DSR_ROBOT2·Modbus를 `robot` 명령으로 교체(`amovel_rel`·`mwait`·`move_stop`·`force(ref)`·`joints()` 추가). 측정 알고리즘은 그대로 | 판별 단독 시험 때는 노드 namespace가 `dsr01`이라 급정지가 됐지만, `box_comm` 안에서는 서비스 이름이 안 맞아 접촉해도 하강이 안 멈추던 문제. 정지 확인·진행 알림도 빠져 있었음 |
 | 11/17 | **탐지·판별도 같은 구조로**: 공용 어댑터 `box_comm/algorithm.py`(로봇 주입·실패 시 정지·`PartError` 변환), 세 interface에 `start_algorithm()`. 약속 `XxxAlgorithm(node, robot)` + `scan(poses, report)->bool` / `judge(specs, poses, report)->str` / `place(result_class, poses, report)->int`. 템플릿 3개 이 방식으로 변경. `DsrIO`는 첫 명령 때 서비스 준비 확인(bringup 없이 FAKE 가능), 두산 패키지가 없으면 `robot=None`. 예전 `start(Work)` 방식은 fake·test 노드용으로 유지 | 탐지·판별 실제 코드가 들어오기 전에 경계를 먼저 만들어 적재처럼 나중에 분리하는 일이 없게 |
 | 11/17 | **적재 코드 분리 (담당자와 합의)**: 알고리즘 `box_place/place_algorithm.py`(적재 소유, 관제 코드 없음) / 로봇 명령·정지 확인 `box_comm/dsr_io.py` / 실패 시 정지·결과 변환 `place_interface.start_algorithm()`(관제). `place_main.py`는 진입점 한 줄, `place_working.py` 삭제 | 같은 700줄 파일을 주고받으며 working·main이 갈라지던 문제. 서로 다른 파일만 고치게 경계를 만듦. 이동 명령을 새로 넣어도 정지 확인이 자동으로 따라옴 |
@@ -83,20 +85,23 @@
 | 5 | 측정값(W·D·H·무게)을 DB·UI까지 전달할지 | 판별, DB | 미정 |
 | 6 | 위상(방향) 정보를 판별 → 적재로 전달할지 (옵션) | 판별, 적재 | 미정 |
 | 7 | 측정존 비우기: 11/17 구조 구현(관제 `box_control/recovery.py`, 상태 `CLEARING`, 밀어내기 + 그리퍼로 비었는지 확인). **밀어내기 경로(`common.RECOVERY push_path`)를 판별·적재와 실물 보고 정해야 함** — 정해지기 전에는 판별·적재 집기 실패 시 작업 종료. 확인은 측정존 가운데만 봄 | 관제, 판별, 적재 | 경로 미정 |
-| 8 | 탐지·판별·적재 3개 프로세스의 두산 로봇 동시 연결 — 시험 도구(`test_*_motion`)로 가상·실제 확인, 적재는 `place_main`으로 실제 확인 | 관제 | 완료 (실제 탐지·판별 코드로 재확인 필요) |
+| 8 | 탐지·판별·적재 3개 프로세스의 두산 로봇 동시 연결 — 시험 도구(`test_*_motion`)로 가상·실제 확인, 적재는 `place_main`으로 실제 확인, 탐지 `scan_main` + 적재 `place_main` 에뮬레이터 확인(11/17) | 관제 | 완료 (판별 실제 코드 포함 실물 재확인 필요) |
 | 9 | DB 방식(SQLite 권장)과 UI 방식(웹 / PyQt) — PyQt를 노드 안에 띄우면 `box_comm` 수정 필요 | DB | 미정 |
 | 10 | **재고 검증 (v0.4, 측정값 우선)**: 관제 쪽 적용 완료. 불일치 기록을 DB 작업 로그로 남길지(통계만 / 상세 기록), UI 표시 여부. 차이가 클 때(예: ±2 이상) 중단할지 | 관제, DB | DB·UI 담당과 협의 |
-| 11 | **집기 최종 실패 처리**: 11/17 관제 쪽 구현 — `GRASP_FAILED` → 공간 스캔부터 다시, 연속 3회 상한(`RETRY_LIMIT`). 파트 쪽 다시 집기(탐지 ±30°, 판별·적재 3번)는 각 담당이 `grip_close().grabbed`로 구현해야 함 | 관제, 탐지, 판별, 적재 | 파트 구현 남음 |
+| 11 | **집기 최종 실패 처리**: 11/17 관제 쪽 구현 — `GRASP_FAILED` → 공간 스캔부터 다시, 연속 3회 상한(`RETRY_LIMIT`). 파트 쪽 다시 집기: 탐지(0/45/90°, 11/17 구현·에뮬레이터 확인), 적재(3번, 구현), 판별(남음) | 관제, 판별 | 판별 구현 남음 |
 | 12 | **Feedback 기반 진행 감시**: 개입 로직 완료(11/16, `progress_timeout_sec` 초과 → `move_stop` + cancel → `ERROR : No progress`). 파트가 `report()`를 충분히 자주 부르는지 확인 필요(11/17 에뮬레이터 `place_main`은 60초에서 문제 없음, 탐지·판별 실제 코드는 미확인). **Action은 무한 대기라 실제 운용에서는 `progress_timeout_sec`를 꼭 켤 것** (끄면 파트 노드가 죽었을 때 관제가 계속 기다림). 멈춘 뒤 대처(리셋 방식)는 미정 | 관제, 파트 | 시험 필요 |
 | 13 | 작업 통계 로그 (작업완료 물품 수, 재시도 횟수 등) — `/event_log`로 기반 마련(`JOB_DONE` 요약, `PART_LOG`). DB 저장 형식·UI 로그 창 표시(level·code 필터) | 관제, DB | DB·UI 담당과 협의 |
 | 14 | **TCP·툴 자동 확인** 구현·가상·실제 로봇 테스트 완료(`box_comm/robot.py`). 응답 필드 `info` 확인, 툴 이름 `Tool Weight` 확인, 가상·실제 모두 자동 모드 적용 불가 → 수동 모드 경로로 적용됨 | 관제 | 완료 |
-| 16 | **측정존 좌표** `[300, -160, 30]` → `common.py` 기본값·DB 템플릿에 입력됨. 남은 것: **DB 실제 코드에 입력**, 탐지·판별도 z를 '박스 파지 TCP 높이'로 쓰는지 확인 | 관제, DB, 탐지, 판별, 적재 | DB 반영 필요 |
+| 16 | **측정존 좌표** `[300, -160, 30]` → `common.py` 기본값·DB 템플릿에 입력됨. 11/18 **z = 측정존 바닥 Z로 통일**(결정 사항). 남은 것: **DB 실제 코드에 입력**, 실물에서 적재 바닥 + 5mm 집기·층 판단(TCP Z − 5) 확인, 실측 바닥 30.9로 바꿀지 결정 | 관제, DB, 적재 | DB 반영·실물 확인 |
 | 17 | DB: `get_fixed_poses()` 구현 (**필수**: 없으면 관제가 시작하지 않음). 인터페이스 v0.3라 전원 `git pull` 후 **다시 빌드** 필요 | DB, 전체 | 공지 필요 |
 | 18 | **적재 실측값**: A/B/C는 `place_config.json`에 반영됨(높이, 자세, 첫 접촉 Z, 자리 간격 −80mm). 구역 1자리 x·y 실측: **A (480, −160), B (650, −160), C (580, 300)** → `common.py`·DB 템플릿 입력됨. 미분류: `unclassified.release_pose [670, -43, 144, 160, 180, 162]`, `approach_z 160` (적재 설정). 남은 것: **DB 실제 코드에 A/B/C 입력**, **D 수치·구역** | 적재, DB, 관제 | D 대기 |
 | 19 | ~~접촉 감지 방식~~ → `place_main`에 구현(순응제어 + 목표 힘 −22N, 접촉 6N, 층 허용 오차 3mm). 실제 로봇 A 1~3층, B 1~2층 Z 오차 0.7mm 이내 | 적재 | 완료 |
 | 20 | **판별 → 적재 위상 고정**: 판별이 항상 같은 방향으로 내려놓아야 박스 높이 하나로 층 판단 가능 (이슈 6과 연결) | 판별, 적재 | 시험 필요 |
 | 21 | **수량 측정의 한계**: 앞 단은 모두 찼다고 보고 셈. 안쪽 단에서 박스를 빼면 빈자리부터 채우며 실제보다 적게 셀 수 있음. 모든 단이 차면(`NO_SLOT`) 박스를 쥔 채 끝남 → 측정존 복귀 등은 에러 정책(이슈 2)과 함께 | 적재, 관제 | 시연 범위에서는 허용 |
 | 17-1 | DB: `get_fixed_poses()`에 `place_zones`(A~D 1단 x·y) 추가 (**필수**: 빠지면 사전 점검 FAIL). 인터페이스 v0.4라 전원 `git pull` 후 **다시 빌드** 필요, 적재 `run()` 형식 변경 | DB, 적재, 전체 | 공지 필요 |
+| 22 | **스캔공간 막힘 처리**: 탐지가 같은 자리에서 높이 탐지 3회 실패(낮거나 집을 수 없는 물체) → 지금은 임시로 `SCAN_FAILED`(작업 종료, 사람이 치움). 후보: 그 물체를 건너뛰고 계속 / 별도 코드(`SCAN_BLOCKED`)로 관제에 알림 — `scan_algorithm.py` `_on_scan_blocked` 한 곳만 바꾸면 됨 | 탐지, 관제 | 팀 결정 |
+| 23 | **탐지 높이 설정과 물품 크기 확인**: 11/18 집는 높이(윗면 − 15mm)와 높이 탐지 하한(Z0 + 17)은 20mm 박스에 맞춤. **남은 것: 탐색 높이 `SCAN_Z 35`** — 스캔 작업대 바닥이 TCP Z 0(`Z0`)이면 눕힌 박스(20~25mm)는 탐색 핑거 아래로 지나감. 실제 작업대 높이·`Z0`·`SCAN_Z`를 탐지 담당과 실물로 확인 (바꾸면 보정표 재측정) | 탐지 | 실물 확인 |
+| 24 | **판별 시뮬 모드 없음**: 에뮬레이터에서 탐지·판별·적재 셋 다 실제 코드로는 못 돌림(판별은 힘·폭·모멘트 측정이 필요) → 에뮬레이터는 판별 fake, 셋 다 실제 코드는 실물에서 | 판별, 관제 | 필요 시 |
 | 15 | (옵션) **UI 작업 시작 버튼**: 누르면 시작 대기 팝업(실제 10분, 데모 10초) 후 자동 시작. 사실상 원격 시작이라 UI↔DB↔관제 경로가 필요 → 아이디어 단계 | 관제, DB | 아이디어 |
 
 ### 메모: 이슈 10 재고 검증 (v0.4, 측정값 우선)
@@ -174,7 +179,21 @@
 
 최근 날짜가 위로 오게 씁니다.
 
+### 11/18
+
+- **측정존 z 통일 + 집는 높이** (위 결정 사항): `scan_config`(`GRIP_DEPTH_FROM_TOP_MM` 15, `PLACE_MIN_ABOVE_FLOOR_MM` 2, `GRIP_HEIGHT_RATIO`·`PROBE_FLOOR_MIN_MM`·`PLACE_OVERTRAVEL_MM` 삭제), `scan_algorithm`(`calculate_grip_z`, `probe_floor_z`, 내려놓기 하한), `place_config.json`(`pick_above_floor_mm` 5), `place_algorithm`(측정존 집기 높이, 층 판단 TCP Z − 보정, sim 가상 접촉도 보정만큼 위, 설정 검사), `common`(`measure_zone` 설명, `RECOVERY probe_above_floor_mm`), `recovery`(측정존 확인 높이), DB 템플릿 주석, README·CONTRIBUTING 2-5-1
+  - ROS 없이 시험: 탐지 흐름 6개 통과(낮은 박스 기준 30 → 10mm로 바꿈), 20mm 박스 → TCP 5에서 집고 측정존 35에 놓음 / 적재 sim A×4: 보정 0 → TCP Z 30.19·50.19·70.19·30.19, 수량 1~4(전과 같음), 보정 5 → 측정존 집기 35, TCP Z 35.19·55.19·75.19·35.19, 기준 Z·수량 같음
+  - **에뮬레이터·실물 확인 필요**: `SCAN_MAIN=1 SIM=1 PLACE_MAIN=1`, 실물 적재 측정존 집기 높이
+
 ### 11/17
+
+- **탐지 통합** (위 결정 사항)
+  - 새 파일: `box_scan/scan_algorithm.py`(`ScanAlgorithm`, 원본 함수 대응: `scan_line`→`_scan_line`, `probe_contact`·`grip_force_approach`→`_force_down`, `pick_and_place`→`_find_and_grip`·`_grip`·`_carry_and_place`, `resume_scan`→`_go_resume`, `sequence`→`_scan` + 탐색 커서), `scan_config.py`(원본 설정·보정표 그대로), `scan_main.py`, `scan_original.py`(원본 보관), `test/test_scan_flow.py`(가짜 로봇·가짜 시계 6개). 수정: `dsr_io`(`amovel`·`movejx`·`motion_state`), `box_scan/setup.py`(`scan_main`·`scan_original`), `fake_run.sh`·`fake_stop.sh`(`SCAN_MAIN`, `SIM_BOXES`)
+  - 원본에서 고친 것: CSV가 탐색·이송 구간이 한 파일로 섞이던 분리본 문제(매 구간 flush), 높이 4점 모두 실패 → Y−50 재개가 낮은 물체에서 끝없이 반복되던 원본 문제(같은 자리 3회 → 막힘)
+  - **에뮬레이터 + 관제 통과**: 박스 2개 → 6번 선 → 이어서 9번 선 → 나머지 탐색 → `DONE` / 높이 30mm 박스 → `(1/3)` `(2/3)` → `스캔공간 막힘` ERROR → `ERROR : Fail to scan` / `BOX_FAKE_GRIP_FAILS=4` → 0·45·90° 실패 → 재스캔(1/3) → 이어서 탐색·집기 성공 → `DONE`(재스캔 1회) / **탐지 + 적재 실제 코드**(판별 fake): A·B → `DONE`, 박스 3개 A·A·C → A 1·2층(Z 30.19 / 50.19)·C 1층 → `DONE`
+  - 주의: 에뮬레이터에서 `sim_boxes` 없이 `scan_main`을 돌리면 +Y 선 보정값(약 −10N) 때문에 바로 가짜 접촉 → 높이 탐지 Force 하강이 시간 초과(SCAN_FAILED). 적재가 B·C 구역으로 갈 때 특이점 알림 2-3205/3206
+  - 집에서 bringup이 `Waiting for data on 'robot_description'`에서 멈춤 → 원인 `ROS_DISCOVERY_SERVER`(실습실 discovery 서버)가 `.bashrc`에 켜져 있었음. 실습실 밖에서는 끄고 `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`
+  - 남은 것: 실물 시험(`SCAN_MAIN=1`, SIM 없이), 이슈 22·23, 순응제어 램프(원본 0.3초 → `DsrIO.compliance_on` 0초)
 
 - **그리퍼 Modbus 공용화 + 집기 실패 처리 + 판별 연동** (위 결정 사항)
   - 새 파일: `box_comm/gripper.py`(RG2·FakeRG2), `box_control/recovery.py`(관제 복구 동작, 측정존 비우기). 수정: `common`(GRIPPER·GRIP_RETRY·RECOVERY·RECOVER_LIMIT, 코드 `SCAN_FAILED`·`RECOVERY_FAILED`·`RETRY_LIMIT`, 로그 `BOX_RETRY`), `dsr_io`, `algorithm`, `control`(`on_part_error`), `preflight`(그리퍼·밀어내기 경로 점검), fake 3종(`grasp_fail_at`), 관제 파라미터 `clear_zone`, `fake_run.sh`(`BOX_GRIPPER`)

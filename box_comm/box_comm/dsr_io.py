@@ -33,6 +33,9 @@ dsr_io.py — 파트가 쓰는 두산 로봇 명령 모음 (정지 확인 내장
   movel(pose, vel, acc, tol=2.0)  직선 이동 후 도달 확인 (오차 tol mm 넘으면 RuntimeError)
   movej(joints, vel, acc)         관절 이동
   amovel_rel(delta, vel, acc)     비동기 상대 직선 이동 (BASE). time_s를 주면 시간 기준. 끝까지 기다리지 않음
+  amovel(pose, vel, acc)          비동기 절대 직선 이동 (BASE). vel·acc는 숫자 또는 [직선, 회전]. 바로 돌아옴 (11/17 탐지)
+  movejx(pose, vel, acc, tol=2.0) TCP 목표로 관절 보간 이동 (지금 해 공간 유지) + 도달 확인 (11/17 탐지)
+  motion_state() -> 0/1/2         check_motion: 0 정지, 1 가감속, 2 이동 중. 비동기 이동 끝 확인용 (11/17 탐지)
   mwait()                         비동기 이동이 끝날 때까지 대기
   move_stop(mode=2) -> bool       지금 이동만 멈춤 (1 빠른 정지, 2 부드러운 정지). 접촉 감지 후 하강 끊기용
   grip(opened, wait_s=None)       그리퍼 기본 열기/닫기 (예전 이름 그대로, 닫기는 GripResult 반환)
@@ -275,6 +278,38 @@ class DsrIO:
             self._dr_call('amovel', target, time=float(time_s), ref=self.dr.DR_BASE, mod=self.dr.DR_MV_MOD_REL)
         else:
             self._dr_call('amovel', target, vel=vel, acc=acc, ref=self.dr.DR_BASE, mod=self.dr.DR_MV_MOD_REL)
+
+    def amovel(self, pose, vel, acc):
+        """비동기 절대 직선 이동 (BASE 기준 [x, y, z, a, b, c]). 바로 돌아온다.
+        vel·acc: 숫자 또는 [직선 mm/s, 회전 deg/s]. 끝났는지는 motion_state(), 끊으려면 move_stop().
+        (탐지: 이동하면서 외력을 읽는 스캔용, 11/17)"""
+        self._guard()
+        self._prepare()
+        self.moved = True
+        self._dr_call('amovel', self.dr.posx([float(v) for v in pose]), vel=vel, acc=acc,
+                      ref=self.dr.DR_BASE, mod=self.dr.DR_MV_MOD_ABS)
+
+    def movejx(self, pose, vel, acc, tol=2.0):
+        """TCP 목표 [x, y, z, a, b, c]로 관절 보간 이동 + 도달 확인. 지금 자세의 해 공간(sol)을 그대로 쓴다.
+        직선 경로가 아니므로 물체에서 떨어진 높은 곳에서만 쓴다. (탐지 원본 movejx, 11/17)"""
+        self._guard()
+        self._prepare()
+        self.moved = True
+        _, sol = self.dr.get_current_posx(ref=self.dr.DR_BASE)
+        self._dr_call('movejx', self.dr.posx([float(v) for v in pose]), vel=vel, acc=acc,
+                      sol=int(sol), ref=self.dr.DR_BASE)
+        actual = self.pose()
+        if any(abs(actual[i] - pose[i]) > tol for i in range(3)):
+            raise RuntimeError('관절 보간 이동 목표 미도달')
+
+    def motion_state(self) -> int:
+        """check_motion: 0 정지 / 1 가속·감속 / 2 이동 중 (정지 확인 포함)"""
+        self._guard()
+        self._prepare()
+        state = int(self._request('motion', self._srv.CheckMotion.Request()).status)
+        if state not in (0, 1, 2):
+            raise RuntimeError(f'알 수 없는 이동 상태: {state}')
+        return state
 
     def mwait(self):
         """비동기 이동이 끝날 때까지 대기 (기다리는 동안은 정지 확인을 못 함 — 관제 정지는 move_stop으로 로봇이 멈춤)"""

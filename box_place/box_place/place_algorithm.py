@@ -30,6 +30,10 @@ v0.4 적재
   - U(미분류)는 unclassified.release_pose로 이동 후 투하. 힘 제어/층 판단 없음, 0 반환
 
 설정: box_place/config/place_config.json (설치 후 share/box_place/config/place_config.json)
+  - pick_above_floor_mm (11/18): 측정존에서 집는 TCP 높이 = 측정존 z(바닥) + 이 값. 핑거 끝이 바닥에 닿지 않게(기본 5).
+    판별이 항상 눕혀서 주므로 박스 높이는 20/25뿐 → 고정값 하나로 충분. 이만큼 높게 집으면 적재 구역에서 닿는
+    TCP Z도 그만큼 올라가므로, 층 판단·첫 접촉 Z 기준은 이 값을 뺀 Z(바닥에서 집었을 때와 같은 기준)로 계산한다
+    → 기존 first_contact_z_mm(바닥 높이에서 집어 잰 값)과 상태 파일 기준을 그대로 쓸 수 있다.
   - 층 수·자리 수는 설정에 적지 않는다. box_comm/common.py STACK(levels / max_tiers)을 그대로 쓴다
     (관제·DB·UI가 같은 규칙으로 수량을 해석하는 공용 규칙. 바꿀 때는 관제와 합의 + 자리별 첫 접촉 Z 재측정)
   - slot_dx_mm: 다음 자리 위치 = 1자리 x + (자리-1) * slot_dx_mm, y는 같음
@@ -92,6 +96,11 @@ def validate_config(c):
         raise ValueError('contact_force_n < desired_force_n < abort_force_n 필요')
     if c['contact_sign'] not in (-1, 1):
         raise ValueError('contact_sign은 +1 또는 -1이어야 합니다')
+    off = c.setdefault('pick_above_floor_mm', 0.0)
+    if type(off) not in (int, float) or not math.isfinite(off) or off < 0:
+        raise ValueError('pick_above_floor_mm는 0 이상이어야 합니다')
+    if c['classes'] and off >= min(spec['height_mm'] for spec in c['classes'].values()):
+        raise ValueError('pick_above_floor_mm가 가장 낮은 박스 높이 이상입니다 (박스를 못 잡음)')
     for k in ('min_search_z', 'slot_dx_mm'):
         if type(c[k]) not in (int, float) or not math.isfinite(c[k]):
             raise ValueError(f'잘못된 {k}')
@@ -121,7 +130,7 @@ def validate_config(c):
             if z is not None and (type(z) not in (int, float) or not math.isfinite(z) or not c['min_search_z'] < z < c['travel_z']):
                 raise ValueError(f'{key}: 잘못된 첫 접촉 Z')
         for z in refs:
-            if z is not None and z + c['max_layers'] * h + 10.0 >= c['travel_z']:
+            if z is not None and z + off + c['max_layers'] * h + 10.0 >= c['travel_z']:
                 raise ValueError(f"{key}: {c['max_layers']}층 위 파지 접촉 높이와 상부 Z 여유 부족")
     if UNCLASSIFIED in c['classes']:
         raise ValueError('U는 일반 classes가 아니라 unclassified 항목으로 설정하세요')
@@ -239,7 +248,8 @@ class PlaceAlgorithm:
     def pick_from_measure_zone(self, zone, report):
         """측정존에서 집기. 못 잡거나 들다가 놓치면 같은 자세로 다시 (최대 grip_retry번).
         다 실패하면 그리퍼 열고 이송 높이에서 GRASP_FAILED (관제가 측정존을 비우고 재스캔)."""
-        pick = [*zone, *self.c['pick_orientation']]
+        # 측정존 z = 바닥. 핑거 끝이 바닥에 닿지 않게 pick_above_floor_mm만큼 위에서 집는다 (11/18)
+        pick = [zone[0], zone[1], zone[2] + self.c['pick_above_floor_mm'], *self.c['pick_orientation']]
         above = [pick[0], pick[1], self.c['travel_z'], *pick[3:]]
         tries = int(self.c.get('grip_retry') or GRIP_RETRY)
         self._raise()
@@ -373,7 +383,7 @@ class PlaceAlgorithm:
         c = self.c
         base = reference if reference is not None else c['min_search_z'] + 10.0
         stacked = min(self._sim_stack.get((category, tier), 0), c['max_layers'])
-        z = base + stacked * c['classes'][category]['height_mm']
+        z = base + stacked * c['classes'][category]['height_mm'] + c['pick_above_floor_mm']   # 실제처럼 높게 집은 만큼 위
         self._move([approach[0], approach[1], z, *approach[3:]])
         self.log.info(f'[place] (sim) {category}/{tier} 가상 접촉 Z={z:.2f} (이미 {stacked}개)')
         return z
@@ -389,8 +399,8 @@ class PlaceAlgorithm:
             raise ValueError('Goal의 HOME/측정존/해당 분류 적재 구역 좌표가 없습니다')
         if all(abs(v) < 1e-6 for v in zone):
             raise ValueError('측정존 (0,0,0)은 사용할 수 없습니다')
-        if not self.c['min_search_z'] < zone[2] < self.c['travel_z']:
-            raise ValueError('측정존 TCP 파지 Z 범위 오류')
+        if not self.c['min_search_z'] < zone[2] + self.c['pick_above_floor_mm'] < self.c['travel_z']:
+            raise ValueError('측정존 집기 TCP Z(바닥 z + pick_above_floor_mm) 범위 오류')
         return list(home), list(zone), list(xy)
 
     def _unclassified_poses(self, poses):
@@ -402,7 +412,7 @@ class PlaceAlgorithm:
         zone = poses.get('measure_zone')
         if not finite_vector(home, 6) or not finite_vector(zone, 3):
             raise ValueError('U 작업의 HOME/측정존 좌표가 없습니다')
-        if all(abs(v) < 1e-6 for v in zone) or not self.c['min_search_z'] < zone[2] < self.c['travel_z']:
+        if all(abs(v) < 1e-6 for v in zone) or not self.c['min_search_z'] < zone[2] + self.c['pick_above_floor_mm'] < self.c['travel_z']:
             raise ValueError('U 작업의 측정존 TCP 파지 좌표가 잘못되었습니다')
         return list(home), list(zone), list(u['release_pose']), u['approach_z']
 
@@ -416,7 +426,7 @@ class PlaceAlgorithm:
             h = self.c['classes'][category]['height_mm']
             if type(z) not in (int, float) or not math.isfinite(z) or not self.c['min_search_z'] < z:
                 raise ValueError('잘못된 저장 접촉 기준 Z')
-            if z + self.c['max_layers'] * h + 10.0 >= self.c['travel_z']:
+            if z + self.c['pick_above_floor_mm'] + self.c['max_layers'] * h + 10.0 >= self.c['travel_z']:
                 raise ValueError(f"{self.c['max_layers']}층 위 접촉 높이에 비해 이송 Z 여유가 부족합니다")
             return z
         record = self.state['references'][category][tier-1]
@@ -437,7 +447,7 @@ class PlaceAlgorithm:
 
     def _remember_reference(self, category, tier, x, y, z):
         height = self.c['classes'][category]['height_mm']
-        if z + self.c['max_layers'] * height + 10.0 >= self.c['travel_z']:
+        if z + self.c['pick_above_floor_mm'] + self.c['max_layers'] * height + 10.0 >= self.c['travel_z']:
             raise ValueError('학습한 접촉 Z 기준으로 최상층 위 탐색 시 상부 Z 여유가 부족합니다')
         self.state['references'][category][tier-1] = {
             'signature': self._reference_signature(category, x, y), 'first_contact_z_mm': z}
@@ -511,9 +521,10 @@ class PlaceAlgorithm:
             self._ensure_holding(f'{result_class} {tier}번 자리 하강 전')
             reference = references[tier-1]
             if self.sim_contact:
-                z = self._sim_descend(result_class, tier, approach, reference)
+                z_tcp = self._sim_descend(result_class, tier, approach, reference)
             else:
-                z = self._descend(approach)
+                z_tcp = self._descend(approach)
+            z = z_tcp - c['pick_above_floor_mm']        # 바닥에서 집었을 때 기준 Z (첫 접촉 Z 기준과 같은 기준)
             if reference is None:
                 # learn_empty_slots: 기준이 없는 자리는 비어 있다고 보고 이 Z를 기준으로 학습
                 reference = z
@@ -536,7 +547,8 @@ class PlaceAlgorithm:
             if self.sim_contact:
                 self._sim_stack[(result_class, tier)] = level
             self._remember_reference(result_class, tier, x, y, reference)   # 입력한 기준도 저장
-            message = f'{result_class} {tier}번 자리 {level}층 적재 → 수량 {count} (TCP Z={z:.2f})'
+            message = (f'{result_class} {tier}번 자리 {level}층 적재 → 수량 {count} '
+                       f'(TCP Z={z_tcp:.2f}, 기준 Z={z:.2f})')
             self.log.info(message)
             report.log(message)
             self._pending_done()

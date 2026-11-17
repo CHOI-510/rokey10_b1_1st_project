@@ -100,7 +100,7 @@ ros2 run box_scan scan_main
 
 | 파트 | 알고리즘 파일 (담당자) | 진입점 | 실제 예시 |
 | --- | --- | --- | --- |
-| 탐지 | `box_scan/scan_algorithm.py` (`ScanAlgorithm`) | `scan_main.py` | — |
+| 탐지 | `box_scan/scan_algorithm.py` (`ScanAlgorithm`) + 설정 `scan_config.py` | `scan_main.py` | 통합 (에뮬레이터 검증, 실물 확인 전) |
 | 판별 | `box_judge/judge_algorithm.py` (`JudgeAlgorithm`) | `judge_main.py` | — |
 | 적재 | `box_place/place_algorithm.py` (`PlaceAlgorithm`) | `place_main.py` | 완성 (실제 로봇 검증) |
 
@@ -275,6 +275,8 @@ self.robot.movel(target, vel=60, acc=100)
 | `pose()` / `joints()` | 현재 TCP `[x, y, z, a, b, c]` / 관절각 6개 [deg] |
 | `force_z()` / `force(ref)` | 툴 외력 Fz [N] / 6축 `[Fx, Fy, Fz, Tx, Ty, Tz]` (`ref='base'`·`'tool'`, 힘은 BASE·모멘트는 ref 기준). 둘 다 진행 알림 포함 |
 | `amovel_rel(delta6, vel, acc, time_s)` / `mwait()` / `move_stop(mode)` | 비동기 상대 이동 / 끝까지 대기 / 그 이동만 멈춤 (1 빠른, 2 부드러운) — 접촉하면 바로 멈추는 하강용 |
+| `amovel(pose6, vel, acc)` / `motion_state()` | 비동기 **절대** 직선 이동(`vel`·`acc`는 숫자 또는 `[직선, 회전]`) / 이동 상태 0 정지·1 가감속·2 이동 중 — 이동하면서 힘을 읽는 탐지 스캔용 (11/17) |
+| `movejx(pose6, vel, acc, tol=2.0)` | TCP 목표로 관절 보간 이동(지금 해 공간 유지) + 도달 확인. 직선이 아니므로 높은 곳에서만 (11/17) |
 | `compliance_on(stx)` / `force_on(fd, dir, time)` | 순응제어 / 목표 힘 (상대 모드) |
 | `stop(emergency=False)` | 힘·순응제어 해제 (+ `emergency`면 `move_stop`) 후 멈춤 확인 |
 | `ok()` | ROS가 살아 있는지 (긴 루프 조건) |
@@ -298,7 +300,7 @@ self.robot.movel(target, vel=60, acc=100)
 
 | 파트 | 다시 집는 방법 | 다 실패하면 |
 | --- | --- | --- |
-| 탐지 | 그리퍼 +30° → 반대로 −30°(처음 기준) 돌려서 재시도, 3번 | `GRASP_FAILED` → 관제가 공간 스캔부터 다시 (박스가 스캔 공간에 그대로라 밀어내기 없음) |
+| 탐지 | 높이를 찾은 첫 지점에서 그리퍼 0° → 45° → 90°(원본 실로봇 시험값, `scan_config.GRIP_RETRY_ANGLES`) 돌려서 3번 | `GRASP_FAILED` → 관제가 공간 스캔부터 다시 (박스가 스캔 공간에 그대로라 밀어내기 없음, 탐지는 그 접촉점 −50mm부터 이어서) |
 | 판별 | 그대로 다시, 3번 | `GRASP_FAILED` → 측정존 밀어내기 → 공간 스캔부터 다시 |
 | 적재 | 그대로 다시, 3번 | `GRASP_FAILED` → 측정존 밀어내기 → 공간 스캔부터 다시 |
 
@@ -369,9 +371,18 @@ def scan(self, poses, report):
 
 세 파트는 코드가 아니라 **측정존 위의 박스 상태**로 맞물립니다. 앞 파트가 이 약속을 지키면 뒤 파트는 그대로 믿고 동작합니다.
 
+**측정존 좌표 (11/18 통일)**: DB `measure_zone` = 측정존 중심 x, y, **바닥 z** — 세 파트가 공유하는 건 이 사실 하나뿐입니다. 집는·놓는 높이는 각 파트가 이 바닥에서 계산하고 자기 설정에 둡니다.
+
+| 파트 | 측정존에서 높이를 정하는 법 | 설정 |
+| --- | --- | --- |
+| 탐지 | 놓을 때: 예상 접촉 높이 위에서 천천히 내려가 닿으면 놓음 (하한 바닥 + 2mm). 집기(작업공간)는 윗면 − 15mm | `scan_config` `GRIP_DEPTH_FROM_TOP_MM`, `PLACE_*` |
+| 판별 | 바닥 z를 테이블 기준으로 높이·폭 측정. 길이 측정 때문에 '들어 올리면서 집기'는 판별만 씀 | `judge_algorithm` `PARAMS` (`table_ref_file`로 실측값 대체 가능) |
+| 적재 | 바닥 + 5mm에서 바로 집음 (판별이 눕혀서 주므로 높이 20/25뿐, 핑거 끝이 바닥에 안 닿게). 층 판단은 TCP Z − 5 | `place_config.json` `pick_above_floor_mm` |
+| 관제 (측정존 확인) | 바닥 + 5mm에서 닫아 봄 | `common.RECOVERY` `probe_above_floor_mm` |
+
 | 단계 | 누가 | 측정존에 남기는 상태 |
 | --- | --- | --- |
-| 탐지 → 판별 | 탐지 | 박스의 **일부가 측정존 중심에 걸치도록** 놓는다. 방향은 정해진 그리퍼 방향. 정확한 정렬은 하지 않는다 |
+| 탐지 → 판별 | 탐지 | 박스의 **일부가 측정존 중심에 걸치도록** 놓는다. 방향은 정해진 그리퍼 방향. 정확한 정렬은 하지 않는다 (11/17 구현: 집은 TCP를 측정존 x·y에 맞춰 바닥에 닿을 때까지 내려놓음. 집을 때 돌린 각도 0/45/90°가 그대로 남음) |
 | 판별 → 적재 | 판별 | 측정·정렬을 끝낸 뒤 **측정존 중심 x·y**(DB `measure_zone`)에 놓는다. **가장 긴 면 = 가로, 두 번째로 긴 면 = 세로**, 가장 짧은 면 = 높이(바닥에 눕힘). 돌리기·정렬·가운데 맞추기는 판별이 한다 |
 | 적재 | 적재 | 위 상태를 **확정된 것으로 보고** 매번 같은 자세(`place_config.json` `pick_orientation`)로 집는다. 방향 값은 DB·관제로 전달하지 않는다 (관제는 A~D·U만 넘김) |
 

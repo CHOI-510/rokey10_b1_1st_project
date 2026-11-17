@@ -30,7 +30,7 @@ scan_template.py — 탐지 템플릿 (관제 관리, 참고용)
   scan(poses, report) -> bool
     - poses: {'home_j': [6], 'measure_zone': [x, y, z], ...}  — Goal로 받은 DB 값 (숫자를 코드에 적지 않는다)
     - 물품을 측정존에 두고 홈 복귀까지 끝났으면 True / 작업공간에 물품이 없으면 False
-    - 못 집으면 다시 집기 (예: 그리퍼를 ±30° 돌려서), GRIP_RETRY번 안에 안 되면 raise PartError('GRASP_FAILED')
+    - 못 집으면 다시 집기 (예: 그리퍼를 돌려서 — 실제 코드 scan_algorithm.py는 0/45/90°), GRIP_RETRY번 안에 안 되면 raise PartError('GRASP_FAILED')
       → 관제가 공간 스캔부터 다시. 그 밖의 예외는 box_comm이 로봇을 멈추고 SCAN_FAILED로 보냄 (작업 종료)
     - 단계가 바뀔 때마다 report(stage)를 반드시 호출 (관제가 진행 상황을 추적)
       stage: 'space_scan' → 'picking' → 'moving' → 'placing'  (box_comm/common.py STAGES)

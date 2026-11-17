@@ -77,7 +77,7 @@ FAKE_SPECS = [
 #        common.py의 FIXED_POSES 기본값도 같은 값으로 맞춰 두면 팀원 단독 테스트가 편하다
 FAKE_POSES = {
     'home_j': [0.0, 0.0, 90.0, 0.0, 90.0, 0.0],
-    'measure_zone': [300.0, -160.0, 30.0],  # 측정존 x, y, z [mm, base]  z = 박스 파지 TCP 높이 (적재 1층 높이)
+    'measure_zone': [300.0, -160.0, 30.0],  # 측정존 x, y, z [mm, base]  z = 측정존 바닥 Z (11/18 통일)
     'place_zones': {                      # TODO: 구역별 1단 x, y 실측값 [mm, base]
         'A': [480.0, -160.0],     # 실측 (11/16)
         'B': [650.0, -160.0],     # 실측 (11/16)

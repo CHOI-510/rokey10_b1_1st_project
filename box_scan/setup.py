@@ -19,6 +19,8 @@ setup(
     entry_points={
         'console_scripts': [
             'scan_template = box_scan.scan_template:main',
+            'scan_main = box_scan.scan_main:main',            # 실제 탐지 (scan_algorithm.py)
+            'scan_original = box_scan.scan_original:main',    # 원본 단독 실행 (비교·비상용, 관제와 동시 실행 금지)
         ],
     },
 )
