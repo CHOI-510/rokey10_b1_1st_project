@@ -87,7 +87,7 @@ class ScanMotionTest:
         except PartError:
             raise                 # CANCELED(관제 정지) 등은 바꾸지 않고 그대로 올림
         except Exception as e:
-            raise PartError('GRASP_FAILED', f'DSR 동작 실패: {type(e).__name__}: {e}')
+            raise PartError('SCAN_FAILED', f'DSR 동작 실패: {type(e).__name__}: {e}')
 
         self.log.info(f'[test_scan_motion] #{self.count} 동작 완료')
         return True

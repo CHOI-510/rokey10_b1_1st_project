@@ -19,14 +19,19 @@ scan_template.py — 탐지 템플릿 (관제 관리, 참고용)
       로봇은 robot으로만 움직인다 → 명령 전에 관제 정지 요청을 자동으로 확인한다
         robot.movel([x, y, z, a, b, c], vel=60, acc=100)   직선 이동 + 도달 확인 (BASE 기준)
         robot.movej(poses['home_j'], vel=30, acc=30)        관절 이동
-        robot.grip(opened=True/False, wait_s=1.5)            RG2 열기/닫기
+        robot.grip(opened=True/False)                        RG2 기본 열기/닫기 (Modbus, 11/17)
+        robot.grip_open(width_mm, force_n)                   지정 폭으로 열기
+        robot.grip_close(force_n) -> (grabbed, width_mm, raw_mm)   닫기 + 잡혔는지·폭 (못 잡아도 예외 없음)
+          못 잡으면(grabbed=False) 파트 방식대로 다시 집기 → common.GRIP_RETRY(3)번 안에 안 되면
+          raise PartError('GRASP_FAILED') → 관제가 공간 스캔부터 다시 (판별·적재는 관제가 측정존을 먼저 비움)
         robot.pose() / robot.force_z()                       현재 TCP / 툴 외력 Fz (force_z는 진행 알림 포함)
         robot.compliance_on(...) / robot.force_on(...) / robot.stop()   힘 제어 (외력 감지 스캔 등)
       필요한 명령이 없으면 관제에게 요청 (DSR_ROBOT2를 직접 부르면 정지 확인이 빠진다)
   scan(poses, report) -> bool
     - poses: {'home_j': [6], 'measure_zone': [x, y, z], ...}  — Goal로 받은 DB 값 (숫자를 코드에 적지 않는다)
     - 물품을 측정존에 두고 홈 복귀까지 끝났으면 True / 작업공간에 물품이 없으면 False
-    - 실패하면 raise PartError('GRASP_FAILED', '이유') — 그 밖의 예외도 box_comm이 로봇을 멈추고 GRASP_FAILED로 보냄
+    - 못 집으면 다시 집기 (예: 그리퍼를 ±30° 돌려서), GRIP_RETRY번 안에 안 되면 raise PartError('GRASP_FAILED')
+      → 관제가 공간 스캔부터 다시. 그 밖의 예외는 box_comm이 로봇을 멈추고 SCAN_FAILED로 보냄 (작업 종료)
     - 단계가 바뀔 때마다 report(stage)를 반드시 호출 (관제가 진행 상황을 추적)
       stage: 'space_scan' → 'picking' → 'moving' → 'placing'  (box_comm/common.py STAGES)
     - 기록할 일이 있으면 report.log('메시지', 'INFO'/'WARN'/'ERROR') — 관제가 /event_log로 DB·UI에 넘김

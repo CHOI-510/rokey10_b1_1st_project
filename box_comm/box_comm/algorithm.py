@@ -20,6 +20,9 @@ algorithm.py — 파트 알고리즘 실행 어댑터 (탐지·판별·적재 �
     - 알고리즘 메서드에 Goal의 고정 좌표(poses, DB 값)를 넘긴다
     - 실패(예외)하면: 로봇이 움직였거나 힘 제어 중이었으면 stop(emergency=True)
                      PartError는 코드 그대로(CANCELED 포함), 그 밖의 예외는 파트 기본 코드로
+    - 집기 실패(GRASP_FAILED, 11/17): 파트가 이미 다시 집어 보고 포기한 것 → 힘 제어만 풀고 그대로 보냄
+        그 뒤(측정존 비우기, 공간 스캔부터 다시)는 관제가 한다 (box_control/recovery.py, control.py)
+    - Goal이 끝나면 robot.unbind(): 정지 확인 해제 + 그리퍼(Modbus) 접속 해제
 ================================================================
 """
 
@@ -53,11 +56,14 @@ class AlgorithmWork:
         try:
             return getattr(self.algo, self.method)(*inputs, self.poses, report)
         except BaseException as exc:
+            grasp = isinstance(exc, PartError) and exc.code == 'GRASP_FAILED'   # 파트가 포기한 집기 실패 (정상 흐름)
             if robot is not None and robot.needs_stop():     # 움직였거나 힘 제어 중이었으면 멈춤
                 try:
-                    robot.stop(emergency=True)
+                    robot.stop(emergency=not grasp)          # 집기 실패는 힘 제어 해제만 (급정지 불필요)
                 except Exception as stop_exc:
                     code = exc.code if isinstance(exc, PartError) else self.default_error
+                    if grasp:                                # 멈춘 걸 확인 못 했으면 재스캔하면 안 됨 → 작업 종료
+                        code = self.default_error
                     raise PartError(code, f'{exc}; 정지 확인 실패: {stop_exc}') from exc
             if isinstance(exc, (KeyboardInterrupt, SystemExit, PartError)):
                 raise

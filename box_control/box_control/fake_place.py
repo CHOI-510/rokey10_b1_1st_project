@@ -12,6 +12,8 @@ place_template / 담당 메인 코드 대신 띄워서 관제(control.py)를 테
   fake_start      (int[4], 기본 [0,0,0,0])    A~D 구역에 처음부터 쌓여 있는 개수
                   → DB 재고와 다르게 주면 첫 적재에서 관제 불일치(측정값 반영) 테스트
   miscount_at     (int,    기본 0)            N번째 적재에서 수량을 일부러 +1 틀리게 측정 (0이면 끔)
+  grasp_fail_at   (str,    기본 "")           "2"처럼 주면 그 번째 Goal에서 집기 실패(GRASP_FAILED, 11/17)
+                  → 관제가 측정존을 비우고(fake면 비운 셈 치고) 재스캔
 
 실행
   ros2 run box_control fake_place
@@ -22,8 +24,28 @@ place_template / 담당 메인 코드 대신 띄워서 관제(control.py)를 테
 
 import time
 
+from rcl_interfaces.msg import ParameterDescriptor
+
 from box_comm.common import PartError, position_from_count, stack_capacity
 from box_comm.place_interface import start
+
+
+ANY_TYPE = ParameterDescriptor(dynamic_typing=True)   # -p x:=2 (정수)와 -p x:="1,2" (문자열) 둘 다 받음
+
+
+def parse_at(text) -> set:
+    return {int(x) for x in str(text).split(',') if x.strip()}
+
+
+def fake_grasp_failure(log, report, goal_no, fail_at, delay):
+    """(fake) 집기 실패 흉내: 재시도 로그 → GRASP_FAILED (측정존 비우기는 관제가 함)"""
+    if goal_no not in fail_at:
+        return
+    for i in range(2, 4):
+        report.log(f'집기 실패, 재시도 {i}/3 (fake)', 'WARN')
+        time.sleep(delay * 0.3)
+    log.info('[fake] 3회 집기 실패 → GRASP_FAILED (관제가 측정존을 비우고 재스캔)')
+    raise PartError('GRASP_FAILED', f'{goal_no}번째 Goal: 3회 시도 실패 (fake)')
 
 
 class FakePlace:
@@ -32,6 +54,9 @@ class FakePlace:
         node.declare_parameter('fake_delay_sec', 1.0)
         node.declare_parameter('fake_start', [0, 0, 0, 0])
         node.declare_parameter('miscount_at', 0)
+        node.declare_parameter('grasp_fail_at', '', ANY_TYPE)
+        self.fail_at = parse_at(node.get_parameter('grasp_fail_at').value)
+        self.goals = 0
         self.delay = node.get_parameter('fake_delay_sec').value
         self.stack = dict(zip('ABCD', [int(n) for n in node.get_parameter('fake_start').value]))
         self.miscount_at = node.get_parameter('miscount_at').value
@@ -40,8 +65,10 @@ class FakePlace:
                       f'miscount_at={self.miscount_at}')
 
     def run(self, result_class, report) -> int:
+        self.goals += 1
         report('picking')
         time.sleep(self.delay * 0.5)
+        fake_grasp_failure(self.log, report, self.goals, self.fail_at, self.delay)
         report('moving')
         time.sleep(self.delay)
         report('placing')

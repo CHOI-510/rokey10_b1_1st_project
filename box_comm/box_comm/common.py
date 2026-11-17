@@ -15,6 +15,8 @@ common.py — box_comm 공통 정의
   - FIXED_POSES   : 고정 좌표 기본값 (실제 작업은 DB 값을 관제가 Goal로 보내 줌)
   - STACK         : 적재 규칙 (구역당 층 수·단 수) + 수량 ↔ 단·층 변환 함수
   - LOG_*         : 이벤트 로그 (/event_log 토픽) 레벨·코드·QoS
+  - GRIPPER       : RG2 그리퍼 Modbus 설정 (세 파트 공통, 11/17) + GRIP_RETRY(집기 재시도 횟수)
+  - RECOVERY      : 집기 실패 복구 (측정존 비우기 경로·확인) + RECOVER_LIMIT(관제 연속 재스캔 한도)
   - SAFETY        : 정지 기능 설정 (로봇 상태 감시 주기, 정지 모드, 진행 감시) + ROBOT_STATE
   - Reporter      : 파트 run()에 넘기는 report — report(stage), report.log(msg), report.check()
   - PartError     : 파트가 실패를 알릴 때 raise하는 예외
@@ -30,14 +32,24 @@ common.py — box_comm 공통 정의
 
 ERROR_CODES = (
     'NOT_FOUND',            # 물품을 찾지 못함
-    'GRASP_FAILED',         # 집기 실패
+    'GRASP_FAILED',         # 집기 실패 (파트가 GRIP_RETRY번 다시 집어 보고 포기) → 관제가 공간 스캔부터 다시
     'OVER_FORCE',           # 과도한 힘 감지
     'MEASURE_FAILED',       # 측정 실패
     'NO_SLOT',              # 적재할 칸 없음
+    'SCAN_FAILED',          # 탐지 실패 (집기 말고 예상 못 한 오류 — 탐지 기본 코드, 11/17)
     'PLACE_FAILED',         # 적재 실패
     'ROBOT_SETUP_FAILED',   # 기본 TCP·툴 적용 실패 (box_comm이 Goal 시작 전에 보냄)
     'CANCELED',             # 관제가 작업을 취소함 (정지 요청) — box_comm이 report()에서 자동으로 냄
 )
+
+# 집기 실패 처리 (11/17)
+#   파트: 정해진 방식으로 GRIP_RETRY번까지 다시 집기 (시도마다 report.log(..., 'WARN'))
+#         → 그래도 못 집으면 raise PartError('GRASP_FAILED')
+#         (파트 Goal은 여기서 끝. 그리퍼는 열고 안전 높이로 올라간 상태로 끝낸다)
+#   관제: GRASP_FAILED를 받으면 작업을 끝내지 않음
+#         탐지 → 공간 스캔부터 다시 / 판별·적재 → 측정존 비우기(관제가 로봇을 움직임,
+#         box_control/recovery.py) → 공간 스캔부터 다시. 재고·박스 번호 그대로
+#         연속 RECOVER_LIMIT번을 넘으면 RETRY_LIMIT, 측정존을 못 비우면 RECOVERY_FAILED → 작업 종료(ERROR)
 
 VALID_CLASSES = ('A', 'B', 'C', 'D')     # 정상 분류: 분류 기준(specs)·적재 구역(place_zones)·적재 수량 측정 대상
 
@@ -78,9 +90,13 @@ ERROR_TEXT = {
     'MEASURE_FAILED': 'Fail to measure',
     'NO_SLOT': 'Zone full',
     'PLACE_FAILED': 'Fail to place',
+    'SCAN_FAILED': 'Fail to scan',
     'ROBOT_SETUP_FAILED': 'Robot setup failed',
     'CANCELED': 'Canceled',
     'NO_PROGRESS': 'No progress',
+    # 관제 복구 (box_control/recovery.py, 11/17)
+    'RECOVERY_FAILED': 'Measure zone not cleared',   # 집기 실패 뒤 측정존을 비우지 못함 → 측정존 사용 불가
+    'RETRY_LIMIT': 'Too many pick failures',         # 집기 실패 재스캔 연속 한도 초과
     # 관제 쪽 통신 오류 (control_interface)
     'SERVER_DOWN': 'No response',
     'REJECTED': 'Goal rejected',
@@ -107,7 +123,8 @@ def error_text(code: str, part: str = '', class_id: str = '') -> str:
     text = ERROR_TEXT.get(code, code or 'Unknown failure')
     if code == 'NO_SLOT' and class_id:
         return f'{text} ({class_id})'
-    if code in ('SERVER_DOWN', 'REJECTED', 'TIMEOUT', 'NO_ERROR_CODE', 'NO_PROGRESS') and part:
+    if code in ('SERVER_DOWN', 'REJECTED', 'TIMEOUT', 'NO_ERROR_CODE', 'NO_PROGRESS',
+                'GRASP_FAILED') and part:
         return f'{text} ({part})'
     return text
 
@@ -261,6 +278,44 @@ def stack_layout(count: int) -> list:
 
 
 # ----------------------------------------------------------------------
+# 그리퍼 (RG2, Modbus TCP) — 11/17 세 파트 공통으로 디지털 출력(DO) → Modbus
+#   box_comm/gripper.py가 이 값으로 접속하고, robot(DsrIO)이 Goal 동안만 접속을 연다 (동시 접속 1개).
+#   OnRobot 드라이버(m0609_rg2_bringup mode:=real)가 떠 있으면 접속 실패 → pkill -f OnRobotRGControllerServer
+#   환경변수 BOX_GRIPPER=fake → 가짜 그리퍼 (에뮬레이터). 기본 modbus.
+#   보정값은 판별 실측 (11/17, 패드 장착, 젠가 29·75mm): 실제 폭 = 원시 폭 − 10.30
+#   박스별로 다른 여는 폭·잡는 힘은 각 파트 설정에서 정해 robot.grip_open/grip_close에 넘긴다.
+# ----------------------------------------------------------------------
+GRIPPER = {
+    'ip': '192.168.1.1',
+    'port': 502,
+    'slave': 65,                 # Compute Box 장치 주소
+    'open_width_mm': 100.0,      # 기본 여는 패드 간격 (grip(opened=True))
+    'open_force_n': 20.0,        # 여는 힘
+    'grip_force_n': 20.0,        # 기본 잡는 힘 (grip(opened=False)). RG2 최대 40N
+    'empty_raw_mm': 1.0,         # 닫은 뒤 원시 폭이 이 이하면 빈손
+    'cal_gain': 1.0,             # 폭 보정 기울기
+    'cal_offset_mm': 0.30,       # 폭 보정 오프셋
+    'timeout_s': 5.0,            # 닫기 대기 최대 시간
+}
+GRIP_RETRY = 3          # 파트가 못 집었을 때 다시 집는 최대 횟수 (첫 시도 포함)
+
+# ----------------------------------------------------------------------
+# 집기 실패 복구 — 측정존 비우기 (관제 box_control/recovery.py, 판별·적재 GRASP_FAILED 뒤 관제가 실행)
+#   1. 그리퍼 열고 안전 높이로
+#   2. push_path를 차례로 movel (그리퍼 닫고 박스를 스캔 공간으로 밀어냄)
+#   3. 측정존 확인: 측정존 위에서 그리퍼를 열고 파지 높이까지 내려가 닫아 봄 → 잡히면 아직 박스가 있음
+#   push_path가 None(미정)이면 밀지 않고 RECOVERY_FAILED → 작업 종료 (사람이 측정존을 비움)
+# ----------------------------------------------------------------------
+RECOVERY = {
+    'push_path': None,           # [[x, y, z, a, b, c], ...] [mm, deg, base] — 판별·적재와 실물 보고 정할 것
+    'safe_z': 160.0,             # 옆으로 움직이기 전 TCP 높이 [mm]
+    'speed': 60.0,               # 직선 이동 속도 [mm/s]
+    'acc': 100.0,
+    'probe_orientation': None,   # 측정존 확인 때 그리퍼 자세 [a, b, c] (None이면 지금 자세 유지)
+}
+RECOVER_LIMIT = 3       # 관제: 집기 실패 → 재스캔을 연속 몇 번까지 허용 (넘으면 RETRY_LIMIT로 종료)
+
+# ----------------------------------------------------------------------
 # 정지 기능 (관제 control_interface가 사용)
 #   멈추게 하기 : /emergency_stop 요청 또는 이상 감지 → 두산 move_stop + 파트 Goal cancel
 #   알아차리기   : 두산 get_robot_state를 주기적으로 확인 (이 버전 컨트롤러는 상태 토픽을 안 냄)
@@ -318,6 +373,8 @@ LOG_CODES = (
     'JOB_STOPPED',      # 로봇 정지로 중단 (status STOPPED)
     'BOX_DONE',         # 박스 하나 적재·재고 반영 완료
     'COUNT_MISMATCH',   # 재고 기대값과 적재 측정값이 다름 (측정값으로 반영)
+    'BOX_RETRY',        # 집기 실패 → (측정존 비움) → 공간 스캔부터 다시
+    'ZONE_CLEAR',       # 관제가 측정존 비우기 시작·결과 (box_control/recovery.py)
     'STOP_REQUEST',     # 정지 요청 (비상정지 버튼, 로봇 이상 감지, 진행 없음)
     'ROBOT_ALARM',      # 두산 알람 (error 토픽)
 )

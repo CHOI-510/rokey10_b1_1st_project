@@ -163,7 +163,7 @@ def start_algorithm(algo_cls, args=None):
           def __init__(self, node, robot): ...     # robot = box_comm.dsr_io.DsrIO (관제가 만들어 줌, 없으면 None)
           def judge(self, specs, poses, report) -> str:
               # poses = {'home_j': [6], 'measure_zone': [x, y, z], ...}  (Goal의 DB 값)
-              # 로봇은 robot.movel / movej / grip / force_z / compliance_on / force_on / stop 으로만 움직인다
+              # 로봇은 robot.movel / movej / grip(_open/_close) / force_z / compliance_on / force_on / stop 으로만 움직인다 (목록: box_comm/dsr_io.py)
               #   → 명령 전 정지 확인·진행 알림이 자동 (report.check / keepalive를 부를 필요 없음)
               # report(stage), report.log(msg) 로 진행·로그를 알린다
               # specs = [{'class_id': 'A', 'width_mm': .., 'depth_mm': .., 'height_mm': .., 'weight_g': ..}, ...]

@@ -19,10 +19,15 @@ judge_template.py — 판별 템플릿 (관제 관리, 참고용)
       로봇은 robot으로만 움직인다 → 명령 전에 관제 정지 요청을 자동으로 확인한다
         robot.movel([x, y, z, a, b, c], vel=60, acc=100)   직선 이동 + 도달 확인 (BASE 기준)
         robot.movej(poses['home_j'], vel=30, acc=30)        관절 이동
-        robot.grip(opened=True/False, wait_s=1.5)            RG2 열기/닫기
+        robot.grip(opened=True/False)                        RG2 기본 열기/닫기 (Modbus, 11/17)
+        robot.grip_open(width_mm, force_n)                   지정 폭으로 열기
+        robot.grip_close(force_n) -> (grabbed, width_mm, raw_mm)   닫기 + 잡혔는지·폭 (못 잡아도 예외 없음)
+          못 잡으면(grabbed=False) 파트 방식대로 다시 집기 → common.GRIP_RETRY(3)번 안에 안 되면
+          raise PartError('GRASP_FAILED') → 관제가 공간 스캔부터 다시 (판별·적재는 관제가 측정존을 먼저 비움)
         robot.pose() / robot.force_z()                       현재 TCP / 툴 외력 Fz (무게 측정, 진행 알림 포함)
         robot.compliance_on(...) / robot.force_on(...) / robot.stop()   힘 제어 (강성 추정 등)
-      필요한 명령이 없으면 관제에게 요청 (예: 그리퍼 폭 읽기). DSR_ROBOT2를 직접 부르면 정지 확인이 빠진다
+      그 밖에 force(ref)·joints()·amovel_rel()·move_stop()·gripper 등 (목록: box_comm/dsr_io.py)
+      필요한 명령이 없으면 관제에게 요청. DSR_ROBOT2를 직접 부르면 정지 확인이 빠진다
   judge(specs, poses, report) -> str
     - specs: [{'class_id': 'A', 'width_mm': 40.0, 'depth_mm': 40.0,
                'height_mm': 40.0, 'weight_g': 100.0}, ...]   (DB의 물품값)

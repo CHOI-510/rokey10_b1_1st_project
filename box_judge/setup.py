@@ -19,6 +19,8 @@ setup(
     entry_points={
         'console_scripts': [
             'judge_template = box_judge.judge_template:main',
+            'judge_main = box_judge.judge_main:main',          # 실제 판별 (judge_algorithm.py)
+            'rg2_sync_grip = box_judge.rg2_sync_grip:main',    # RG2 폭 한 번 재기 (단독 시험)
         ],
     },
 )

@@ -29,7 +29,10 @@ place_template.py — 적재 템플릿 (관제 관리, 참고용)
     - robot: 관제가 만들어 넣어 주는 로봇 객체 (box_comm/dsr_io.py DsrIO). 두산 패키지가 없으면 None
       로봇은 robot으로만 움직인다 → 명령 전에 관제 정지 요청을 자동으로 확인한다
         robot.movel([x, y, z, a, b, c], vel=60, acc=100) / robot.movej(home, vel, acc)
-        robot.grip(opened, wait_s) / robot.pose() / robot.force_z()  (force_z는 진행 알림 포함)
+        robot.grip(opened) / robot.pose() / robot.force_z()  (force_z는 진행 알림 포함)
+        robot.grip_close(force_n) -> (grabbed, width_mm, raw_mm)   닫기 + 잡혔는지 (그리퍼 Modbus, 11/17)
+          못 잡으면 다시 집기 → common.GRIP_RETRY(3)번 안에 안 되면 raise PartError('GRASP_FAILED')
+          → 관제가 측정존을 비우고 공간 스캔부터 다시
         robot.compliance_on(stx) / robot.force_on(fd, dir) / robot.stop()   힘 제어 하강
       필요한 명령이 없으면 관제에게 요청 (DSR_ROBOT2를 직접 부르면 정지 확인이 빠진다)
   place(result_class, poses, report) -> int

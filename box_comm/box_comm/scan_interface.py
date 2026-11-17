@@ -49,7 +49,7 @@ from box_comm.common import Reporter, SETUP_STAGE, ERROR_CODES, PartError, STAGE
 
 NODE_NAME = 'scan'
 ACTION_NAME = '/scan'
-DEFAULT_ERROR = 'GRASP_FAILED'   # 예상 못 한 예외일 때 보내는 코드
+DEFAULT_ERROR = 'SCAN_FAILED'    # 예상 못 한 예외일 때 보내는 코드 (11/17: GRASP_FAILED는 재스캔 신호라 분리)
 
 
 class ScanInterface(Node):
@@ -146,11 +146,12 @@ def start_algorithm(algo_cls, args=None):
           def __init__(self, node, robot): ...     # robot = box_comm.dsr_io.DsrIO (관제가 만들어 줌, 없으면 None)
           def scan(self, poses, report) -> bool:
               # poses = {'home_j': [6], 'measure_zone': [x, y, z], ...}  (Goal의 DB 값)
-              # 로봇은 robot.movel / movej / grip / force_z / compliance_on / force_on / stop 으로만 움직인다
+              # 로봇은 robot.movel / movej / grip(_open/_close) / force_z / compliance_on / force_on / stop 으로만 움직인다 (목록: box_comm/dsr_io.py)
               #   → 명령 전 정지 확인·진행 알림이 자동 (report.check / keepalive를 부를 필요 없음)
               # report(stage), report.log(msg) 로 진행·로그를 알린다
               # 물품을 측정존에 두고 HOME까지 끝났으면 True, 작업공간에 물품이 없으면 False
-              # 실패하면 raise PartError('GRASP_FAILED', '이유') 또는 아무 예외 (→ 로봇 정지 후 GRASP_FAILED)
+              # 못 집으면 다시 집기 → 그래도 안 되면 raise PartError('GRASP_FAILED') (→ 관제가 공간 스캔부터 다시)
+              # 그 밖의 예외 → 로봇 정지 후 SCAN_FAILED (작업 종료)
     """
     from box_comm.algorithm import AlgorithmWork
     start(lambda node: AlgorithmWork(node, algo_cls, 'scan', 'scan_dsr', DEFAULT_ERROR), args)

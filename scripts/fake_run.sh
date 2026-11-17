@@ -14,6 +14,19 @@
 #   MOTION=1 BOX_COUNT=2 ./scripts/fake_run.sh               # 로봇이 실제로 움직임 (아래 참고)
 #   PLACE_MAIN=1 SIM=1 BOX_COUNT=4 ./scripts/fake_run.sh     # 적재만 실제 코드(place_main), 에뮬레이터
 #   PLACE_MAIN=1 SIM=1 BOX_COUNT=3 CLASSES="A,U,B" ./scripts/fake_run.sh   # 미분류(U) 포함
+#   JUDGE_MAIN=1 PLACE_MAIN=1 BOX_COUNT=1 ./scripts/fake_run.sh  # 실제 로봇: 판별·적재 실제 코드 (측정존에 박스를 손으로 놓음)
+#   SCAN_ARGS="-p grasp_fail_at:=2" ./scripts/fake_run.sh    # 탐지 집기 실패 → 재스캔 시험 (11/17)
+#   JUDGE_ARGS="-p grasp_fail_at:=2" ./scripts/fake_run.sh   # 판별 집기 실패 → 관제 측정존 비우기 → 재스캔
+#   PLACE_ARGS="-p grasp_fail_at:=1" ./scripts/fake_run.sh -p robot_monitor:=fake -p clear_zone:=fake_fail
+#                                                            # 측정존 비우기 실패 → 작업 종료(ERROR)
+#   PLACE_ARGS="-p grasp_fail_at:=1,2,3,4" ./scripts/fake_run.sh  # 연속 4번 → RETRY_LIMIT 종료
+#   관제 clear_zone 기본 auto: robot_monitor=dsr면 실제 로봇으로 비우기, 아니면 fake_ok(비운 셈 치고 박스를 되돌림)
+#
+# 그리퍼 (11/17 Modbus): BOX_GRIPPER 기본 fake(가짜 그리퍼). JUDGE_MAIN=1, 또는 PLACE_MAIN=1에 SIM 없이(실제 로봇)면 modbus.
+#
+# JUDGE_MAIN=1 (실제 로봇 전용, 11/17): 판별을 box_judge judge_main으로. 탐지는 fake(움직이지 않음) →
+#   측정존에 박스를 손으로 놓고 시작. 테이블 기준 파일(~/.rokey_judge_table_ref.json)과 OnRobot 드라이버 끄기 필요.
+#   SIM 적재에서 집기 실패 흉내: BOX_FAKE_GRIP_FAILS=2 → 처음 2번 닫기가 빈손
 #
 # MOTION=1 (에뮬레이터·실제 로봇, bringup 필요)
 #   탐지·판별·적재를 fake 대신 test_*_motion 노드로 띄운다 → 로봇이 HOME에서 50mm씩 위아래로 움직임.
@@ -43,6 +56,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"          # src/box_project/scripts → 워크스페이스
 LOG_DIR=/tmp/box_fake_logs
 export RCUTILS_LOGGING_BUFFERED_STREAM=0   # 노드 로그가 파일에 바로 써지게 (준비 확인이 로그 기반)
+# 그리퍼: 에뮬레이터·fake 시험은 가짜 그리퍼, 실제 판별·적재(JUDGE_MAIN=1, PLACE_MAIN=1 SIM 없이)는 실제 RG2(Modbus)
+if { [ "${PLACE_MAIN:-0}" = 1 ] && [ "${SIM:-0}" != 1 ]; } || [ "${JUDGE_MAIN:-0}" = 1 ]; then
+    export BOX_GRIPPER="${BOX_GRIPPER:-modbus}"
+else
+    export BOX_GRIPPER="${BOX_GRIPPER:-fake}"
+fi
+rm -f "${BOX_FAKE_RETURN_FILE:-/tmp/box_fake_return}"   # 관제(fake)가 밀어낸 박스 기록 (fake_scan이 읽음)
 
 BOX_COUNT="${BOX_COUNT:-4}"
 if [ "${PLACE_MAIN:-0}" = 1 ]; then
@@ -149,8 +169,14 @@ if [ "${MOTION:-0}" = 1 ]; then
 else
     # shellcheck disable=SC2086
     start_bg scan  fake_scan  --ros-args -p box_count:="$BOX_COUNT" -p fake_delay_sec:="$DELAY" $SCAN_ARGS
-    # shellcheck disable=SC2086
-    start_bg judge fake_judge --ros-args -p class_sequence:="$CLASSES" -p fake_delay_sec:="$DELAY" $JUDGE_ARGS
+    if [ "${JUDGE_MAIN:-0}" = 1 ]; then
+        echo "[fake_run] JUDGE_MAIN=1 → 판별 실제 코드(judge_main). 실제 로봇 전용 (힘 센서·RG2 폭·테이블 기준 파일 필요)."
+        # shellcheck disable=SC2086
+        PKG=box_judge start_bg judge judge_main --ros-args $JUDGE_ARGS
+    else
+        # shellcheck disable=SC2086
+        start_bg judge fake_judge --ros-args -p class_sequence:="$CLASSES" -p fake_delay_sec:="$DELAY" $JUDGE_ARGS
+    fi
     if [ "${PLACE_MAIN:-0}" = 1 ]; then
         SIM_ARG=""
         if [ "${SIM:-0}" = 1 ]; then
@@ -220,11 +246,12 @@ fi
 # 관제 (앞에서 실행). 인자를 주면 그 인자만 쓴다.
 if [ "$#" -gt 0 ]; then
     CONTROL_ARGS=(--ros-args "$@")
-elif [ "${MOTION:-0}" = 1 ] || [ "${PLACE_MAIN:-0}" = 1 ]; then
+elif [ "${MOTION:-0}" = 1 ] || [ "${PLACE_MAIN:-0}" = 1 ] || [ "${JUDGE_MAIN:-0}" = 1 ]; then
     CONTROL_ARGS=(--ros-args -p robot_monitor:=dsr -p start_delay_sec:=5.0)
 else
     CONTROL_ARGS=(--ros-args -p robot_monitor:=fake -p start_delay_sec:=3.0)
 fi
+echo "[fake_run] 그리퍼: BOX_GRIPPER=$BOX_GRIPPER"
 echo "[fake_run] 관제 실행: ros2 run box_control control ${CONTROL_ARGS[*]}"
 echo
 ros2 run box_control control "${CONTROL_ARGS[@]}"

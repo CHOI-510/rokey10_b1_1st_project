@@ -221,17 +221,18 @@ raise PartError('GRASP_FAILED', '두 번 시도했지만 못 집음')
 | 코드 | 뜻 |
 | --- | --- |
 | `NOT_FOUND` | 물품을 찾지 못함 |
-| `GRASP_FAILED` | 집기 실패 |
+| `GRASP_FAILED` | 집기 실패 — **정해진 횟수만큼 다시 집어 보고 포기했을 때만** (아래 2-3-2). 관제가 공간 스캔부터 다시 |
 | `OVER_FORCE` | 과도한 힘 감지 |
 | `MEASURE_FAILED` | 측정 실패 |
 | `NO_SLOT` | 적재할 칸 없음 |
+| `SCAN_FAILED` | 탐지 실패 (집기 말고 예상 못 한 오류 — 탐지 기본 코드) |
 | `PLACE_FAILED` | 적재 실패 |
 | `ROBOT_SETUP_FAILED` | 기본 TCP·툴 적용 실패 (`box_comm`이 작업 함수 전에 보냄, 파트 코드에서는 쓰지 않음) |
 | `CANCELED` | 관제가 정지를 요청함 (`box_comm`이 robot 명령·`report()`에서 자동으로 냄, 파트 코드에서는 쓰지 않음) |
 
 - **등록된 코드만** 쓸 수 있습니다. 새 코드가 필요하면 관제에게 요청합니다.
 - 예상하지 못한 예외가 나도 `box_comm`이 잡아서 Result를 보냅니다. 관제가 멈추지 않습니다.
-  알고리즘 방식이면 그 전에 로봇이 움직였거나 힘 제어 중이었을 때 **로봇을 멈춥니다**(힘·순응제어 해제 + `move_stop`). 코드는 파트 기본값(탐지 `GRASP_FAILED`, 판별 `MEASURE_FAILED`, 적재 `PLACE_FAILED`).
+  알고리즘 방식이면 그 전에 로봇이 움직였거나 힘 제어 중이었을 때 **로봇을 멈춥니다**(힘·순응제어 해제 + `move_stop`). 코드는 파트 기본값(탐지 `SCAN_FAILED`, 판별 `MEASURE_FAILED`, 적재 `PLACE_FAILED`). 예상 못 한 오류는 재스캔하지 않고 작업을 끝냅니다.
 - DB는 `PartError` 없이 아무 예외나 raise하면 `success=False`로 전달됩니다.
 
 **정지 (비상정지·로봇 이상 감지)**: 관제가 정지를 요청하면 로봇에 `move_stop`을 보내고 내 Goal을 취소합니다.
@@ -256,7 +257,8 @@ self.robot.movel(target, vel=60, acc=100)
 | --- | --- | --- |
 | `box_xxx/xxx_algorithm.py` | 파트 | 내 로직 전부. **관제 코드 없음** (적재는 설정 `config/place_config.json`도 파트 소유) |
 | `box_xxx/xxx_main.py` | 파트 | 실행 진입점 한 줄 `start_algorithm(XxxAlgorithm)` |
-| `box_comm/dsr_io.py` | 관제 | 로봇 명령 모음 `DsrIO`. **명령 전에 정지 확인, `force_z()`에서 1초마다 keepalive** |
+| `box_comm/dsr_io.py` | 관제 | 로봇 명령 모음 `DsrIO`. **명령 전에 정지 확인, `force_z()`·`force()`에서 1초마다 keepalive** |
+| `box_comm/gripper.py` | 관제 | RG2 그리퍼 Modbus (판별 실측 코드를 옮김, 세 파트 공용). `robot`이 Goal 동안만 접속 |
 | `box_comm/algorithm.py` | 관제 | 알고리즘에 `robot`·`poses`를 넣고, 실패하면 로봇 정지 + `PartError` 변환 |
 | `box_comm/xxx_interface.py` | 관제 | Action 서버, TCP·툴 확인, 좌표 꺼내기, Result 만들기 |
 
@@ -266,17 +268,57 @@ self.robot.movel(target, vel=60, acc=100)
 | --- | --- |
 | `movel(pose6, vel, acc, tol=2.0)` | 직선 이동 후 도달 확인 (오차가 tol mm를 넘으면 예외) |
 | `movej(joints6, vel, acc)` | 관절 이동 (예: `poses['home_j']`) |
-| `grip(opened, wait_s)` | RG2 열기(`True`)/닫기(`False`) 후 대기 |
-| `pose()` | 현재 TCP `[x, y, z, a, b, c]` |
-| `force_z()` | 툴 외력 Fz [N] — 무게 측정·접촉 감지 (+ 진행 알림) |
+| `grip(opened)` | RG2 기본 열기(`True`)/닫기(`False`). 닫기는 아래 `grip_close()` 결과를 돌려줌 (11/17부터 Modbus, `wait_s`는 무시) |
+| `grip_open(width_mm, force_n)` | 지정한 패드 간격으로 열기 (기본 `common.GRIPPER`) |
+| `grip_close(force_n)` | 닫고 `(grabbed, width_mm, raw_mm)` 반환 — **잡혔는지·폭**. 못 잡아도 예외 없음 |
+| `gripper_width()` / `gripper` | 지금 폭 [mm] / RG2 객체 그대로 (판별 폭 측정처럼 세밀한 제어) |
+| `pose()` / `joints()` | 현재 TCP `[x, y, z, a, b, c]` / 관절각 6개 [deg] |
+| `force_z()` / `force(ref)` | 툴 외력 Fz [N] / 6축 `[Fx, Fy, Fz, Tx, Ty, Tz]` (`ref='base'`·`'tool'`, 힘은 BASE·모멘트는 ref 기준). 둘 다 진행 알림 포함 |
+| `amovel_rel(delta6, vel, acc, time_s)` / `mwait()` / `move_stop(mode)` | 비동기 상대 이동 / 끝까지 대기 / 그 이동만 멈춤 (1 빠른, 2 부드러운) — 접촉하면 바로 멈추는 하강용 |
 | `compliance_on(stx)` / `force_on(fd, dir, time)` | 순응제어 / 목표 힘 (상대 모드) |
 | `stop(emergency=False)` | 힘·순응제어 해제 (+ `emergency`면 `move_stop`) 후 멈춤 확인 |
 | `ok()` | ROS가 살아 있는지 (긴 루프 조건) |
 
-- 로봇은 `self.robot`으로만 움직입니다. `DSR_ROBOT2`를 직접 부르면 정지 확인이 빠집니다. **필요한 명령이 없으면 관제에게 요청**합니다(예: 그리퍼 폭 읽기, 회전 이동).
+- 로봇은 `self.robot`으로만 움직입니다. `DSR_ROBOT2`를 직접 부르면 정지 확인이 빠집니다. **필요한 명령이 없으면 관제에게 요청**합니다(예: 회전 이동).
 - 두산 패키지가 없는 PC에서는 `robot`이 `None`으로 들어옵니다. 템플릿의 FAKE 동작은 로봇을 쓰지 않으니 그대로 돕니다. 서비스 준비 확인도 첫 명령 때 하므로 bringup 없이 FAKE를 돌려도 기다리지 않습니다.
 - 약속(작업 함수 인자·반환, `robot` 명령 목록)을 바꿀 때만 관제와 합의합니다.
 - 적재가 완성 예시입니다: `box_place/box_place/place_algorithm.py` (힘 제어 하강 `_descend`, 상태 파일, 미분류 투하).
+
+### 2-3-2. 집기 실패 처리 (11/17, 세 파트 공통)
+
+못 집었을 때 **파트는 자기 방식으로 다시 집고**, 그래도 안 되면 `GRASP_FAILED`로 Goal을 끝냅니다(그리퍼 열고 안전 높이로). **그다음은 전부 관제가 처리합니다.** 파트 algorithm은 실패까지만 책임집니다.
+
+| 단계 | 누가 | 하는 일 |
+| --- | --- | --- |
+| ① 다시 집기 | 파트 | `res = self.robot.grip_close()` → `res.grabbed`가 False면 다시 시도. 시도마다 `report.log('집기 실패, 재시도 2/3', 'WARN')` (UI 로그). 최대 `common.GRIP_RETRY`(3)번. 그래도 안 되면 그리퍼를 열고 `raise PartError('GRASP_FAILED', '3회 실패')` |
+| ② 측정존 비우기 | **관제** (`box_control/recovery.py`, 판별·적재만) | 파트 Goal이 끝난 뒤 관제가 직접 로봇을 움직여 측정존 박스를 스캔 공간으로 밀어내고(`common.RECOVERY push_path`), 측정존을 그리퍼로 잡아 봐서 비었는지 확인. 못 비우면 `ERROR : Measure zone not cleared` |
+| ③ 흐름 되돌리기 | 관제 | `GRASP_FAILED`면 작업을 끝내지 않고 **공간 스캔부터 다시** (재고·박스 번호 그대로, UI 로그 `BOX_RETRY`). 연속 `RECOVER_LIMIT`(3)번을 넘거나 `RECOVERY_FAILED`면 작업 종료(`ERROR`) |
+
+파트별 다시 집기 (11/17 정함)
+
+| 파트 | 다시 집는 방법 | 다 실패하면 |
+| --- | --- | --- |
+| 탐지 | 그리퍼 +30° → 반대로 −30°(처음 기준) 돌려서 재시도, 3번 | `GRASP_FAILED` → 관제가 공간 스캔부터 다시 (박스가 스캔 공간에 그대로라 밀어내기 없음) |
+| 판별 | 그대로 다시, 3번 | `GRASP_FAILED` → 측정존 밀어내기 → 공간 스캔부터 다시 |
+| 적재 | 그대로 다시, 3번 | `GRASP_FAILED` → 측정존 밀어내기 → 공간 스캔부터 다시 |
+
+```python
+from box_comm.common import GRIP_RETRY
+
+for attempt in range(1, GRIP_RETRY + 1):
+    ...  # 파트 방식대로 접근 (탐지는 시도마다 그리퍼 각도를 바꿈)
+    res = self.robot.grip_close()
+    if res.grabbed:
+        break
+    report.log(f'집기 실패 (폭 {res.width_mm:.1f} mm), 재시도 {attempt + 1}/{GRIP_RETRY}', 'WARN')
+    self.robot.grip_open()
+else:
+    raise PartError('GRASP_FAILED', f'{GRIP_RETRY}회 시도 실패')
+```
+
+- `GRASP_FAILED`는 **"다시 집어 보고 포기했다"는 뜻으로만** 씁니다. 예상 못 한 오류에 쓰면 관제가 재스캔을 반복합니다.
+- 측정존 밀어내기 경로(`push_path`)가 아직 미정이라, 지금은 판별·적재에서 못 집으면 `RECOVERY_FAILED`로 작업이 끝납니다 (사전 점검 WARN). 실물로 경로를 정하면 `common.RECOVERY`에 넣습니다.
+- 그리퍼는 세 파트 모두 **Modbus**(`box_comm/gripper.py`)입니다. Compute Box는 동시 접속이 1개라 `robot`이 Goal 동안만 접속을 열고 닫습니다. OnRobot 드라이버(`m0609_rg2_bringup mode:=real`)가 떠 있으면 접속이 안 되니 `pkill -f OnRobotRGControllerServer`로 끕니다. 에뮬레이터·fake 시험은 `BOX_GRIPPER=fake`(가짜 그리퍼, `fake_run.sh`가 설정).
 
 ### 2-4. 그 밖의 규칙
 

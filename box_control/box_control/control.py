@@ -6,6 +6,7 @@ control.py — 관제 메인 (작업 시퀀스 · 재고 반영 · 중단 처리
   control.py            : 이 파일. 상태 흐름과 판단만 한다 (ROS 호출은 self.io에 맡김)
   control_interface.py  : 통신 계층 (Action·Service·이벤트 로그·정지 감시). start(Control)로 실행
   preflight.py          : 시작 전 점검 (PREFLIGHT 단계에서 run_all 호출)
+  recovery.py           : 관제 복구 동작 (관제가 직접 로봇을 움직임 — 지금은 측정존 비우기)
   common.py             : 공통 정의 (에러 코드, 상태, 좌표 기본값, 적재 규칙 ...)
 
 흐름 (인터페이스 문서 2.5 관제 상태)
@@ -33,6 +34,11 @@ control.py — 관제 메인 (작업 시퀀스 · 재고 반영 · 중단 처리
   - 미분류 U (v0.5): 재고는 DB에서 A, B, C, D, U 다섯 개를 받는다 (U는 DB 초기값 0).
     판별이 'U'를 내면 적재에 'U'로 보낸다. 적재는 미분류 위치에 놓기만 하고
     수량을 재지 않는다(count 0). 관제가 적재 성공 후 재고 U = 이전 + 1로 DB에 반영한다 (검증 없음).
+  - 집기 실패 (11/17): 파트가 GRIP_RETRY번 다시 집어 보고 포기하면 GRASP_FAILED로 Goal을 끝낸다.
+    관제는 작업을 끝내지 않는다. 판별·적재였으면 CLEARING(측정존 비우기, recovery.py — 관제가 로봇을 움직임),
+    탐지였으면 바로, BOX_RETRY 경고를 남긴 뒤 공간 스캔부터 다시 한다 (재고·박스 번호 그대로).
+    연속 RECOVER_LIMIT번을 넘으면 RETRY_LIMIT로 종료. 박스 하나를 적재까지 끝내면 연속 횟수는 0으로.
+    측정존을 비우지 못하면(RECOVERY_FAILED) 측정존 사용 불가 → 바로 작업 종료.
   - 진행 추적: 중단 시 해당 파트의 마지막 Feedback stage와 경과 시간을 함께 기록한다.
   - 작업 중 중단 (abort_job): DB status를 ERROR(공정 오류) 또는 STOPPED(로봇 정지)로 바꾸고
     이유를 함께 기록한다 (예: 'ERROR : Fail to pick').
@@ -83,9 +89,11 @@ try:                       # 한 글자 입력(q/s)을 Enter 없이 받기 위�
 except ImportError:        # pragma: no cover
     termios = tty = None
 
-from box_comm.common import INVENTORY_KEYS, UNCLASSIFIED, error_text, status_for, default_poses
+from box_comm.common import (INVENTORY_KEYS, RECOVER_LIMIT, UNCLASSIFIED, default_poses,
+                             error_text, status_for)
 from box_comm.control_interface import start
 from box_control import preflight
+from box_control.recovery import Recovery
 
 
 class State(str, Enum):
@@ -101,6 +109,7 @@ class State(str, Enum):
     JUDGE_DONE = 'JUDGE_DONE'   # 판별완료
     PLACING = 'PLACING'         # 적재중
     PLACE_DONE = 'PLACE_DONE'   # 적재완료
+    CLEARING = 'CLEARING'       # 측정존비우기 (집기 실패 뒤 관제가 직접 로봇을 움직임, 11/17)
     DONE = 'DONE'               # 작업완료 (DB 기록)
     ERROR = 'ERROR'             # 오류중단 (DB 기록, 공정 오류 — 관제가 판단해서 멈춤)
     STOPPED = 'STOPPED'         # 정지     (DB 기록, 로봇이 물리적으로 멈춤 — 정지 기능 단계에서 연결)
@@ -121,6 +130,7 @@ _STATE_LABEL = {
     State.JUDGE_DONE: '판별완료',
     State.PLACING: '적재중',
     State.PLACE_DONE: '적재완료',
+    State.CLEARING: '측정존비우기',
     State.DONE: '작업완료',
     State.ERROR: '오류중단',
     State.STOPPED: '정지',
@@ -147,8 +157,11 @@ class Control:
         self.job_id = time.strftime('%Y%m%d_%H%M%S')   # 실행마다 고유한 작업 ID
         self._current_class = ''          # 지금 박스의 판별 결과 (중단 이유 표시용)
         self.count_mismatches = []         # 재고 불일치 기록 (box_id, class, 기대 수량, 측정 수량)
+        self.grasp_retries = 0             # 집기 실패 → 재스캔 연속 횟수 (박스 하나 적재 완료 시 0)
+        self.grasp_retry_total = 0         # 이번 작업 전체 재스캔 횟수 (요약용)
         self.start_delay = float(
             io.declare_parameter('start_delay_sec', 10.0).value)   # 시작 대기 시간(초)
+        self.recovery = Recovery(io, self.log)                     # 관제 복구 동작 (측정존 비우기 등)
 
     def apply_db_poses(self, db_poses):
         """관제가 가진 고정 좌표를 DB 값으로 무조건 덮어쓴다 (비교해서 멈추지 않음).
@@ -210,6 +223,8 @@ class Control:
             self.set_state(State.SCANNING)
             found, err = self.io.scan(self.poses)
             if err:
+                if (err := self.on_part_error(err, 'scan')) is None:
+                    continue                   # 집기 실패 → 공간 스캔부터 다시
                 return self.abort_job(err)
             if not found:
                 break                      # 물품 없음 → 관제가 작업완료로 판단
@@ -219,6 +234,8 @@ class Control:
             self.set_state(State.JUDGING)
             result_class, err = self.io.judge(self.specs, self.poses)
             if err:
+                if (err := self.on_part_error(err, 'judge')) is None:
+                    continue
                 return self.abort_job(err)
             self.set_state(State.JUDGE_DONE)
             self.log.info(f'[control] 판별 결과: {result_class}')
@@ -229,6 +246,8 @@ class Control:
             self.set_state(State.PLACING)
             measured, err = self.io.place(result_class, self.poses)
             if err:
+                if (err := self.on_part_error(err, 'place')) is None:
+                    continue
                 return self.abort_job(err)
             self.set_state(State.PLACE_DONE)
 
@@ -246,6 +265,7 @@ class Control:
             if err := self.io.update_inventory(box_id, inventory_new):
                 return self.abort_job(err)
             self.inventory = inventory_new
+            self.grasp_retries = 0                 # 박스 하나를 끝까지 처리 → 연속 집기 실패 횟수 초기화
             self.log.info(f'[control] {box_id} {done_msg} → inventory={self.inventory}')
             self.io.log_event('INFO', 'BOX_DONE', done_msg)
 
@@ -258,12 +278,53 @@ class Control:
                            f'— UI에는 RUNNING으로 남아 있을 수 있습니다. DB 상태를 확인하세요.')
         self.io.log_event('INFO', 'JOB_DONE',
                           f'작업 완료: {self.box_seq}개 처리, 재고 {self.inventory}, '
-                          f'불일치 {len(self.count_mismatches)}건')
+                          f'불일치 {len(self.count_mismatches)}건, 집기 실패 재스캔 {self.grasp_retry_total}회')
         self.log.info(f'[control] 총 {self.box_seq}개 처리, 최종 inventory={self.inventory}')
         if self.count_mismatches:
             self.log.warn(f'[control] 재고 불일치 {len(self.count_mismatches)}건 — 확인 필요: '
                           + ', '.join(f'{b}({c} 기대 {e}/측정 {m})'
                                       for b, c, e, m in self.count_mismatches))
+
+    # ------------------------------------------------------------------
+    # 파트 실패 처리 — 집기 실패면 공간 스캔부터 다시 (11/17)
+    # ------------------------------------------------------------------
+    def on_part_error(self, err, part):
+        """파트 Result 실패 코드 → None이면 공간 스캔부터 다시, 아니면 abort_job에 넘길 코드.
+        GRASP_FAILED만 되돌아간다. 판별·적재였으면 측정존부터 비운다(관제가 로봇을 움직임).
+        정지 요청이 있었거나, 연속 한도를 넘었거나, 측정존을 못 비우면 작업 종료."""
+        if err != 'GRASP_FAILED' or self.io.stop_reason():
+            return err
+        self.grasp_retries += 1
+        if self.grasp_retries > RECOVER_LIMIT:
+            self.log.error(f'[control] 집기 실패 재스캔 연속 {RECOVER_LIMIT}회 초과 ({part}) → 작업 종료')
+            return 'RETRY_LIMIT'
+        where = ''
+        if part in ('judge', 'place'):                     # 박스가 측정존에 있음 → 비우고 다시
+            if (clear_err := self.clear_measure_zone(part)):
+                return clear_err
+            where = '측정존 비움, '
+        self.grasp_retry_total += 1
+        msg = (f'{part} 집기 실패 → {where}공간 스캔부터 다시 '
+               f'({self.grasp_retries}/{RECOVER_LIMIT})')
+        stage, _ = self.io.progress(part)
+        self.log.warn(f'[control] {msg} (마지막 stage="{stage}")')
+        self.io.log_event('WARN', 'BOX_RETRY', msg, stage=stage)
+        self._current_class = ''
+        return None
+
+    def clear_measure_zone(self, part):
+        """CLEARING: 측정존 박스를 스캔 공간으로 밀어내고 비었는지 확인 (box_control/recovery.py).
+        성공 None, 실패하면 abort_job에 넘길 코드 (RECOVERY_FAILED 또는 정지 코드)."""
+        self.set_state(State.CLEARING)
+        self.io.log_event('WARN', 'ZONE_CLEAR', f'{part} 집기 실패 → 측정존 비우기 시작')
+        err = self.recovery.clear_measure_zone(self.poses)
+        if err:
+            why = self.recovery.last_error or err
+            self.log.error(f'[control] 측정존 비우기 실패: {why}')
+            self.io.log_event('ERROR', 'ZONE_CLEAR', f'측정존 비우기 실패: {why}')
+            return err
+        self.io.log_event('INFO', 'ZONE_CLEAR', '측정존 비움')
+        return None
 
     # ------------------------------------------------------------------
     # 시작 대기 (카운트다운)

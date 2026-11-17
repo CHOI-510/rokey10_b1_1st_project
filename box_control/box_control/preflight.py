@@ -13,6 +13,11 @@ control.py가 GetJobData 직후, 시작 대기(STANDBY) 전에 run_all()을 한 
   4. 로봇 상태         : robot_monitor=dsr(기본)/fake면 STANDBY·MOVING이어야 함 (아니면 FAIL),
                          dsr인데 bringup·dsr_msgs2가 없으면 FAIL,
                          off(로봇 없이 테스트)면 WARN (작업 중 로봇 정지를 감지하지 못함)
+  5. 그리퍼 (11/17)    : RG2 Modbus에 접속해 상태를 읽을 수 있는지 (접속 후 바로 끊음)
+                         실패하면 FAIL — OnRobot 드라이버가 접속을 잡고 있는지 확인
+                         BOX_GRIPPER=fake(에뮬레이터)면 OK(가짜), robot_monitor≠dsr면 확인 안 함(WARN)
+  6. 측정존 비우기 (11/17) : 관제 복구 동작(recovery.py) 준비. push_path가 없으면 WARN
+                         (판별·적재 집기 실패 시 측정존을 못 비워 작업이 바로 종료됨). fake 모드면 OK
 
 점검 추가하는 법
   def check_xxx(ctrl) -> list[(level, message)]  를 만들고 CHECKS에 넣는다.
@@ -101,11 +106,52 @@ def check_robot(ctrl):
     return [(OK, f'로봇 상태 {name}')]
 
 
+# ----------------------------------------------------------------------
+# 점검 5: 그리퍼 (RG2 Modbus, 11/17)
+#   Compute Box는 동시 접속 1개 → 다른 프로그램(OnRobot 드라이버 등)이 잡고 있으면 파트가 그리퍼를 못 씀
+# ----------------------------------------------------------------------
+def check_gripper(ctrl):
+    from box_comm.gripper import RG2, gripper_mode
+    if gripper_mode() == 'fake':
+        return [(OK, '가짜 그리퍼 (BOX_GRIPPER=fake, 에뮬레이터용)')]
+    monitor = getattr(ctrl.io, '_monitor', 'dsr')
+    if monitor != 'dsr':
+        return [(WARN, f'robot_monitor={monitor} → 그리퍼 접속 확인 안 함 (fake 파트 테스트용)')]
+    try:
+        g = RG2()
+    except Exception as e:
+        return [(FAIL, f'RG2 Modbus 접속 실패 ({type(e).__name__}: {e}) — OnRobot 드라이버가 떠 있으면 '
+                       '끄세요 (pkill -f OnRobotRGControllerServer), 그리퍼 전원·랜선 확인')]
+    try:
+        st = g.status()
+    finally:
+        g.close()
+    if any(st['safety']):
+        return [(FAIL, f'그리퍼 안전 상태 비트 켜짐 {st["safety"]} — Compute Box 확인')]
+    return [(OK, f'RG2 접속 OK (패드 간격 {st["width_mm"]:.1f} mm)')]
+
+
+# ----------------------------------------------------------------------
+# 점검 6: 측정존 비우기 경로 (집기 실패 복구, 11/17)
+# ----------------------------------------------------------------------
+def check_recovery(ctrl):
+    from box_comm.common import RECOVERY
+    mode = getattr(getattr(ctrl, 'recovery', None), 'mode', 'robot')
+    if mode != 'robot':
+        return [(OK, f'측정존 비우기 {mode} (로봇 안 움직임, 시험용)')]
+    if not RECOVERY['push_path']:
+        return [(WARN, '측정존 밀어내기 경로 미정 (common.RECOVERY push_path) — 판별·적재에서 못 집으면 '
+                       '측정존을 비우지 못해 작업이 종료됩니다 (탐지 집기 실패는 재스캔)')]
+    return [(OK, f'측정존 밀어내기 경로 {len(RECOVERY["push_path"])}점')]
+
+
 CHECKS = [
     ('분류 기준', check_specs),
     ('고정 좌표', check_fixed_poses),
     ('적재 구역', check_place_zones),
     ('로봇 상태', check_robot),
+    ('그리퍼', check_gripper),
+    ('측정존 비우기', check_recovery),
 ]
 
 

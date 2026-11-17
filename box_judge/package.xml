@@ -9,6 +9,8 @@
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>box_comm</exec_depend>
+  <exec_depend>dsr_msgs2</exec_depend>
+  <exec_depend>python3-pymodbus</exec_depend>   <!-- RG2 Modbus (rg2_sync_grip) -->
 
   <export>
     <build_type>ament_python</build_type>

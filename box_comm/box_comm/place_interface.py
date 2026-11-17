@@ -168,7 +168,7 @@ def start_algorithm(algo_cls, args=None):
       class PlaceAlgorithm:
           def __init__(self, node, robot): ...     # robot = box_comm.dsr_io.DsrIO (관제가 만들어 줌)
           def place(self, result_class, poses, report) -> int:
-              # 로봇은 robot.movel / movej / grip / force_z / compliance_on / force_on / stop 으로만 움직인다
+              # 로봇은 robot.movel / movej / grip(_open/_close) / force_z / compliance_on / force_on / stop 으로만 움직인다 (목록: box_comm/dsr_io.py)
               #   → 정지 확인·진행 알림이 자동 (알고리즘이 report.check / keepalive를 부를 필요 없음)
               # report(stage), report.log(msg) 로 진행·로그를 알린다
               # 성공하면 수량(int, U는 0), 실패하면 raise PartError('NO_SLOT' 등) 또는 아무 예외
