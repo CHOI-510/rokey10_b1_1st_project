@@ -195,6 +195,8 @@
 - 실습실 네트워크에서 ros2 CLI(데몬)가 자꾸 멈춤 → `ROS_DOMAIN_ID=51`로 다른 팀과 분리해서 해결 (bringup 포함 모든 터미널, 통합 시 팀원 PC도 51). `fake_run.sh` 서버 대기에 5초 제한 + 데몬 강제 재시작 추가
 - **탐지·판별 구조 통일**: `box_comm/algorithm.py`(공용 어댑터), scan/judge/place interface `start_algorithm()`, 템플릿 3개 알고리즘 방식으로. ROS 없이 시험: 템플릿 3개 robot=None으로 FAKE 동작(scan T,T,F / judge 판별 / place 1~4·U 0), 정지 → CANCELED, 일반 예외 → 파트 기본 코드, 적재 알고리즘 시험 재통과
 - **발견·수정 (`DsrIO`)**: 위치·힘·정지 서비스 클라이언트를 DSR_ROBOT2 노드에 같이 만들었더니, TCP가 틀어져 `robot.py`가 수동 모드로 전환할 때 컨트롤러가 약 20초간 아무 서비스에도 응답하지 않음(다른 프로세스 포함). 예전 방식 `test_scan_motion`은 정상 → 원인 좁힘. 클라이언트를 전용 노드(`<이름>_io`) + 전용 executor로 옮겨 해결(`robot.py`와 같은 구조). 수정 후 `robot_test` 전체 PASS(scan_template), `PLACE_MAIN=1 SIM=1` A×4 결과 동일(`A[3, 1]`, DONE)
+- **적재 규칙 단일화**: `place_config.json`에서 `max_layers`·`slot_count` 삭제, `place_algorithm`이 `common.STACK`을 그대로 씀(예전 설정에 키가 남아 있으면 같은 값일 때만 허용). DB·UI도 `common.stack_layout()`으로 같은 규칙 사용 → DB 저장·Goal 전달 불필요. 규칙 변경은 자리별 첫 접촉 Z 재측정이 따라오는 설계 변경이라 UI에서 바꾸지 않음
+- 측정존 인수인계 정리: 스캔은 방향만 맞춰 측정존에 놓음 → 판별이 측정 + 정렬(중심·방향) → 적재는 같은 자세로 집기만. **결정**: 정렬 완료 상태는 숫자가 아니라 규칙 — 측정존 중심 x·y, 가장 긴 면 = 가로, 두 번째 = 세로, 가장 짧은 면 = 높이. 판별이 회전·정렬·중심 맞춤까지 하고, 적재는 이를 확정으로 보고 자기 `pick_orientation`으로 집음. 방향 값은 DB·관제로 전달하지 않음(A~D·U만). CONTRIBUTING 2-5-1에 약속 기록. 가로 = base X 확정. 물품 크기 A 60×40×20, B 75×29×25, C 50×40×20, D = A 또는 C 크기(물성으로 분류). 발견: `place_config.json` B `dimensions_mm`이 [75, 44, 25]로 표(29)와 다름(코드는 `height_mm`만 써서 동작 영향 없음, 적재 담당 수정 필요). 옆으로 선 박스(특히 B, 길이2·높이 차이 4mm)는 판별이 Rx·Ry 90° 회전으로 눕혀 규칙을 맞춤 → 적재는 항상 같은 상태를 받음. 남은 것: 적재 그리퍼 닫힘·적재 방향 재결정(보류)
 - 남은 실제 로봇 확인: `robot_monitor=dsr` 기본값으로 실제 로봇 사전 점검, `progress_timeout_sec` 값, bringup 없이 실행 시 사전 점검 FAIL
 
 ### 11/16

@@ -226,13 +226,13 @@ def poses_from_msg(msg):
 #     다음 자리 방향·간격은 적재 설정(slot_dx_mm)이 정한다.
 #   - 수량 n → n번째 박스 위치 = (n-1)//levels + 1 단, (n-1)%levels + 1 층
 #     예: 5개 → 1단 3개 + 2단 2개
-#   - 적재 실제 코드(box_place/place_algorithm.py)는 시작할 때 자기 설정(max_layers, slot_count)이
-#     이 값과 같은지 확인한다. 바꿀 때는 두 곳을 같이 바꾼다.
+#   - 적재 실제 코드(box_place/place_algorithm.py)는 이 값을 그대로 쓴다 (적재 설정에는 적지 않음).
+#     바꾸면 적재의 자리별 첫 접촉 Z(place_config.json)도 다시 재야 한다 → 적재 담당과 합의 후 변경.
 #   - 적재는 매번 1단부터 내려가며 실제로 확인한다 (재고 숫자로 위치를 정하지 않음).
 # ----------------------------------------------------------------------
 STACK = {
-    'levels': 3,        # 단(자리) 하나에 쌓는 층 수   = place_config.json max_layers
-    'max_tiers': 2,     # 구역당 단(자리) 수 (넘으면 NO_SLOT) = place_config.json slot_count
+    'levels': 3,        # 단(자리) 하나에 쌓는 층 수
+    'max_tiers': 2,     # 구역당 단(자리) 수 (넘으면 NO_SLOT)
 }
 
 

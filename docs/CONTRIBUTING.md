@@ -107,7 +107,7 @@ ros2 run box_scan scan_main
 - 메인 코드의 `[FAKE]` 부분을 실제 동작으로 바꿔 갑니다.
 - **템플릿 노드와 내 노드를 동시에 켜지 마세요.** 서버 이름(`/scan` 등)이 같아서 관제가 엉뚱한 결과를 받습니다.
 - 모션·측정 함수가 길어지면 **같은 패키지 안에 파일을 추가**해서 import해도 됩니다.
-  예: `box_scan/box_scan/motion.py` → `scan.py`에서 `from box_scan.motion import ...`
+  예: `box_scan/box_scan/motion.py` → `scan_algorithm.py`에서 `from box_scan.motion import ...`
 
 ### 2-2. 지켜야 할 약속: 알고리즘 클래스의 입력과 출력
 
@@ -323,6 +323,35 @@ def scan(self, poses, report):
 - 노드 이름은 파트별로 다르게 합니다. (`scan_dsr`, `judge_dsr`, `place_dsr`)
 - **실제로 움직이는 완성 예시**: 알고리즘 방식은 `box_place/box_place/place_algorithm.py`(실제 로봇에서 적재 검증). 예전 방식 예시는 `box_control/box_control/test_scan_motion.py`입니다.
 
+### 2-5-1. 측정존 인수인계 약속 (탐지 → 판별 → 적재, 11/17)
+
+세 파트는 코드가 아니라 **측정존 위의 박스 상태**로 맞물립니다. 앞 파트가 이 약속을 지키면 뒤 파트는 그대로 믿고 동작합니다.
+
+| 단계 | 누가 | 측정존에 남기는 상태 |
+| --- | --- | --- |
+| 탐지 → 판별 | 탐지 | 박스의 **일부가 측정존 중심에 걸치도록** 놓는다. 방향은 정해진 그리퍼 방향. 정확한 정렬은 하지 않는다 |
+| 판별 → 적재 | 판별 | 측정·정렬을 끝낸 뒤 **측정존 중심 x·y**(DB `measure_zone`)에 놓는다. **가장 긴 면 = 가로, 두 번째로 긴 면 = 세로**, 가장 짧은 면 = 높이(바닥에 눕힘). 돌리기·정렬·가운데 맞추기는 판별이 한다 |
+| 적재 | 적재 | 위 상태를 **확정된 것으로 보고** 매번 같은 자세(`place_config.json` `pick_orientation`)로 집는다. 방향 값은 DB·관제로 전달하지 않는다 (관제는 A~D·U만 넘김) |
+
+- **가로 = 로봇 base X축.** 가장 긴 면이 X, 두 번째 면이 Y, 가장 짧은 면이 Z(높이)
+  → 적재 그리퍼는 base **Y** 방향으로 닫혀 두 번째 면(40 / 29mm)을 잡는다
+
+물품 크기 (길이1 ≥ 길이2 ≥ 길이3 = 정렬 후 X / Y / Z)
+
+| 분류 | 물품 | 길이1 (X) | 길이2 (Y) | 길이3 (Z, 높이) |
+| --- | --- | --- | --- | --- |
+| A | 알루미늄 묶음 | 60 | 40 | 20 |
+| B | 젠가 묶음 | 75 | 29 | 25 |
+| C | 알루미늄 묶음 | 50 | 40 | 20 |
+| D | 지우개 | A 또는 C와 같음 → 크기로 구분 안 됨, **물성으로 분류** | | 20 |
+
+- **옆으로 선 박스**(가장 짧은 변이 높이가 아님, 특히 B: 길이2 29 / 높이 25): 판별이 **Rx·Ry 90° 회전으로 눕혀서** 위 규칙을 맞춘다. 수직축 회전만으로는 바닥에 닿은 면이 안 바뀌므로 필요
+- D는 높이·두 번째 면이 A·C와 같아서 적재는 높이 20으로 설정하면 된다 (구역 좌표·첫 접촉 Z만 실측)
+
+확인 필요 (판별·적재 담당이 채움)
+- 적재 `pick_orientation`에서 그리퍼가 실제로 base Y 방향으로 닫히는지 (설정의 자세는 모두 a = c라 같은 방향 — 실물로 한 번 확인)
+- 탐지 결과가 정렬 가능한 범위를 벗어났을 때 판별의 처리: ____
+
 ### 2-6. 단독 테스트
 
 관제 없이 내 노드만 띄워서 직접 Goal/Request를 보냅니다. Result가 돌아오면 통신은 정상입니다.
@@ -432,7 +461,7 @@ source install/setup.bash
 cd ~/ws/src/box_project
 git log --oneline -5 -- box_scan/box_scan/scan_template.py        # 템플릿이 바뀐 commit 목록
 git log -p -1 -- box_scan/box_scan/scan_template.py               # 가장 최근에 바뀐 내용 (+ 추가, - 삭제)
-git diff --no-index box_scan/box_scan/scan.py box_scan/box_scan/scan_template.py   # 내 코드와 템플릿 비교
+git diff --no-index box_scan/box_scan/scan_algorithm.py box_scan/box_scan/scan_template.py   # 내 코드와 템플릿 비교
 ```
 
 바뀐 부분을 보고 내 메인 코드에 직접 옮깁니다. 템플릿을 내 코드에 통째로 덮어쓰지 마세요.

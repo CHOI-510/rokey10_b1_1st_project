@@ -28,7 +28,7 @@ scan_interface.py — 탐지 파트 통신 계층
   box_scan/scan.py의 main()에서 start(ScanWork) 호출
   → 기존 방식 (run 안에서 self.poses·로봇을 직접 다룸, box_control의 fake·test_*_motion 노드가 씀)
 
-권장 (11/17): 알고리즘 방식 — box_scan/scan.py의 main()에서 start_algorithm(ScanAlgorithm)
+권장 (11/17): 알고리즘 방식 — box_scan/scan_main.py의 main()에서 start_algorithm(ScanAlgorithm)
   알고리즘은 담당자 코드(관제 코드 없음), 로봇 명령·정지 확인은 box_comm/dsr_io.py,
   실패 시 로봇 정지·예외 변환은 box_comm/algorithm.py. 약속은 start_algorithm() 설명 참고.
 ================================================================
@@ -139,7 +139,7 @@ def _finish_failed(goal_handle):
 
 
 def start_algorithm(algo_cls, args=None):
-    """scan 알고리즘 실행 (box_scan/scan.py의 main()에서 호출). 연결은 box_comm/algorithm.py
+    """scan 알고리즘 실행 (box_scan/scan_main.py의 main()에서 호출). 연결은 box_comm/algorithm.py
 
     알고리즘 약속 (담당자 소유, 관제 코드 없음)
       class ScanAlgorithm:

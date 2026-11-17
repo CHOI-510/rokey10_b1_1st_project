@@ -25,7 +25,8 @@ v0.4 적재
   - U(미분류)는 unclassified.release_pose로 이동 후 투하. 힘 제어/층 판단 없음, 0 반환
 
 설정: box_place/config/place_config.json (설치 후 share/box_place/config/place_config.json)
-  - max_layers / slot_count 는 box_comm/common.py STACK(levels / max_tiers)과 같아야 함 (다르면 시작 안 함)
+  - 층 수·자리 수는 설정에 적지 않는다. box_comm/common.py STACK(levels / max_tiers)을 그대로 쓴다
+    (관제·DB·UI가 같은 규칙으로 수량을 해석하는 공용 규칙. 바꿀 때는 관제와 합의 + 자리별 첫 접촉 Z 재측정)
   - slot_dx_mm: 다음 자리 위치 = 1자리 x + (자리-1) * slot_dx_mm, y는 같음
   - classes: 설정된 클래스만 적재 (지금 A/B/C. D는 설정 시 추가)
 
@@ -91,12 +92,13 @@ def validate_config(c):
             raise ValueError(f'잘못된 {k}')
     if not c['min_search_z'] < c['travel_z']:
         raise ValueError('최저 Z는 이송 높이보다 낮아야 합니다')
-    if type(c['max_layers']) is not int or type(c['slot_count']) is not int:
-        raise ValueError('max_layers / slot_count는 정수여야 합니다')
-    if c['max_layers'] != STACK['levels'] or c['slot_count'] != STACK['max_tiers']:
-        raise ValueError(f"place_config의 {c['max_layers']}층/{c['slot_count']}자리가 공용 STACK "
-                         f"({STACK['levels']}층/{STACK['max_tiers']}자리)과 다릅니다. "
-                         f"box_comm/common.py STACK과 같이 맞추세요 (관제·DB·UI가 같은 규칙을 씀)")
+    # 적재 규칙(층·자리 수)은 공용 STACK 하나가 기준 → 여기서 채워 넣는다 (설정 파일에는 적지 않음)
+    # 예전 설정에 키가 남아 있으면 STACK과 같을 때만 허용 (다르면 어느 쪽이 맞는지 모호하므로 시작 안 함)
+    for key, shared in (('max_layers', STACK['levels']), ('slot_count', STACK['max_tiers'])):
+        if key in c and c[key] != shared:
+            raise ValueError(f"place_config의 {key}={c[key]}가 공용 STACK({shared})과 다릅니다. "
+                             f"설정에서 {key}를 지우세요 (적재 규칙은 box_comm/common.py STACK 하나로 관리)")
+        c[key] = shared
     if not c['classes'] or not set(c['classes']) <= set(VALID_CLASSES):
         raise ValueError(f'classes는 {VALID_CLASSES} 중에서 설정하세요')
     if not finite_vector(c['pick_orientation'], 3):
