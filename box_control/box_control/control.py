@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
 """
-control.py — 관제 메인 (예시: 정상 경로만)
+control.py — 관제 메인 (작업 시퀀스 · 재고 반영 · 중단 처리)
 ================================================================
+구성
+  control.py            : 이 파일. 상태 흐름과 판단만 한다 (ROS 호출은 self.io에 맡김)
+  control_interface.py  : 통신 계층 (Action·Service·이벤트 로그·정지 감시). start(Control)로 실행
+  preflight.py          : 시작 전 점검 (PREFLIGHT 단계에서 run_all 호출)
+  common.py             : 공통 정의 (에러 코드, 상태, 좌표 기본값, 적재 규칙 ...)
+
 흐름 (인터페이스 문서 2.5 관제 상태)
   BEFORE → GetJobData → PREFLIGHT(사전 점검) → STANDBY(시작 대기) → RUNNING
   → [SCANNING → SCAN_DONE → JUDGING → JUDGE_DONE → PLACING → PLACE_DONE
      → UpdateInventory] 반복
   → /scan found=False → DONE
+  중단: RUNNING 전 실패 → cancel_start (DB는 BEFORE 그대로)
+        RUNNING 후 실패 → abort_job   (DB에 ERROR 또는 STOPPED + 이유)
 
 규칙
   - "-ING" 상태는 Goal 보내기 직전, "_DONE" 상태는 Result 받은 직후에 바꾼다.
@@ -21,18 +29,28 @@ control.py — 관제 메인 (예시: 정상 경로만)
     관제는 기대값(적재 전 재고의 result_class 수량 + 1)과 비교해서 기록하고,
     DB에는 항상 '측정값'을 반영한다 (실제 적재 상태가 기준). 다르면 경고 로그를 남기고
     작업을 계속한다. 다른 클래스 수량은 그대로 둔다. (불일치 기록을 DB에 남길지는 DB/UI와 협의 중)
-  - 미분류 U (v0.5): 판별이 'U'를 내면 적재에 'U'로 보낸다. 적재는 미분류 위치에 놓기만 하고
+    단, 수량이 1보다 작게 오면(적재가 수량을 안 채움) 반영하지 않는다 → 다음 같은 클래스 적재 때 바로잡힘.
+  - 미분류 U (v0.5): 재고는 DB에서 A, B, C, D, U 다섯 개를 받는다 (U는 DB 초기값 0).
+    판별이 'U'를 내면 적재에 'U'로 보낸다. 적재는 미분류 위치에 놓기만 하고
     수량을 재지 않는다(count 0). 관제가 적재 성공 후 재고 U = 이전 + 1로 DB에 반영한다 (검증 없음).
   - 진행 추적: 중단 시 해당 파트의 마지막 Feedback stage와 경과 시간을 함께 기록한다.
   - 작업 중 중단 (abort_job): DB status를 ERROR(공정 오류) 또는 STOPPED(로봇 정지)로 바꾸고
-    이유를 함께 기록한다 (예: 'ERROR : Fail to pick'). 로봇에 정지 명령을 보내지는 않는다.
+    이유를 함께 기록한다 (예: 'ERROR : Fail to pick').
+    abort_job 자체는 로봇에 정지 명령을 보내지 않는다. 로봇 정지(move_stop)와 파트 Goal cancel은
+    control_interface의 request_stop()이 맡는다 (비상정지 요청, 로봇 상태 이상, 진행 없음).
+    정지 요청이 있었으면 파트가 돌려준 CANCELED 대신 정지 원인 코드를 DB에 남긴다.
   - 이벤트 로그: /event_log 토픽으로 보내기만 한다 (DB가 저장·UI 표시).
-    관제 이벤트(JOB_START / BOX_DONE / COUNT_MISMATCH / JOB_STOPPED / JOB_CANCELED / JOB_DONE)와
-    파트가 report.log()로 보낸 것(PART_LOG, control_interface가 자동으로 넘김).
+    관제 이벤트(JOB_START / BOX_DONE / COUNT_MISMATCH / JOB_ERROR / JOB_STOPPED / JOB_CANCELED /
+    JOB_DONE)와 파트가 report.log()로 보낸 것(PART_LOG, control_interface가 자동으로 넘김).
 
 사전 점검 (PREFLIGHT) — box_control/preflight.py
-  분류 기준, 고정 좌표(DB 값이 있는지, 형식이 맞는지) 등을 점검한다.
-  하나라도 FAIL이면 작업을 시작하지 않는다.
+  분류 기준, 고정 좌표, 적재 구역, 로봇 상태를 점검한다.
+  하나라도 FAIL이면 작업을 시작하지 않는다. WARN은 기록만 하고 진행한다.
+
+정지 감시 (control_interface, 파라미터)
+  robot_monitor        : dsr(기본, 실제·에뮬레이터) / fake(테스트) / off(bringup 없이 테스트할 때만)
+  progress_timeout_sec : 파트 Feedback이 이 시간 동안 없으면 정지 (0 = 끔, 기본)
+  감시는 RUNNING 동안만 켠다 (arm_monitor). 비상정지 요청(/emergency_stop)은 언제든 동작.
 
 시작 대기 (STANDBY)
   GetJobData 후 start_delay_sec(기본 10초) 동안 카운트다운한다.
@@ -43,10 +61,12 @@ control.py — 관제 메인 (예시: 정상 경로만)
   실제 운용: --ros-args -p start_delay_sec:=600.0 (10분)
   터미널 입력을 받을 수 없는 환경(launch 등)에서는 중단 기능 없이 대기 후 시작한다.
 
-TODO(나중에): UI 시작 버튼 연동, error_code별 정책, ERROR 상태, 비상정지
+TODO(나중에): UI 시작 버튼 연동, error_code별 정책 (재시도 / 이 박스 건너뛰기), 집기 실패 처리
 
 실행: ros2 run box_control control
       ros2 run box_control control --ros-args -p start_delay_sec:=3.0
+      ros2 run box_control control --ros-args -p progress_timeout_sec:=60.0
+      ros2 run box_control control --ros-args -p robot_monitor:=off   (bringup 없이 fake 파트로 테스트)
 ================================================================
 """
 
@@ -222,7 +242,7 @@ class Control:
             else:
                 self.log.info(f'[control] 적재 측정 수량: {result_class} {measured}개')
                 inventory_new = self.verify_inventory(box_id, result_class, measured)
-                done_msg = f'{result_class} 적재 완료 → {result_class} {measured}개'
+                done_msg = f'{result_class} 적재 완료 → {result_class} {inventory_new[result_class]}개'
             if err := self.io.update_inventory(box_id, inventory_new):
                 return self.abort_job(err)
             self.inventory = inventory_new
@@ -233,7 +253,9 @@ class Control:
         self.io.arm_monitor(False)
         self.io.set_log_context(box_id='', class_id='')
         self.set_state(State.DONE)
-        self.io.set_job_status(State.DONE.value)
+        if err := self.io.set_job_status(State.DONE.value):
+            self.log.error(f'[control] DONE 상태 DB 기록 실패: {err} '
+                           f'— UI에는 RUNNING으로 남아 있을 수 있습니다. DB 상태를 확인하세요.')
         self.io.log_event('INFO', 'JOB_DONE',
                           f'작업 완료: {self.box_seq}개 처리, 재고 {self.inventory}, '
                           f'불일치 {len(self.count_mismatches)}건')
@@ -308,10 +330,26 @@ class Control:
 
     def verify_inventory(self, box_id, result_class, measured) -> dict:
         """적재가 잰 수량(measured)과 기대값 비교 → DB에 반영할 재고를 돌려준다.
-        정책 (a): 항상 측정값 반영 (실제 선반 상태가 기준), 불일치는 기록 + 경고 후 계속."""
+        정책 (a): 항상 측정값 반영 (실제 선반 상태가 기준), 불일치는 기록 + 경고 후 계속.
+        예외: 수량이 1보다 작으면(적재 성공인데 수량을 안 채움 = 적재 쪽 계약 위반) 반영하지 않는다.
+              재고가 0으로 덮어써지는 것을 막고, 같은 클래스를 다음에 적재할 때 측정값으로 바로잡힌다
+              (그때 기대값과 한 번 어긋나므로 COUNT_MISMATCH가 한 번 더 남는다)."""
         expected = self.expected_count(result_class)
         inventory_new = dict(self.inventory)
-        inventory_new[result_class] = int(measured)
+        measured = int(measured)
+        if measured < 1:
+            self.count_mismatches.append((box_id, result_class, expected, measured))
+            self.log.error(
+                f'[control] {box_id}: {result_class} 적재는 성공했는데 수량이 {measured}개 '
+                f'(적재 쪽 수량 측정 확인 필요) → 반영하지 않고 이전 {self.inventory[result_class]}개 유지')
+            self.io.log_event('WARN', 'COUNT_MISMATCH',
+                              f'{result_class} 적재 수량 없음({measured}) → 반영 안 함, '
+                              f'이전 {self.inventory[result_class]}개 유지',
+                              box_id=box_id, class_id=result_class,
+                              expected=expected, measured=measured)
+            return inventory_new
+
+        inventory_new[result_class] = measured
         if measured == expected:
             return inventory_new
 

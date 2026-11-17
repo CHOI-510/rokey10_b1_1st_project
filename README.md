@@ -229,6 +229,8 @@ DONE          SetJobStatus(DONE)
 - 상태 값은 영어(`State` Enum)이고, 로그에는 `===== SCANNING (스캔중) =====`처럼 한글을 함께 표시합니다.
 - 스캔은 물품 유무(`found`)만 알리고, 작업완료 여부는 관제가 판단합니다.
 - **재고 검증 (v0.4)**: 관제는 적재가 잰 수량(`count`)을 기대값(적재 전 재고의 `result_class` 수량 + 1)과 비교합니다. DB에는 **항상 측정값**을 반영하고(실제 적재 상태가 기준), 다르면 `재고 불일치` 경고 로그(기대·측정·차이)를 남긴 뒤 작업을 계속하며, 작업이 끝나면 불일치 건수를 요약해서 출력합니다. 다른 클래스 수량은 그대로 둡니다.
+  - 예외: A~D 적재가 성공했는데 `count`가 1보다 작으면(적재가 수량을 안 채움) **반영하지 않고** 이전 값을 유지합니다(에러 로그 + `COUNT_MISMATCH`). 같은 클래스를 다음에 적재할 때 측정값으로 바로잡힙니다.
+- `DONE` 상태 기록이 실패하면 에러 로그를 남깁니다 (UI에는 `RUNNING`으로 남아 있을 수 있음).
 - **미분류 (v0.5)**: `result_class`가 `U`면 비교하지 않고 재고 `U`만 +1 해서 DB에 반영합니다 (적재는 `count = 0`).
 - **중단 기록**: 오류로 중단되면 해당 파트의 마지막 Feedback stage와 경과 시간을 함께 로그로 남깁니다. (예: `SCANNING (스캔중) 단계에서 중단: GRASP_FAILED | /scan 마지막 stage="picking" (4.2초 전)`)
 - `box_id`는 관제가 `<작업 시작 시각>_<순번>` 형식으로 붙입니다. (예: `20261114_130512_001`)
@@ -262,6 +264,8 @@ TCP와 툴은 로봇 컨트롤러에 **하나만** 걸리는 전역 설정입니
 1. 현재 이름 조회 → 기본값이면 끝
 2. 다르면 적용 → 다시 조회해서 확인
 3. 그래도 다르면 (미등록으로 판단) 수동 모드 → 등록 → 적용 → 자동 모드 → 확인
+   - 모드 전환·수동 모드 적용은 응답의 `success`까지 확인해서, 실패하면 어느 단계인지 메시지에 남깁니다 (등록 실패는 이미 등록된 경우라 무시)
+   - 중간에 실패해도 자동 모드 복귀는 항상 시도합니다. 복귀까지 실패하면 두 원인을 함께 남깁니다 (`… / 자동 모드 복귀 실패 — 펜던트에서 자동 모드로 바꿔 주세요`)
 4. 최종 확인 실패 → `run()`을 부르지 않고 `ROBOT_SETUP_FAILED`로 Result
 
 파트 노드 파라미터 `robot_setup`
@@ -365,13 +369,16 @@ ros2 run box_place place_main --ros-args -p sim_contact:=true        # 에뮬레
 
 | 관제 파라미터 | 값 | 설명 |
 | --- | --- | --- |
-| `robot_monitor` | `off`(기본) / `dsr` / `fake` | `dsr`: 실제 로봇·에뮬레이터에서 `get_robot_state`를 0.5초마다 확인. `off`면 사전 점검에서 WARN |
+| `robot_monitor` | `dsr`(기본) / `fake` / `off` | `dsr`: 실제 로봇·에뮬레이터에서 `get_robot_state`를 0.5초마다 확인. bringup이 없거나 `dsr_msgs2`가 없으면 사전 점검 FAIL(시작 안 함). `off`는 로봇 없이 테스트할 때만 (사전 점검 WARN, 정지 감지 없음) |
 | `fake_robot_state` | int (기본 1 = STANDBY) | `robot_monitor:=fake`일 때 로봇 상태 흉내. 실행 중에 `ros2 param set`으로 바꿈 |
 | `progress_timeout_sec` | float (기본 0 = 끔) | 파트 Feedback 감시 시간. 파트 동작 중 가장 긴 구간보다 넉넉하게 (예: 60) |
 
 ```bash
-# 실제 로봇·에뮬레이터
-ros2 run box_control control --ros-args -p robot_monitor:=dsr -p progress_timeout_sec:=60.0
+# 실제 로봇·에뮬레이터 (robot_monitor는 기본값 dsr)
+ros2 run box_control control --ros-args -p progress_timeout_sec:=60.0
+
+# 로봇 없이 fake 파트로 (bringup 없음)
+ros2 run box_control control --ros-args -p robot_monitor:=off
 
 # 비상정지 버튼 대신 터미널에서
 ros2 service call /emergency_stop box_interfaces/srv/EmergencyStop "{source: 'cli'}"

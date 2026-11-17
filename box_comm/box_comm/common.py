@@ -265,7 +265,7 @@ def stack_layout(count: int) -> list:
 #   멈추게 하기 : /emergency_stop 요청 또는 이상 감지 → 두산 move_stop + 파트 Goal cancel
 #   알아차리기   : 두산 get_robot_state를 주기적으로 확인 (이 버전 컨트롤러는 상태 토픽을 안 냄)
 #   관제 파라미터
-#     robot_monitor        : 'dsr'(실제·에뮬레이터) / 'fake'(테스트) / 'off'(기본, 감시 안 함)
+#     robot_monitor        : 'dsr'(기본, 실제·에뮬레이터) / 'fake'(테스트) / 'off'(로봇 없이 테스트할 때만)
 #       fake 모드에서는 'ros2 param set /control fake_robot_state 5' 로 상태를 바꿔 시험한다
 #     progress_timeout_sec : 파트 Feedback이 이 시간 동안 없으면 정지 (0 = 끔)
 # ----------------------------------------------------------------------

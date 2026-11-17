@@ -10,9 +10,9 @@ control.py가 GetJobData 직후, 시작 대기(STANDBY) 전에 run_all()을 한 
   2. 고정 좌표          : DB에서 받은 HOME·측정존 좌표가 있고 형식이 맞는지 (기준은 DB, v0.3)
                          관제는 DB 값으로 이미 덮어쓴 상태 → common.py와 비교하지 않음
   3. 적재 구역 (v0.4)  : A~D 구역 1단 x, y가 모두 있는지 (없으면 FAIL, (0, 0)이면 WARN)
-  4. 로봇 상태         : robot_monitor=dsr/fake면 STANDBY·MOVING이어야 함 (아니면 FAIL),
-                         off면 WARN (작업 중 로봇 정지를 감지하지 못함)
-  (추가 예정) safety 항목들
+  4. 로봇 상태         : robot_monitor=dsr(기본)/fake면 STANDBY·MOVING이어야 함 (아니면 FAIL),
+                         dsr인데 bringup·dsr_msgs2가 없으면 FAIL,
+                         off(로봇 없이 테스트)면 WARN (작업 중 로봇 정지를 감지하지 못함)
 
 점검 추가하는 법
   def check_xxx(ctrl) -> list[(level, message)]  를 만들고 CHECKS에 넣는다.
@@ -94,7 +94,7 @@ def check_robot(ctrl):
     if state is None:
         if name == 'robot_monitor=off':
             return [(WARN, '로봇 상태 감시 꺼짐 (robot_monitor=off) — 작업 중 로봇 정지·비상정지 상태를 감지하지 못합니다. '
-                           '실제·에뮬레이터는 -p robot_monitor:=dsr')]
+                           '로봇 없이 테스트할 때만 쓰세요 (실제·에뮬레이터는 기본값 dsr).')]
         return [(FAIL, f'{name} — 로봇 bringup·연결을 확인해 주세요.')]
     if robot_stop_code(state):
         return [(FAIL, f'로봇 상태 {name}({state}) — STANDBY에서 시작해야 합니다 (정지·비상정지 해제 확인).')]

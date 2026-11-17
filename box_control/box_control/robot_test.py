@@ -74,7 +74,8 @@ class RobotTest:
         self.ex.spin_until_future_complete(fut, timeout_sec=timeout)
         return fut.done() and fut.result() is not None
 
-    def call(self, key, **fields):
+    def call(self, key, must=False, **fields):
+        """두산 서비스 호출. must=True면 응답 success=False도 오류(RuntimeError)로 본다."""
         cli = self.cli[key]
         if not cli.wait_for_service(timeout_sec=3.0):
             raise RuntimeError(f'{SERVICES[key][0]} 서비스 없음')
@@ -85,7 +86,26 @@ class RobotTest:
         fut = cli.call_async(req)
         if not self._wait(fut, 3.0):
             raise RuntimeError(f'{SERVICES[key][0]} 응답 없음')
-        return fut.result()
+        res = fut.result()
+        if must and not getattr(res, 'success', True):
+            raise RuntimeError(f'{SERVICES[key][0]} 실패 (success=False)')
+        return res
+
+    def in_manual(self, work):
+        """수동 모드에서 work()를 하고 무슨 일이 있어도 자동 모드로 되돌린다 (원래 오류를 살림)."""
+        err = None
+        try:
+            self.call('set_mode', must=True, robot_mode=MANUAL)
+            work()
+        except Exception as e:
+            err = e
+        try:
+            self.call('set_mode', must=True, robot_mode=AUTONOMOUS)
+        except Exception as e:
+            back = f'자동 모드 복귀 실패({e}) — 펜던트에서 자동 모드로 바꿔 주세요'
+            raise RuntimeError(f'{err} / {back}' if err else back) from (err or e)
+        if err is not None:
+            raise err if isinstance(err, RuntimeError) else RuntimeError(f'{type(err).__name__}: {err}')
 
     def current(self):
         return (str(self.call('tcp_get').info).strip(), str(self.call('tool_get').info).strip())
@@ -105,15 +125,23 @@ class RobotTest:
 
     def record(self, name, ok, detail):
         self.rows.append((name, ok, detail))
-        (self.log.info if ok else self.log.error)(f'[robot_test] {"PASS" if ok else "FAIL"} {name}: {detail}')
+        # rclpy 로거는 같은 줄(호출 위치)에서 레벨을 바꾸면 ValueError → PASS/FAIL을 다른 줄에서 호출
+        if ok:
+            self.log.info(f'[robot_test] PASS {name}: {detail}')
+        else:
+            self.log.error(f'[robot_test] FAIL {name}: {detail}')
 
     def goal_step(self, name):
         self.log.info(f'[robot_test] ---- {name}: /scan Goal 전송 ----')
-        r, err = self.send_scan()
-        if err:
-            self.record(name, False, err)
+        try:
+            r, err = self.send_scan()
+            if err:
+                self.record(name, False, err)
+                return False
+            tcp, tool = self.current()
+        except RuntimeError as e:                         # 두산 서비스 응답 없음 등 → 표에 남기고 다음으로
+            self.record(name, False, str(e))
             return False
-        tcp, tool = self.current()
         ok = r.success and tcp == TCP['name'] and tool == TOOL['name']
         self.record(name, ok, f'success={r.success} error_code="{r.error_code}" '
                               f'| 로봇 TCP="{tcp}" TOOL="{tool}"')
@@ -121,24 +149,28 @@ class RobotTest:
 
     def set_dummy(self):
         """테스트용 TCP·툴을 등록해서 현재값으로 걸어 둔다."""
-        self.call('set_mode', robot_mode=MANUAL)
-        try:
+        def work():
+            # 이전 실행이 중간에 죽어서 이미 등록돼 있으면 create는 실패해도 됨
             self.call('tcp_create', name=DUMMY_TCP['name'], pos=DUMMY_TCP['pos'])
             self.call('tool_create', name=DUMMY_TOOL['name'], weight=DUMMY_TOOL['weight'],
                       cog=DUMMY_TOOL['cog'], inertia=DUMMY_TOOL['inertia'])
-            self.call('tcp_set', name=DUMMY_TCP['name'])
-            self.call('tool_set', name=DUMMY_TOOL['name'])
-        finally:
-            self.call('set_mode', robot_mode=AUTONOMOUS)
+            self.call('tcp_set', must=True, name=DUMMY_TCP['name'])
+            self.call('tool_set', must=True, name=DUMMY_TOOL['name'])
+        self.in_manual(work)
         return self.current()
 
     def cleanup_dummy(self):
-        try:
-            self.call('set_mode', robot_mode=MANUAL)
-            self.call('tcp_delete', name=DUMMY_TCP['name'])
-            self.call('tool_delete', name=DUMMY_TOOL['name'])
-        finally:
-            self.call('set_mode', robot_mode=AUTONOMOUS)
+        """기본 TCP·툴로 먼저 되돌린 뒤 테스트용을 삭제한다.
+        (3번이 실패해서 테스트용이 현재값으로 걸려 있으면 컨트롤러가 삭제를 거부할 수 있음)"""
+        def work():
+            for key, name in (('tcp_set', TCP['name']), ('tool_set', TOOL['name'])):
+                try:
+                    self.call(key, must=True, name=name)
+                except RuntimeError as e:             # 되돌리기 실패해도 삭제는 시도 (실패하면 거기서 알려 줌)
+                    self.log.warn(f'[robot_test] 정리 전 기본값 적용 실패: {e}')
+            self.call('tcp_delete', must=True, name=DUMMY_TCP['name'])
+            self.call('tool_delete', must=True, name=DUMMY_TOOL['name'])
+        self.in_manual(work)
 
     # ---------------- 점검 순서 ----------------
     def run(self):
@@ -158,11 +190,17 @@ class RobotTest:
 
         if self.reapply:
             try:
-                tcp, tool = self.set_dummy()
-                self.record('3-준비. 테스트용 TCP·툴 걸기',
-                            tcp == DUMMY_TCP['name'] and tool == DUMMY_TOOL['name'],
-                            f'로봇 TCP="{tcp}" TOOL="{tool}"')
-                self.goal_step('3. 다른 TCP·툴 상태에서 Goal → 기본값 복귀 (scan 로그에 재적용/등록·적용)')
+                try:
+                    tcp, tool = self.set_dummy()
+                    ready = tcp == DUMMY_TCP['name'] and tool == DUMMY_TOOL['name']
+                    self.record('3-준비. 테스트용 TCP·툴 걸기', ready, f'로봇 TCP="{tcp}" TOOL="{tool}"')
+                except RuntimeError as e:
+                    ready = False
+                    self.record('3-준비. 테스트용 TCP·툴 걸기', False, str(e))
+                if ready:
+                    self.goal_step('3. 다른 TCP·툴 상태에서 Goal → 기본값 복귀 (scan 로그에 재적용/등록·적용)')
+                else:
+                    self.log.warn('[robot_test] 테스트용 TCP·툴을 걸지 못해 3번 Goal은 건너뜀')
             finally:
                 try:
                     self.cleanup_dummy()
@@ -189,6 +227,8 @@ def main(args=None):
         t.run()
     except KeyboardInterrupt:
         pass
+    except Exception as e:                                # 예상 못 한 오류도 traceback 대신 표에 남김
+        t.record('예상 못 한 오류', False, f'{type(e).__name__}: {e}')
     finally:
         t.summary()
         t.ex.shutdown()

@@ -19,6 +19,8 @@ robot.py — 기본 TCP·툴 확인·적용 (두산 서비스 직접 호출)
   1) 현재 이름 조회 → 기본값(common.TCP / common.TOOL)과 같으면 끝
   2) 다르면 적용(set_current_*) → 다시 조회해서 확인
   3) 그래도 다르면 수동 모드 → 등록(config_create_*, 이미 있으면 실패해도 무시) → 적용 → 자동 모드 → 확인
+     - 모드 전환·수동 모드 적용은 응답의 success까지 확인해서, 실패하면 어느 단계인지 메시지에 남긴다
+     - 중간에 실패해도 자동 모드 복귀는 항상 시도한다 (_in_manual). 복귀까지 실패하면 두 원인을 함께 남긴다
      (가상 모드에서는 자동 모드에서 set_current_*가 반영되지 않아 항상 이 경로를 탐 — 2026-11-14 확인)
   4) 최종 확인 실패 → (False, 사유) → interface가 ROBOT_SETUP_FAILED로 Goal을 끝낸다
 
@@ -166,6 +168,38 @@ class RobotSetup:
             raise RobotSetupError(f'{_SERVICES[key][0]} 응답 없음')
         return fut.result()
 
+    @staticmethod
+    def _ok(res) -> bool:
+        """두산 서비스 응답의 success (필드가 없으면 성공으로 봄)"""
+        return bool(getattr(res, 'success', True))
+
+    def _set_mode(self, mode):
+        res = self._call('set_mode', robot_mode=mode)
+        if not self._ok(res):
+            label = '수동' if mode == ROBOT_MODE_MANUAL else '자동'
+            raise RobotSetupError(f'{label} 모드 전환 실패 (set_robot_mode={mode} → success=False)')
+
+    def _in_manual(self, work):
+        """수동 모드로 바꿔 work()를 하고, 무슨 일이 있어도 자동 모드로 되돌린다.
+        - work() 오류와 복귀 오류가 둘 다 나면 둘 다 메시지에 남긴다 (원래 원인이 묻히지 않게).
+        - 수동 전환 자체가 '응답 없음'이어도 실제로는 바뀌었을 수 있으므로 복귀는 항상 시도한다."""
+        err = None
+        try:
+            self._set_mode(ROBOT_MODE_MANUAL)
+            work()
+        except Exception as e:                            # 원인은 기억만 하고 복귀부터
+            err = e
+        try:
+            self._set_mode(ROBOT_MODE_AUTONOMOUS)
+        except Exception as e:
+            back = f'자동 모드 복귀 실패({e}) — 펜던트에서 자동 모드로 바꿔 주세요'
+            self.log.error(f'[{self.part}] {back}')
+            raise RobotSetupError(f'{err} / {back}' if err else back) from (err or e)
+        if err is not None:
+            if isinstance(err, RobotSetupError):
+                raise err
+            raise RobotSetupError(f'{type(err).__name__}: {err}') from err
+
     def _current(self, kind) -> str:
         res = self._call(f'{kind}_get')
         return str(getattr(res, 'info', '')).strip()
@@ -188,17 +222,22 @@ class RobotSetup:
         # 3) 등록부터 (수동 모드 필요)
         self.log.warn(f'[{self.part}] {label} "{name}" 자동 모드에서 바로 적용 안 됨 '
                       f'→ 수동 모드에서 등록(없으면)·적용')
-        self._call('set_mode', robot_mode=ROBOT_MODE_MANUAL)
-        try:
+
+        def register_and_apply():
             if kind == 'tcp':
-                self._call('tcp_create', name=name, pos=[float(v) for v in cfg['pos']])
+                res = self._call('tcp_create', name=name, pos=[float(v) for v in cfg['pos']])
             else:
-                self._call('tool_create', name=name, weight=float(cfg['weight']),
-                           cog=[float(v) for v in cfg['cog']],
-                           inertia=[float(v) for v in cfg['inertia']])
-            self._call(f'{kind}_set', name=name)          # 이미 등록돼 있어서 create가 실패해도 적용은 시도
-        finally:
-            self._call('set_mode', robot_mode=ROBOT_MODE_AUTONOMOUS)
+                res = self._call('tool_create', name=name, weight=float(cfg['weight']),
+                                 cog=[float(v) for v in cfg['cog']],
+                                 inertia=[float(v) for v in cfg['inertia']])
+            if not self._ok(res):                         # 이미 등록돼 있으면 실패가 정상 → 적용은 계속
+                self.log.info(f'[{self.part}] {label} "{name}" 등록 응답 success=False '
+                              f'(이미 등록돼 있으면 정상) → 적용 시도')
+            if not self._ok(self._call(f'{kind}_set', name=name)):
+                raise RobotSetupError(f'{label} "{name}" 적용 실패 (수동 모드 set_current_{kind} → success=False, '
+                                      f'등록 값 확인)')
+
+        self._in_manual(register_and_apply)
 
         current = self._current(kind)
         if current != name:

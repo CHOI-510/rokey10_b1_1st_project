@@ -17,7 +17,7 @@ control_interface.py — 관제 통신 계층
 
   scan(poses)                         -> (found: bool, err)
   judge(specs, poses)                 -> (result_class: str, err)
-  place(result_class, poses)      -> (count: int|None, err)
+  place(result_class, poses)          -> (count: int|None, err)
     count = 적재가 실제로 놓은 위치로 잰 result_class 수량 (v0.4)
     poses = {'home_j': [6], 'measure_zone': [3], 'place_zones': {'A': [x, y], ...}} (DB 값).
             모든 Goal에 실어 보낸다.
@@ -49,18 +49,26 @@ control_interface.py — 관제 통신 계층
     로봇 상태가 STANDBY/MOVING이 아님 (robot_monitor=dsr/fake)   → ROBOT_* (작업 중에만)
     로봇 상태 확인 연속 실패 / robot_disconnection 토픽          → ROBOT_DISCONNECTED (작업 중에만)
     파트 Feedback이 progress_timeout_sec 동안 없음               → NO_PROGRESS (작업 중에만)
-  파라미터: robot_monitor (dsr / fake / off), fake_robot_state (int), progress_timeout_sec (float)
+  파라미터: robot_monitor (dsr 기본 / fake / off), fake_robot_state (int), progress_timeout_sec (float)
+    robot_monitor=dsr인데 bringup이 없거나 dsr_msgs2가 없으면 사전 점검(로봇 상태)이 FAIL → 작업 시작 안 함.
+    로봇 없이 fake 파트로 테스트할 때만 -p robot_monitor:=off (사전 점검 WARN, 정지 감지 없음).
 
   진행 추적 (Feedback 기반)
   progress(name)                 -> (last_stage: str, seconds_since: float)
     name = 'scan' / 'judge' / 'place'
     Goal을 보내면 stage='goal_sent'로 초기화, Feedback이 올 때마다 갱신.
-    → "어느 단계에서 몇 초째 멈춰 있는지" 확인용. (개입 로직은 safety에서 추가 예정)
+    → "어느 단계에서 몇 초째 멈춰 있는지" 확인용. abort_job이 중단 이유에 붙인다.
+    progress_timeout_sec > 0이면 주기 감시가 이 값으로 NO_PROGRESS 정지를 판단한다.
+    오래 걸리는 단계는 파트가 report.keepalive()로 시각을 갱신해야 오인 정지가 나지 않는다.
+
+  Action 대기 시간
+    scan/judge/place는 timeout=None(무한 대기)으로 호출된다. 파트가 멈추면
+    정지 요청이나 progress_timeout_sec만이 대기를 끝낸다 → 실제 운용에서는 progress_timeout_sec를 켤 것.
 
   관제 내부 코드 (파트가 보내는 코드가 아님)
     SERVER_DOWN  서버가 떠 있지 않음
     REJECTED     Goal 거절됨
-    TIMEOUT      시간 초과 (timeout을 지정했을 때만)
+    TIMEOUT      시간 초과 (timeout을 지정했을 때, 또는 Goal 전송 응답이 3초 안에 없을 때)
     NO_ERROR_CODE  파트가 실패했는데 error_code를 비워 보냄
     DB_FAILED    DB 서비스가 success=False
 
@@ -160,9 +168,10 @@ class ControlInterface(Node):
         self._state_pending = False
         self._last_alarm = ''              # 두산 알람 메시지 (reason에 덧붙임)
         self._dsr = None                   # dsr_msgs2 모듈 (없으면 None)
+        self._monitor_broken = ''          # robot_monitor=dsr인데 dsr_msgs2가 없을 때 이유 (사전 점검 FAIL)
 
         dyn = ParameterDescriptor(dynamic_typing=True)
-        self._monitor = str(self.declare_parameter('robot_monitor', 'off', dyn).value).lower()
+        self._monitor = str(self.declare_parameter('robot_monitor', 'dsr', dyn).value).lower()
         self.declare_parameter('fake_robot_state', 1)            # fake 모드: ros2 param set으로 변경
         self._progress_timeout = float(self.declare_parameter('progress_timeout_sec', 0.0).value)
         if self._monitor not in ('dsr', 'fake', 'off'):
@@ -277,6 +286,8 @@ class ControlInterface(Node):
 
     def robot_state(self):
         """사전 점검용: (state, 이름). 모니터가 꺼져 있거나 아직 못 읽었으면 (None, 이유)"""
+        if self._monitor_broken:                            # dsr를 요청했지만 쓸 수 없음 → FAIL
+            return None, self._monitor_broken
         if self._monitor == 'off':
             return None, 'robot_monitor=off'
         if self._monitor == 'fake':
@@ -322,8 +333,11 @@ class ControlInterface(Node):
             import dsr_msgs2.srv as dsr_srv
         except ImportError:
             if self._monitor == 'dsr':
-                self.get_logger().error('[control] dsr_msgs2를 import할 수 없음 → robot_monitor=dsr 불가, off로 동작')
+                self.get_logger().error('[control] dsr_msgs2를 import할 수 없음 → robot_monitor=dsr 불가 '
+                                        '(사전 점검에서 FAIL. 로봇 없이 테스트하려면 -p robot_monitor:=off)')
                 self._monitor = 'off'
+                self._monitor_broken = ('robot_monitor=dsr인데 dsr_msgs2 없음 (두산 워크스페이스 source 확인, '
+                                        '로봇 없이 테스트하려면 -p robot_monitor:=off)')
             self.get_logger().warn('[control] dsr_msgs2 없음 → 비상정지 시 로봇 move_stop 불가 (파트 cancel만)')
             return
         self._dsr = dsr_srv
