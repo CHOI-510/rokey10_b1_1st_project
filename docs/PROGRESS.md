@@ -22,6 +22,8 @@
 
 | 날짜 | 결정 | 이유 |
 | --- | --- | --- |
+| 11/17 | **탐지·판별도 같은 구조로**: 공용 어댑터 `box_comm/algorithm.py`(로봇 주입·실패 시 정지·`PartError` 변환), 세 interface에 `start_algorithm()`. 약속 `XxxAlgorithm(node, robot)` + `scan(poses, report)->bool` / `judge(specs, poses, report)->str` / `place(result_class, poses, report)->int`. 템플릿 3개 이 방식으로 변경. `DsrIO`는 첫 명령 때 서비스 준비 확인(bringup 없이 FAKE 가능), 두산 패키지가 없으면 `robot=None`. 예전 `start(Work)` 방식은 fake·test 노드용으로 유지 | 탐지·판별 실제 코드가 들어오기 전에 경계를 먼저 만들어 적재처럼 나중에 분리하는 일이 없게 |
+| 11/17 | **적재 코드 분리 (담당자와 합의)**: 알고리즘 `box_place/place_algorithm.py`(적재 소유, 관제 코드 없음) / 로봇 명령·정지 확인 `box_comm/dsr_io.py` / 실패 시 정지·결과 변환 `place_interface.start_algorithm()`(관제). `place_main.py`는 진입점 한 줄, `place_working.py` 삭제 | 같은 700줄 파일을 주고받으며 working·main이 갈라지던 문제. 서로 다른 파일만 고치게 경계를 만듦. 이동 명령을 새로 넣어도 정지 확인이 자동으로 따라옴 |
 | 11/17 | **`robot_monitor` 기본값 `off` → `dsr`**. bringup이 없거나 `dsr_msgs2`가 없으면 사전 점검 FAIL(예전엔 조용히 off로 바뀌어 WARN 통과). 로봇 없이 테스트할 때만 `-p robot_monitor:=off` (`fake_run.sh`는 원래 명시해서 영향 없음) | 시연에서 파라미터를 빠뜨려 정지 감지 없이 도는 것을 막기 위해 |
 | 11/17 | **적재 수량 0 방어**: A~D 적재 성공인데 `count < 1`이면 재고를 덮어쓰지 않고 이전 값 유지(에러 로그 + `COUNT_MISMATCH`). 다음 같은 클래스 적재 때 측정값으로 바로잡힘 | 메시지 기본값 0 때문에 재고가 0으로 날아가는 것 방지 |
 | 11/17 | 미분류 `U` 재고: DB가 A·B·C·D·U 다섯 개를 주고 U 초기값은 0. 관제는 적재 성공 후 U+1을 DB에 반영 (기존 구현 그대로, 문서로 확정) | 재고 반영은 적재 완료 후에만 |
@@ -73,7 +75,7 @@
 | --- | --- | --- | --- |
 | 1 | **비상정지**: 관제 구현 완료, **실제 로봇 시험 완료(11/16)** — CLI 비상정지(이동·적재 중), 펜던트 비상정지(이동 중) → 그 자리에 정지, `STOPPED : EMERGENCY STOP — by cli` / `STOPPED : Pendant emergency stop`. 적재 `PLACE_FAILED`와 동시에 와도 정지가 우선 기록됨. 남은 것: DB·UI 버튼 연결(`request_emergency_stop('ui')`, 가이드 문서 전달), 펜던트 비상정지를 힘 제어 하강 중에 거는 시험(선택), 복구는 수동(펜던트 해제 → 그리퍼 확인 → `clear_pending`) | 관제, DB | DB·UI 연결 남음 |
 | 2 | `error_code`별 관제 처리 (재시도 / 건너뛰기 / 정지), 실패 시 무한 루프 방지 | 관제 | 미정 |
-| 3 | Action별 타임아웃과 cancel: cancel 경로는 완료(11/16). 전체 시간 제한 대신 진행 감시(`progress_timeout_sec`)로 대체 — 실제 동작 시간을 재서 값 정하기 | 관제 | 값 정하기 |
+| 3 | Action별 타임아웃과 cancel: cancel 경로는 완료(11/16). 전체 시간 제한 대신 진행 감시(`progress_timeout_sec`)로 대체. **11/17 에뮬레이터 측정**: Feedback 최대 간격 약 17.5초(첫 박스 `place` picking, HOME 이동 포함), 이후 약 13초(`picking`)·15초(만재 후 다음 자리 이동). 60초로 오인 정지 없음 → 실제 로봇 시간 재고 30~60초 사이로 확정 | 관제 | 실제 로봇 값 확인 |
 | 4 | ~~미분류 물품 처리~~ → 11/16 `U`로 완료 (v0.5, 판별 U → 적재 투하 → 관제 U +1) | 판별, 적재 | 완료 |
 | 5 | 측정값(W·D·H·무게)을 DB·UI까지 전달할지 | 판별, DB | 미정 |
 | 6 | 위상(방향) 정보를 판별 → 적재로 전달할지 (옵션) | 판별, 적재 | 미정 |
@@ -82,7 +84,7 @@
 | 9 | DB 방식(SQLite 권장)과 UI 방식(웹 / PyQt) — PyQt를 노드 안에 띄우면 `box_comm` 수정 필요 | DB | 미정 |
 | 10 | **재고 검증 (v0.4, 측정값 우선)**: 관제 쪽 적용 완료. 불일치 기록을 DB 작업 로그로 남길지(통계만 / 상세 기록), UI 표시 여부. 차이가 클 때(예: ±2 이상) 중단할지 | 관제, DB | DB·UI 담당과 협의 |
 | 11 | **집기 최종 실패 처리**: 파트 내부 재시도 후에도 실패하면 `GRASP_FAILED`. 같은 박스를 계속 다시 찾는 무한 루프 방지 필요 (연속 실패 상한, 해당 위치 건너뛰기 여부) | 관제, 탐지 | 탐지 담당과 협의 |
-| 12 | **Feedback 기반 진행 감시**: 개입 로직 완료(11/16, `progress_timeout_sec` 초과 → `move_stop` + cancel → `ERROR : No progress`). 파트가 `report()`를 충분히 자주 부르는지 확인 필요. **Action은 무한 대기라 실제 운용에서는 `progress_timeout_sec`를 꼭 켤 것** (끄면 파트 노드가 죽었을 때 관제가 계속 기다림). 멈춘 뒤 대처(리셋 방식)는 미정 | 관제, 파트 | 시험 필요 |
+| 12 | **Feedback 기반 진행 감시**: 개입 로직 완료(11/16, `progress_timeout_sec` 초과 → `move_stop` + cancel → `ERROR : No progress`). 파트가 `report()`를 충분히 자주 부르는지 확인 필요(11/17 에뮬레이터 `place_main`은 60초에서 문제 없음, 탐지·판별 실제 코드는 미확인). **Action은 무한 대기라 실제 운용에서는 `progress_timeout_sec`를 꼭 켤 것** (끄면 파트 노드가 죽었을 때 관제가 계속 기다림). 멈춘 뒤 대처(리셋 방식)는 미정 | 관제, 파트 | 시험 필요 |
 | 13 | 작업 통계 로그 (작업완료 물품 수, 재시도 횟수 등) — `/event_log`로 기반 마련(`JOB_DONE` 요약, `PART_LOG`). DB 저장 형식·UI 로그 창 표시(level·code 필터) | 관제, DB | DB·UI 담당과 협의 |
 | 14 | **TCP·툴 자동 확인** 구현·가상·실제 로봇 테스트 완료(`box_comm/robot.py`). 응답 필드 `info` 확인, 툴 이름 `Tool Weight` 확인, 가상·실제 모두 자동 모드 적용 불가 → 수동 모드 경로로 적용됨 | 관제 | 완료 |
 | 16 | **측정존 좌표** `[300, -160, 30]` → `common.py` 기본값·DB 템플릿에 입력됨. 남은 것: **DB 실제 코드에 입력**, 탐지·판별도 z를 '박스 파지 TCP 높이'로 쓰는지 확인 | 관제, DB, 탐지, 판별, 적재 | DB 반영 필요 |
@@ -175,7 +177,25 @@
 - `robot.py`: 두산 서비스 응답 `success` 확인(모드 전환·수동 모드 적용), `_in_manual()`로 자동 모드 복귀 보장 + 원래 오류 보존
 - `robot_test.py`: 두산 서비스 오류가 traceback 대신 표에 FAIL로 남음, 정리 전에 기본 TCP·툴로 되돌린 뒤 테스트용 삭제(삭제 실패는 FAIL), 테스트용 TCP를 못 걸면 3번 건너뜀
 - docstring 정리: `control.py`(파일 구성, 중단 경로, 정지 감시 파라미터, 낡은 TODO), `control_interface.py`(진행 감시·무한 대기 주의), `preflight.py`, `common.py`, README 정지 기능·재고 검증·TCP 절
-- ROS 없이 로직 시험 통과(모드 복귀·재고 방어). **에뮬레이터·실제 로봇 시험은 아직** — 특히 `robot_monitor` 기본값 변경 후 `ros2 run box_control control` 단독 실행 시 사전 점검 결과 확인
+- ROS 없이 로직 시험 통과(모드 복귀·재고 방어)
+- **에뮬레이터 시험 통과** (가상 bringup, 수정본 빌드 후)
+  - `robot_test` 전체 PASS: 1·2번 `TCP OK, TOOL OK`, 3번 테스트용 TCP·툴에서 **수동 모드 경로(`_in_manual`)로 기본값 복귀**, 정리(기본값 복귀 후 테스트용 삭제) PASS
+  - fake 파트 + 관제 기본값(`robot_monitor=dsr`): 사전 점검 `로봇 상태 STANDBY`, 3개 처리 → `DONE`
+  - `PLACE_MAIN=1 SIM=1`, A×4: 1자리 1·2·3층 (TCP Z 30.19 / 50.19 / 70.19) → 4번째 `A/1 3층 만재 → 파지 유지 후 상승` → 2자리 1층(수량 4), 재고 `A 4`, 적재 이미지 `A[3, 1]`, 불일치 0, `DONE`. 박스당 적재 약 30초(만재 후 다음 자리는 약 35초)
+  - dsr 모드 비상정지: 4번째 박스 `place` picking 중 CLI `/emergency_stop` → `move_stop` 3초 반복 + Goal cancel → `STOPPED : EMERGENCY STOP — by cli`, 마지막 stage `picking` 기록, 재고 `A 3` 유지(미완료 박스 미반영). 다음 실행은 `clear_pending:=true`로 복구
+  - `progress_timeout_sec:=60` 동안 오인 정지 없음 (Feedback 최대 간격 약 17.5초)
+- 발견·수정: `robot_test.record()`가 한 줄에서 `info`/`error`를 바꿔 불러 rclpy `Logger severity cannot be changed between calls` → FAIL이 처음 나올 때 죽던 원래 버그. 줄을 나눠 수정
+- 주의: 백그라운드로 띄운 fake 노드가 `ros2 run`만 죽고 남아 `/scan` 서버가 2개가 된 적 있음(`Ignoring unexpected goal response`) → `pkill -f "box_control.fake_"` 또는 `./scripts/fake_stop.sh`로 정리, `ros2 action info /scan`으로 서버 수 확인
+- **적재 코드 분리**: v1(담당 원본 499줄) → v2(관제 통합) → v3(`place_working`, 담당 U 추가) → v4(`place_main`, 관제 7줄) 흐름을 정리하고 분리
+  - `box_comm/dsr_io.py`(관제): 두산 서비스·DSR 호출, 명령 전 정지 확인, `force_z()` keepalive, `stop()`(힘·순응 해제 + move_stop)
+  - `place_interface.start_algorithm()`(관제): `DsrIO` 주입, Goal마다 `bind(report)`, 실패 시 로봇 정지 + `PartError` 변환(CANCELED 유지)
+  - `box_place/place_algorithm.py`(적재): v4 동작 그대로. 제거 — `_check`/`_keepalive`/`_ensure_robot`(robot.py와 중복)/`lock`(interface와 중복)/자체 `count_from_position`/예외 변환. 추가 — 설정에 새 클래스(D)가 생겨도 상태 파일 기준 칸 자동 생성(v4는 KeyError)
+  - ROS 없이 가짜 로봇 시험 통과: sim A×4 → 1·2·3·4, U → 0, 7번째 → NO_SLOT + 정지, 집는 중 정지 → CANCELED + 정지 + 다음 Goal 거부(pending), 힘 제어 하강 경로 A×4, 미지원 D → PLACE_FAILED(움직이기 전이라 정지 없음). **에뮬레이터 확인 필요**
+- **에뮬레이터 확인 (분리 후)**: `PLACE_MAIN=1 SIM=1` A×4 → 1·2·3층(Z 30.19/50.19/70.19) → 2자리 1층(수량 4), `A[3, 1]`, 불일치 0, `DONE` — 분리 전과 같음
+- 실습실 네트워크에서 ros2 CLI(데몬)가 자꾸 멈춤 → `ROS_DOMAIN_ID=51`로 다른 팀과 분리해서 해결 (bringup 포함 모든 터미널, 통합 시 팀원 PC도 51). `fake_run.sh` 서버 대기에 5초 제한 + 데몬 강제 재시작 추가
+- **탐지·판별 구조 통일**: `box_comm/algorithm.py`(공용 어댑터), scan/judge/place interface `start_algorithm()`, 템플릿 3개 알고리즘 방식으로. ROS 없이 시험: 템플릿 3개 robot=None으로 FAKE 동작(scan T,T,F / judge 판별 / place 1~4·U 0), 정지 → CANCELED, 일반 예외 → 파트 기본 코드, 적재 알고리즘 시험 재통과
+- **발견·수정 (`DsrIO`)**: 위치·힘·정지 서비스 클라이언트를 DSR_ROBOT2 노드에 같이 만들었더니, TCP가 틀어져 `robot.py`가 수동 모드로 전환할 때 컨트롤러가 약 20초간 아무 서비스에도 응답하지 않음(다른 프로세스 포함). 예전 방식 `test_scan_motion`은 정상 → 원인 좁힘. 클라이언트를 전용 노드(`<이름>_io`) + 전용 executor로 옮겨 해결(`robot.py`와 같은 구조). 수정 후 `robot_test` 전체 PASS(scan_template), `PLACE_MAIN=1 SIM=1` A×4 결과 동일(`A[3, 1]`, DONE)
+- 남은 실제 로봇 확인: `robot_monitor=dsr` 기본값으로 실제 로봇 사전 점검, `progress_timeout_sec` 값, bringup 없이 실행 시 사전 점검 FAIL
 
 ### 11/16
 

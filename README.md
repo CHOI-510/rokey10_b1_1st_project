@@ -244,7 +244,7 @@ DONE          SetJobStatus(DONE)
 | 고정 좌표 | DB에 좌표 없음 → "DB에 고정 좌표가 없습니다. DB에 HOME·측정존 좌표를 설정한 뒤 실행해 주세요.", 형식 오류 | 측정존이 (0, 0, 0) |
 | 적재 구역 | A~D 중 1단 x·y가 없는 구역 | 구역 좌표가 (0, 0) |
 
-고정 좌표(HOME, 측정존, 적재 구역 1단 x·y)는 **DB가 기준**입니다(v0.3, 적재 구역은 v0.4). 관제는 `GetJobData`로 받은 DB 값으로 자기 좌표를 **무조건 덮어쓰고**(비교·중단 없음, 로그만 남김), 그 값을 `/scan`, `/judge`, `/place` Goal에 매번 실어 보내고, 각 파트는 그 값(`self.poses`)으로 움직입니다. `box_comm/common.py`의 `FIXED_POSES`는 **기본값**으로, Goal에 좌표가 없을 때(팀원이 혼자 `send_goal`로 테스트할 때)만 쓰입니다.
+고정 좌표(HOME, 측정존, 적재 구역 1단 x·y)는 **DB가 기준**입니다(v0.3, 적재 구역은 v0.4). 관제는 `GetJobData`로 받은 DB 값으로 자기 좌표를 **무조건 덮어쓰고**(비교·중단 없음, 로그만 남김), 그 값을 `/scan`, `/judge`, `/place` Goal에 매번 실어 보내고, 각 파트는 그 값(작업 함수의 `poses` 인자, 예전 방식은 `self.poses`)으로 움직입니다. `box_comm/common.py`의 `FIXED_POSES`는 **기본값**으로, Goal에 좌표가 없을 때(팀원이 혼자 `send_goal`로 테스트할 때)만 쓰입니다.
 점검을 추가할 때는 `preflight.py`에 함수를 만들고 `CHECKS`에 넣습니다.
 
 ---
@@ -335,7 +335,7 @@ ros2 run box_control control
 
 ### 적재 실제 로봇 실행 (`place_main`)
 
-적재 실제 코드는 `box_place/box_place/place_main.py`, 설정은 `box_place/config/place_config.json`입니다 (빌드하면 `share/box_place/config/`에 설치).
+적재 실제 코드는 알고리즘 `box_place/box_place/place_algorithm.py`(적재 담당) + 실행 진입점 `place_main.py`, 설정은 `box_place/config/place_config.json`입니다 (빌드하면 `share/box_place/config/`에 설치). 로봇 명령·정지 확인은 `box_comm/dsr_io.py`, 실패 시 정지·결과 변환은 `box_comm/place_interface.py`(관제)가 맡습니다 — 구조는 CONTRIBUTING '적재 실제 코드 구조' 참고.
 
 ```bash
 ros2 run box_place place_main                                        # 기본 설정 파일
@@ -345,9 +345,9 @@ ros2 run box_place place_main --ros-args -p sim_contact:=true        # 에뮬레
 ```
 
 - 지원 클래스는 설정에 있는 것만입니다 (현재 **A/B/C**). D가 오면 `PLACE_FAILED` (`D: place_config.json에 설정이 없습니다`).
-- **미분류 `U`**: `place_config.json`의 `unclassified`(`enabled`, `release_pose` [x, y, z, rx, ry, rz], `approach_z`) 위치로 가서 힘 제어 없이 놓고 0을 돌려줍니다. 현재 `[670, -43, 144, 160, 180, 162]`, 접근 높이 160. `place_working.py`는 적재 담당 원본 보관용입니다.
+- **미분류 `U`**: `place_config.json`의 `unclassified`(`enabled`, `release_pose` [x, y, z, rx, ry, rz], `approach_z`) 위치로 가서 힘 제어 없이 놓고 0을 돌려줍니다. 현재 `[670, -43, 144, 160, 180, 162]`, 접근 높이 160.
 - Goal의 측정존이 `(0,0,0)`이면 움직이지 않고 실패합니다 → DB에 실제 측정존·구역 좌표가 있어야 합니다.
-- 정지: 모든 이동 전과 힘 제어 하강 중에 관제 정지 요청을 확인합니다 → `CANCELED`로 빠져나오며 힘·순응제어 해제 + `move_stop`. 하강 중에는 1초마다 keepalive를 보내 진행 감시가 오인하지 않습니다.
+- 정지: `dsr_io`가 모든 로봇 명령 전과 힘 제어 하강 중(`force_z`)에 관제 정지 요청을 확인합니다 → `CANCELED`로 빠져나오고 `place_interface`가 힘·순응제어 해제 + `move_stop`. 하강 중에는 1초마다 keepalive를 보내 진행 감시가 오인하지 않습니다.
 - 측정존 z는 **박스를 쥐는 TCP 높이**입니다. 현재 측정존 `[300, -160, 30]` (z 30 = 적재 1층 첫 접촉 Z, 측정존 바닥이 적재 구역 바닥과 같은 높이라는 가정).
 - **`sim_contact` (에뮬레이터 전용)**: 에뮬레이터는 힘 센서 값이 없어 '닿을 때까지 하강'이 끝나지 않습니다. `true`면 힘 제어 대신 가상으로 쌓인 높이까지 `movel`로 내려가 닿았다고 칩니다(층 판단·만재 시 다음 자리·수량 계산은 원래 코드). 가상 적재 수는 노드가 켜질 때 0, 상태 파일은 `~/.ros/place_sim_state.json`으로 분리. **실제 로봇에서는 켜지 않습니다.**
 - **멈춘 뒤 복구**: 작업 중 멈추면 상태 파일(`~/.ros/place_real_v04_state.json`)에 미완료 작업이 남아 다음 적재를 거부합니다. 그리퍼(물건을 쥐고 있는지)와 적재 상태를 확인하고 `-p clear_pending:=true`로 한 번 실행하세요.

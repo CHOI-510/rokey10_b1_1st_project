@@ -178,8 +178,19 @@ for _ in $(seq 1 40); do
             exit 1
         fi
     done
-    actions="$(ros2 action list 2>/dev/null)"
-    services="$(ros2 service list 2>/dev/null)"
+    # ros2 CLI는 데몬이 걸리면 응답 없이 멈춤 → 5초 제한, 걸리면 데몬을 한 번 재시작
+    actions="$(timeout 5 ros2 action list 2>/dev/null)"; rc_a=$?
+    services="$(timeout 5 ros2 service list 2>/dev/null)"; rc_s=$?
+    if { [ "$rc_a" = 124 ] || [ "$rc_s" = 124 ]; } && [ -z "${DAEMON_RESTARTED:-}" ]; then
+        echo
+        echo -n "[fake_run] ros2 데몬 응답 없음 → 재시작 "
+        # 걸린 데몬은 'ros2 daemon stop' 요청에도 응답하지 않음 → 프로세스를 직접 종료 후 시작
+        timeout 5 ros2 daemon stop >/dev/null 2>&1 || pkill -9 -f _ros2_daemon 2>/dev/null
+        sleep 0.5
+        timeout 10 ros2 daemon start >/dev/null 2>&1
+        DAEMON_RESTARTED=1
+        continue
+    fi
     if grep -q '^/scan$' <<<"$actions" && grep -q '^/judge$' <<<"$actions" \
         && grep -q '^/place$' <<<"$actions" && grep -q '^/get_job_data$' <<<"$services"; then
         echo " 완료"
@@ -195,7 +206,7 @@ fi
 
 # 같은 이름의 노드가 둘 이상이면 멈춤 (다른 터미널·다른 PC가 같은 ROS_DOMAIN_ID에서 띄운 경우 포함)
 # → 관제가 엉뚱한 서버에 Goal을 보내 로봇이 예상과 다르게 움직이는 것을 막는다.
-DUPS="$(ros2 node list 2>/dev/null | grep -E '^/(database|scan|judge|place|control)$' | sort | uniq -d)"
+DUPS="$(timeout 5 ros2 node list 2>/dev/null | grep -E '^/(database|scan|judge|place|control)$' | sort | uniq -d)"
 if [ -n "$DUPS" ]; then
     echo "[fake_run] 같은 이름의 노드가 둘 이상 있습니다: $(echo "$DUPS" | tr '\n' ' ')" >&2
     echo "[fake_run] 다른 터미널의 노드를 끄거나(bash scripts/fake_stop.sh), 다른 PC와 ROS_DOMAIN_ID가 겹치는지 확인하세요." >&2

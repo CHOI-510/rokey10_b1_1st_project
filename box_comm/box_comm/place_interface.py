@@ -30,7 +30,12 @@ place_interface.py — 적재 파트 통신 계층
           # 남길 일이 있으면 report.log('집기 실패, 재시도 2/3', 'WARN') → 관제가 /event_log로 넘김
 
 실행
-  box_place/place.py의 main()에서 start(PlaceWork) 호출
+  box_place/place.py의 main()에서 start(PlaceWork) 호출   ← 기존 방식 (run 안에서 로봇을 직접 다룸, fake·시험 노드)
+
+실제 적재 코드 (11/17 분리)
+  box_place/place_main.py → start_algorithm(PlaceAlgorithm)
+  알고리즘은 box_place/place_algorithm.py(담당자 소유), 로봇 명령·정지 확인은 box_comm/dsr_io.py(관제),
+  실패 시 로봇 정지·예외 변환은 box_comm/algorithm.py(관제, 세 파트 공용)가 맡는다. 약속은 start_algorithm() 설명 참고.
 ================================================================
 """
 
@@ -154,6 +159,23 @@ def _finish_failed(goal_handle):
         goal_handle.canceled()
     else:
         goal_handle.abort()
+
+
+def start_algorithm(algo_cls, args=None):
+    """적재 알고리즘 실행 (box_place/place_main.py에서 호출). 연결은 box_comm/algorithm.py
+
+    알고리즘 약속 (box_place/place_algorithm.py, 담당자 소유)
+      class PlaceAlgorithm:
+          def __init__(self, node, robot): ...     # robot = box_comm.dsr_io.DsrIO (관제가 만들어 줌)
+          def place(self, result_class, poses, report) -> int:
+              # 로봇은 robot.movel / movej / grip / force_z / compliance_on / force_on / stop 으로만 움직인다
+              #   → 정지 확인·진행 알림이 자동 (알고리즘이 report.check / keepalive를 부를 필요 없음)
+              # report(stage), report.log(msg) 로 진행·로그를 알린다
+              # 성공하면 수량(int, U는 0), 실패하면 raise PartError('NO_SLOT' 등) 또는 아무 예외
+              #   (예외가 나면 box_comm이 로봇을 멈추고 PLACE_FAILED로 보냄. 이미 PartError면 그 코드 유지)
+    """
+    from box_comm.algorithm import AlgorithmWork
+    start(lambda node: AlgorithmWork(node, algo_cls, 'place', 'place_dsr', DEFAULT_ERROR), args)
 
 
 def start(work_cls, args=None):

@@ -80,61 +80,80 @@ ros2 run box_control control          # 마지막에 실행
 
 - 통신(Action/Service 서버, Result 보내기)은 `box_comm`이 처리합니다. **신경 쓰지 않아도 됩니다.**
 - 템플릿은 fake로 바로 동작합니다. **템플릿은 고치지 않습니다.** 관제가 인터페이스·공통 규칙을 바꾸면 템플릿을 업데이트하고 공지합니다 (3-4 참고).
-- 메인 코드는 템플릿을 복사해서 만듭니다. 파일 이름은 자유이며, 아래는 `scan.py`로 만드는 예입니다.
+- 메인 코드는 템플릿을 복사해서 **알고리즘 파일 + 실행 진입점** 두 개로 만듭니다 (11/17, 적재와 같은 방식). 아래는 탐지 예입니다.
 
 ```bash
 cd ~/ws/src/box_project/box_scan
-cp box_scan/scan_template.py box_scan/scan.py
+cp box_scan/scan_template.py box_scan/scan_algorithm.py      # ScanAlgorithm — 내 로직 (main()은 지워도 됨)
+cat > box_scan/scan_main.py <<'PY'
+from box_comm.scan_interface import start_algorithm
+from box_scan.scan_algorithm import ScanAlgorithm
+
+def main():
+    start_algorithm(ScanAlgorithm)
+PY
 # setup.py의 console_scripts에 한 줄 추가:
-#     'scan = box_scan.scan:main',
+#     'scan_main = box_scan.scan_main:main',
 cd ~/ws && colcon build --symlink-install --packages-select box_scan && source install/setup.bash
-ros2 run box_scan scan
+ros2 run box_scan scan_main
 ```
+
+| 파트 | 알고리즘 파일 (담당자) | 진입점 | 실제 예시 |
+| --- | --- | --- | --- |
+| 탐지 | `box_scan/scan_algorithm.py` (`ScanAlgorithm`) | `scan_main.py` | — |
+| 판별 | `box_judge/judge_algorithm.py` (`JudgeAlgorithm`) | `judge_main.py` | — |
+| 적재 | `box_place/place_algorithm.py` (`PlaceAlgorithm`) | `place_main.py` | 완성 (실제 로봇 검증) |
 
 - 메인 코드의 `[FAKE]` 부분을 실제 동작으로 바꿔 갑니다.
 - **템플릿 노드와 내 노드를 동시에 켜지 마세요.** 서버 이름(`/scan` 등)이 같아서 관제가 엉뚱한 결과를 받습니다.
 - 모션·측정 함수가 길어지면 **같은 패키지 안에 파일을 추가**해서 import해도 됩니다.
   예: `box_scan/box_scan/motion.py` → `scan.py`에서 `from box_scan.motion import ...`
 
-### 2-2. 지켜야 할 약속: `run()`의 입력과 출력
+### 2-2. 지켜야 할 약속: 알고리즘 클래스의 입력과 출력
 
-**탐지 — `scan.py`**
+세 파트 모두 같은 모양입니다. 생성자는 `(node, robot)`, 작업 함수는 `(..., poses, report)`.
+`robot`은 `box_comm`이 만들어 넣어 주는 로봇 객체(`box_comm/dsr_io.py`, 아래 2-3-1), `poses`는 Goal로 받은 DB 고정 좌표입니다.
+
+**탐지 — `scan_algorithm.py`**
 
 ```python
-from box_comm.scan_interface import start, PartError
+from box_comm.scan_interface import PartError
 
-class ScanWork:
-    def __init__(self, node): ...
-    def run(self, report) -> bool:
+class ScanAlgorithm:
+    def __init__(self, node, robot): ...
+    def scan(self, poses, report) -> bool:
         # 스캔 → 물품 감지 → 픽업 → 측정존에 두기 → 홈 복귀
         # 물품을 측정존에 두었으면 True, 작업공간에 물품이 없으면 False
-
-def main():
-    start(ScanWork)
 ```
 
-**판별 — `judge.py`**
+**판별 — `judge_algorithm.py`**
 
 ```python
-def run(self, specs, report) -> str:
-    # specs = [{'class_id': 'A', 'width_mm': 40.0, 'depth_mm': 40.0,
-    #           'height_mm': 40.0, 'weight_g': 100.0}, ...]
-    # 측정 후 'A' / 'B' / 'C' / 'D' 중 하나를 반환
-    # 어느 기준에도 맞지 않으면 'U' (미분류, v0.5)
+class JudgeAlgorithm:
+    def __init__(self, node, robot): ...
+    def judge(self, specs, poses, report) -> str:
+        # specs = [{'class_id': 'A', 'width_mm': 40.0, 'depth_mm': 40.0,
+        #           'height_mm': 40.0, 'weight_g': 100.0}, ...]
+        # 측정 후 'A' / 'B' / 'C' / 'D' 중 하나를 반환
+        # 어느 기준에도 맞지 않으면 'U' (미분류, v0.5)
 ```
 
-**적재 — `place.py`**
+**적재 — `place_algorithm.py`**
 
 ```python
-def run(self, result_class, report) -> int:       # v0.4
-    # result_class = 'B'
-    # 매번 1단부터 박스를 쥔 채 내려가며 놓을 자리를 찾고(4층 높이에서 닿으면 다음 단),
-    # 놓은 위치로 잰 수량을 반환: count_from_position(단, 층)  예: 2단 2층 → 5
-    # 단·층·z는 관제에 보내지 않음 (자기 로그로만 남김)
-    # 구역 1단 x, y는 self.poses['place_zones']['B'] (DB 값)
-    # 단 간격·z·박스 높이는 이 파일 안에서만 다룸
-    # result_class = 'U' (미분류, v0.5): 미분류 투하 위치에 놓기만 하고 0을 반환 (수량은 관제가 셈)
+class PlaceAlgorithm:
+    def __init__(self, node, robot): ...
+    def place(self, result_class, poses, report) -> int:       # v0.4
+        # result_class = 'B'
+        # 매번 1단부터 박스를 쥔 채 내려가며 놓을 자리를 찾고(최상층 위 높이에서 닿으면 다음 단),
+        # 놓은 위치로 잰 수량을 반환: count_from_position(단, 층)  예: 2단 2층 → 5
+        # 단·층·z는 관제에 보내지 않음 (자기 로그로만 남김)
+        # 구역 1단 x, y는 poses['place_zones']['B'] (DB 값)
+        # result_class = 'U' (미분류, v0.5): 미분류 투하 위치에 놓기만 하고 0을 반환 (수량은 관제가 셈)
 ```
+
+> 예전 방식(`class ScanWork: run(self, report)` + `start(ScanWork)`, 좌표는 `self.poses`)도 아직 동작합니다.
+> `box_control`의 fake·`test_*_motion` 노드가 이 방식입니다. 새로 짜는 메인 코드는 위 알고리즘 방식으로 합니다.
 
 **DB — `database.py`**
 
@@ -155,7 +174,7 @@ def get_fixed_poses(self) -> dict:         # DB에 저장된 고정 좌표 (기�
 
 ### 2-2-1. Feedback stage (필수)
 
-`run()` 안에서 단계가 바뀔 때마다 `report('stage')`를 호출합니다. 값은 아래 목록에서만 씁니다. (`box_comm/common.py`의 `STAGES`)
+작업 함수(`scan`·`judge`·`place`) 안에서 단계가 바뀔 때마다 `report('stage')`를 호출합니다. 값은 아래 목록에서만 씁니다. (`box_comm/common.py`의 `STAGES`)
 목록에 없는 값을 보내면 경고 로그가 남습니다. 새 stage가 필요하면 관제에게 요청합니다.
 
 **DB·UI에 남길 일은 `report.log()`** 로 보냅니다. 관제가 받아서 `/event_log` 토픽으로 DB에 넘깁니다. (파트가 DB에 직접 보내지 않음)
@@ -207,26 +226,57 @@ raise PartError('GRASP_FAILED', '두 번 시도했지만 못 집음')
 | `MEASURE_FAILED` | 측정 실패 |
 | `NO_SLOT` | 적재할 칸 없음 |
 | `PLACE_FAILED` | 적재 실패 |
-| `ROBOT_SETUP_FAILED` | 기본 TCP·툴 적용 실패 (`box_comm`이 `run()` 전에 보냄, 파트 코드에서는 쓰지 않음) |
-| `CANCELED` | 관제가 정지를 요청함 (`box_comm`이 `report()`에서 자동으로 냄, 파트 코드에서는 쓰지 않음) |
+| `ROBOT_SETUP_FAILED` | 기본 TCP·툴 적용 실패 (`box_comm`이 작업 함수 전에 보냄, 파트 코드에서는 쓰지 않음) |
+| `CANCELED` | 관제가 정지를 요청함 (`box_comm`이 robot 명령·`report()`에서 자동으로 냄, 파트 코드에서는 쓰지 않음) |
 
 - **등록된 코드만** 쓸 수 있습니다. 새 코드가 필요하면 관제에게 요청합니다.
 - 예상하지 못한 예외가 나도 `box_comm`이 잡아서 Result를 보냅니다. 관제가 멈추지 않습니다.
+  알고리즘 방식이면 그 전에 로봇이 움직였거나 힘 제어 중이었을 때 **로봇을 멈춥니다**(힘·순응제어 해제 + `move_stop`). 코드는 파트 기본값(탐지 `GRASP_FAILED`, 판별 `MEASURE_FAILED`, 적재 `PLACE_FAILED`).
 - DB는 `PartError` 없이 아무 예외나 raise하면 `success=False`로 전달됩니다.
 
-**정지 (비상정지·로봇 이상 감지)**: 관제가 정지를 요청하면 로봇에 `move_stop`을 보내고 내 Goal을 취소합니다. 내 코드는 다음 `report(stage)` 또는 `report.check()`에서 `PartError('CANCELED')`로 빠져나옵니다.
+**정지 (비상정지·로봇 이상 감지)**: 관제가 정지를 요청하면 로봇에 `move_stop`을 보내고 내 Goal을 취소합니다.
+알고리즘 방식에서는 **`self.robot`의 명령이 보내기 직전에 정지 요청을 확인**해서 `PartError('CANCELED')`로 빠져나옵니다. `report.check()`를 넣을 필요가 없습니다. `report(stage)`에서도 확인합니다.
 
 ```python
 report('moving')
-self.dr.movel(above)          # 정지 요청이 오면 두산이 이 동작을 멈춤
-report.check()                # ← 동작 사이사이에 넣으면 다음 동작을 보내기 전에 멈춤
-self.dr.movel(target)
+self.robot.movel(above, vel=60, acc=100)     # 보내기 전에 정지 확인 → 정지 요청이면 여기서 CANCELED
+self.robot.movel(target, vel=60, acc=100)
 ```
 
-- 힘 제어 하강처럼 **오래 걸리는 루프**에서는 매 반복 `report.keepalive()`를 부릅니다 (정지 확인 + 1초에 한 번 진행 알림, 로그 없음). 안 부르면 관제 진행 감시(`progress_timeout_sec`)가 멈춘 것으로 판단할 수 있습니다. 예: `box_place/place_main.py`의 `_keepalive()`
+- 힘 제어 하강처럼 **오래 걸리는 루프**는 매 반복 `self.robot.force_z()`를 읽으면 됩니다. 1초에 한 번 관제에 진행 알림(keepalive)이 자동으로 갑니다. 힘을 안 읽는 긴 대기 루프라면 `report.keepalive()`를 부릅니다.
 - `except PartError`로 잡아서 계속 진행하지 마세요. 잡아야 한다면 정리(그리퍼 열기 등)만 하고 다시 `raise` 합니다.
 - `except Exception:`으로 모든 예외를 삼키는 코드도 `CANCELED`를 막으니 피합니다.
 - 한 번에 Goal 하나만 실행됩니다. 실행 중에 온 새 Goal은 `box_comm`이 거절합니다.
+
+### 2-3-1. 파트 코드 구조와 로봇 명령 (11/17, 세 파트 공통)
+
+알고리즘(담당자)과 관제 연동을 파일로 나눴습니다. **서로 다른 파일만 고칩니다.**
+
+| 파일 | 소유 | 하는 일 |
+| --- | --- | --- |
+| `box_xxx/xxx_algorithm.py` | 파트 | 내 로직 전부. **관제 코드 없음** (적재는 설정 `config/place_config.json`도 파트 소유) |
+| `box_xxx/xxx_main.py` | 파트 | 실행 진입점 한 줄 `start_algorithm(XxxAlgorithm)` |
+| `box_comm/dsr_io.py` | 관제 | 로봇 명령 모음 `DsrIO`. **명령 전에 정지 확인, `force_z()`에서 1초마다 keepalive** |
+| `box_comm/algorithm.py` | 관제 | 알고리즘에 `robot`·`poses`를 넣고, 실패하면 로봇 정지 + `PartError` 변환 |
+| `box_comm/xxx_interface.py` | 관제 | Action 서버, TCP·툴 확인, 좌표 꺼내기, Result 만들기 |
+
+`self.robot`이 제공하는 명령 (좌표는 BASE 기준 mm·deg)
+
+| 명령 | 내용 |
+| --- | --- |
+| `movel(pose6, vel, acc, tol=2.0)` | 직선 이동 후 도달 확인 (오차가 tol mm를 넘으면 예외) |
+| `movej(joints6, vel, acc)` | 관절 이동 (예: `poses['home_j']`) |
+| `grip(opened, wait_s)` | RG2 열기(`True`)/닫기(`False`) 후 대기 |
+| `pose()` | 현재 TCP `[x, y, z, a, b, c]` |
+| `force_z()` | 툴 외력 Fz [N] — 무게 측정·접촉 감지 (+ 진행 알림) |
+| `compliance_on(stx)` / `force_on(fd, dir, time)` | 순응제어 / 목표 힘 (상대 모드) |
+| `stop(emergency=False)` | 힘·순응제어 해제 (+ `emergency`면 `move_stop`) 후 멈춤 확인 |
+| `ok()` | ROS가 살아 있는지 (긴 루프 조건) |
+
+- 로봇은 `self.robot`으로만 움직입니다. `DSR_ROBOT2`를 직접 부르면 정지 확인이 빠집니다. **필요한 명령이 없으면 관제에게 요청**합니다(예: 그리퍼 폭 읽기, 회전 이동).
+- 두산 패키지가 없는 PC에서는 `robot`이 `None`으로 들어옵니다. 템플릿의 FAKE 동작은 로봇을 쓰지 않으니 그대로 돕니다. 서비스 준비 확인도 첫 명령 때 하므로 bringup 없이 FAKE를 돌려도 기다리지 않습니다.
+- 약속(작업 함수 인자·반환, `robot` 명령 목록)을 바꿀 때만 관제와 합의합니다.
+- 적재가 완성 예시입니다: `box_place/box_place/place_algorithm.py` (힘 제어 하강 `_descend`, 상태 파일, 미분류 투하).
 
 ### 2-4. 그 밖의 규칙
 
@@ -237,45 +287,41 @@ self.dr.movel(target)
 
 ### 2-5. 두산 로봇 연동
 
-**TCP·툴은 신경 쓰지 않아도 됩니다.** Goal을 받으면 `run()` 직전에 `box_comm`이 기본 TCP(`GripperDA_v1`)와 툴(`Tool Weight`)을 확인하고, 다르면 적용합니다. 관제 없이 혼자 `send_goal`로 테스트할 때도 똑같이 적용됩니다.
+**TCP·툴은 신경 쓰지 않아도 됩니다.** Goal을 받으면 작업 함수 직전에 `box_comm`이 기본 TCP(`GripperDA_v1`)와 툴(`Tool Weight`)을 확인하고, 다르면 적용합니다. 관제 없이 혼자 `send_goal`로 테스트할 때도 똑같이 적용됩니다.
 
 - 실제 로봇·시연에서는 `--ros-args -p robot_setup:=on`으로 실행합니다. 적용에 실패하면 로봇을 움직이지 않고 `ROBOT_SETUP_FAILED`로 끝납니다.
 - 자기 동작 안에서 다른 TCP가 필요하면 바꿔도 됩니다. (예: 무게 측정용 기준점) 다음 Goal에서 기본값으로 돌아갑니다.
   단, **로봇에 등록된 이름**이어야 합니다. 등록되지 않은 이름은 조용히 실패해서 플랜지 기준으로 움직입니다. 새 TCP가 필요하면 관제에게 요청하세요.
 
-**공통 좌표(HOME, 측정존, 적재 구역)는 `self.poses`로 읽습니다.** 직접 숫자를 적지 않습니다.
-관제가 DB 값을 Goal에 실어 보내면, `box_comm`이 Goal을 받을 때마다 작업 클래스의 `self.poses`에 넣어 줍니다.
+**공통 좌표(HOME, 측정존, 적재 구역)는 작업 함수의 `poses` 인자로 받습니다.** 직접 숫자를 적지 않습니다.
+관제가 DB 값을 Goal에 실어 보내면, `box_comm`이 Goal마다 작업 함수에 넘겨 줍니다.
 
 ```python
-def run(self, report):
-    home = self.poses['home_j']          # HOME 관절 각도 [deg]
-    zone = self.poses['measure_zone']    # 측정존 x, y, z [mm] (None 또는 (0,0,0)이면 미설정 → 움직이지 말 것)
-    xy = self.poses['place_zones']['B']  # (적재) B 구역 1단 x, y [mm] (None이면 미설정)
-    self.dr.movej(home)
+def scan(self, poses, report):
+    home = poses['home_j']               # HOME 관절 각도 [deg]
+    zone = poses['measure_zone']         # 측정존 x, y, z [mm] (None 또는 (0,0,0)이면 미설정 → 움직이지 말 것)
+    # (적재) poses['place_zones']['B']   # B 구역 1단 x, y [mm] (None이면 미설정)
+    self.robot.movej(home, vel=30, acc=30)
 ```
 
 - 혼자 `send_goal`로 테스트하면 Goal에 좌표가 없어서 `common.py` 기본값이 들어옵니다(경고 로그).
-- 템플릿의 `_measure_zone_xyz()`가 미설정 여부까지 확인해 줍니다.
-- 좌표를 `__init__`에서 변수에 저장해 두지 마세요. Goal마다 DB 값으로 덮어써지므로 `run()` 안에서 매번 `self.poses`로 읽습니다.
+- 템플릿의 `_measure_zone()`이 미설정 여부까지 확인해 줍니다.
+- 좌표를 `__init__`에서 변수에 저장해 두지 마세요. Goal마다 DB 값이 바뀔 수 있으므로 작업 함수 안에서 매번 `poses`로 읽습니다.
 
-- `run()` 안에서 `DSR_ROBOT2` 함수(`movej`, `movel` 등)를 **그대로 호출해도 됩니다.** `box_comm`이 파트 노드를 전용 executor로 돌리기 때문에, 두산 함수가 내부에서 응답을 기다려도 충돌(`Executor is already spinning`)하지 않습니다.
-- 두산 로봇 연결은 **`box_comm.robot.connect_dsr()`로** 합니다. 두산 전용 노드를 따로 만들어 연결해 줍니다.
+- 두산 로봇 연결(`connect_dsr()`, 두산 전용 노드 분리, executor)은 **`box_comm`이 대신 합니다.** 알고리즘 방식에서는 신경 쓰지 않아도 됩니다.
+- 예전 방식(`run()` 안에서 `self.dr.movel` 직접 호출)을 쓸 때만 아래가 해당됩니다.
   ```python
   from box_comm.robot import connect_dsr
 
   class ScanWork:
       def __init__(self, node):
           self.dr, self.dsr_node = connect_dsr('scan_dsr')   # 판별 'judge_dsr', 적재 'place_dsr'
-
-      def run(self, report):
-          self.dr.movej(HOME_J)
-          self.dr.movel([0, 0, 50, 0, 0, 0], mod=1)
   ```
   ⚠ 클래스 안에서 `DR_init.__dsr__node = ...`를 직접 쓰지 마세요. 파이썬이 `__`로 시작하는 이름을 클래스 이름이 붙은 다른 이름으로 바꿔 버려서, 두산 쪽이 노드를 찾지 못합니다(`'NoneType' object has no attribute 'create_client'`).
 - `box_comm`이 만든 노드(`self.node`)와 **로봇 제어용 노드를 분리**합니다. (`connect_dsr()`가 해 줍니다)
   `DSR_ROBOT2` 함수는 등록된 노드를 내부에서 spin하므로, 같은 노드를 쓰면 충돌할 수 있습니다.
 - 노드 이름은 파트별로 다르게 합니다. (`scan_dsr`, `judge_dsr`, `place_dsr`)
-- **실제로 움직이는 완성 예시**: `box_control/box_control/test_scan_motion.py` — 가상·실제 로봇에서 검증된 코드입니다. 이 파일의 구조(`connect_dsr` → `run()` 안에서 `movej`/`movel` → `report()`)를 그대로 따라 하면 됩니다.
+- **실제로 움직이는 완성 예시**: 알고리즘 방식은 `box_place/box_place/place_algorithm.py`(실제 로봇에서 적재 검증). 예전 방식 예시는 `box_control/box_control/test_scan_motion.py`입니다.
 
 ### 2-6. 단독 테스트
 
@@ -305,7 +351,7 @@ ros2 service call /update_inventory box_interfaces/srv/UpdateInventory \
 ```
 
 관제와 연결해 보려면 내 노드만 실제로, 나머지는 fake로 띄웁니다.
-예: `box_scan scan`(내 노드) + `fake_judge` + `fake_place` + `fake_database` + `control`
+예: `box_scan scan_main`(내 노드) + `fake_judge` + `fake_place` + `fake_database` + `control`
 
 ---
 
@@ -378,7 +424,7 @@ source install/setup.bash
 
 - `box_comm`의 파이썬 내용만 바뀐 경우, `git pull`만 해도 반영됩니다.
 - `box_interfaces`가 바뀌었거나 파일이 추가된 경우에는 빌드가 필요합니다.
-- `run()`의 입력/출력 형식이 바뀌는 변경은 관제가 미리 알리며, 이때는 해당 파트도 코드를 수정합니다.
+- 작업 함수(`scan`·`judge`·`place`)의 입력/출력 형식이 바뀌는 변경은 관제가 미리 알리며, 이때는 해당 파트도 코드를 수정합니다.
 
 **템플릿이 바뀌었을 때** (공지에 "템플릿 업데이트"가 있으면)
 

@@ -3,14 +3,15 @@
 place_template.py — 적재 템플릿 (관제 관리, 참고용)
 ================================================================
   이 파일은 직접 수정하지 않는다. 담당(정수현)은 이 파일을 참고해 자기 메인 코드를 만든다.
-  실제 로봇 구현: box_place/place_main.py (+ box_place/config/place_config.json)
+  실제 로봇 구현: box_place/place_algorithm.py (+ config/place_config.json, 진입점 place_main.py)
+    이 템플릿과 같은 약속(PlaceAlgorithm.place)을 쓴다. 통신·정지·실패 처리는 box_comm(관제)
   관제가 인터페이스·공통 규칙을 바꾸면 이 파일을 업데이트한다.
   pull 후 바뀐 부분 확인:  git log -p -- box_place/box_place/place_template.py
   → 바뀐 내용을 자기 메인 코드에 직접 반영한다.
   실행 비교: ros2 run box_place place_template  (메인 코드 노드와 동시에 켜지 말 것 — 같은 서버 이름이라 결과가 섞임)
 ================================================================
 적재 규칙 (v0.4, box_comm/common.py STACK)
-  - 구역 하나에 같은 클래스만. 구역의 '1단' x, y는 DB 값 → self.poses['place_zones'][class]
+  - 구역 하나에 같은 클래스만. 구역의 '1단' x, y는 DB 값 → poses['place_zones'][class]
   - 1단(첫 자리)에 1층부터 STACK['levels']층(현재 3)까지, 다 차면 다음 자리(2단)에 다시 1층부터
     다음 자리 위치 = 1단 x + (단-1) * TIER_PITCH_X, y는 같음 (현재 −x 방향 80mm, place_config의 slot_dx_mm)
   - 놓을 자리는 '재고 숫자'로 정하지 않고 실제로 확인한다 (매번 1단부터):
@@ -23,20 +24,28 @@ place_template.py — 적재 템플릿 (관제 관리, 참고용)
   - 한계: 앞 단은 모두 찼다고 보고 센다. 안쪽 단에서 박스를 빼면 그 빈자리부터 다시 채우며
           수량은 '놓은 위치' 기준으로 나온다 (실제보다 적게 나올 수 있음).
 
-지킬 약속은 하나:
-  run(result_class, report) -> int
+지킬 약속:
+  PlaceAlgorithm(node, robot)
+    - robot: 관제가 만들어 넣어 주는 로봇 객체 (box_comm/dsr_io.py DsrIO). 두산 패키지가 없으면 None
+      로봇은 robot으로만 움직인다 → 명령 전에 관제 정지 요청을 자동으로 확인한다
+        robot.movel([x, y, z, a, b, c], vel=60, acc=100) / robot.movej(home, vel, acc)
+        robot.grip(opened, wait_s) / robot.pose() / robot.force_z()  (force_z는 진행 알림 포함)
+        robot.compliance_on(stx) / robot.force_on(fd, dir) / robot.stop()   힘 제어 하강
+      필요한 명령이 없으면 관제에게 요청 (DSR_ROBOT2를 직접 부르면 정지 확인이 빠진다)
+  place(result_class, poses, report) -> int
     - result_class: 'A' / 'B' / 'C' / 'D' / 'U'
+    - poses: {'home_j': [6], 'measure_zone': [x, y, z], 'place_zones': {'A': [x, y], ...}} — Goal의 DB 값
     - U(미분류, v0.5): 미분류 투하 위치에 놓기만 하고 0을 반환 (쌓지 않음, 수량은 관제가 셈)
-      실제 코드: place_main.py의 _place_unclassified (위치는 place_config.json unclassified)
+      실제 코드: place_algorithm.py의 _place_unclassified (위치는 place_config.json unclassified)
     - 반환: 적재 후 그 구역의 수량 (놓은 단·층으로 계산 — count_from_position(단, 층))
     - 단 간격·접근 높이·바닥 z·박스 높이는 이 파일 안에서만 처리 (관제·DB는 모름)
     - 모든 단이 차면 raise PartError('NO_SLOT', ...), 그 밖의 실패는 PartError('PLACE_FAILED', ...)
+      또는 아무 예외 (box_comm이 로봇을 멈추고 PLACE_FAILED로 보냄)
     - 단계가 바뀔 때마다 report(stage)를 반드시 호출
     - 기록할 일이 있으면 report.log('메시지', 'INFO'/'WARN'/'ERROR') — 관제가 /event_log로 DB·UI에 넘김
       예: report.log('집기 실패, 재시도 2/3', 'WARN'), report.log('정렬 완료 (90° 회전)')
       진행만 알리는 report(stage)는 로그로 올라가지 않는다
-    - 정지: 관제가 정지를 요청하면 다음 report(stage) / report.check()에서 PartError('CANCELED')가 난다.
-      잡지 말고 그대로 두면 된다. 로봇 동작(movel 등) 사이사이에 report.check()를 넣으면 더 빨리 멈춘다.
+    - 정지: report.check()를 부를 필요 없다 (robot 명령이 대신 확인). PartError('CANCELED')는 잡지 말 것
       stage: 'picking' → 'moving' → 'placing'  (box_comm/common.py STAGES)
 
 [FAKE] 표시된 부분을 실제 로봇 동작으로 바꾸면 된다.
@@ -53,15 +62,15 @@ place_template.py — 적재 템플릿 (관제 관리, 참고용)
 
 import time
 
-from box_comm.place_interface import PartError, STACK, count_from_position, start
+from box_comm.place_interface import PartError, STACK, count_from_position, start_algorithm
 
 # ----------------------------------------------------------------------
 # 고정 좌표 (HOME, 측정존, 적재 구역 1단 x,y) — 기준은 DB. 숫자를 직접 적지 않는다.
-#   관제가 DB 값을 Goal에 실어 보내고, interface가 self.poses에 넣어 준다 (Goal마다 갱신).
-#     self.poses['home_j']              HOME 관절 각도 [deg]
-#     self.poses['measure_zone']        측정존 x, y, z [mm, base]   (None = 미설정)
-#     self.poses['place_zones']['A']    A 구역 1단 x, y [mm, base]  (None = 미설정)
-#   좌표는 __init__에서 저장해 두지 말고, run() 안에서 매번 self.poses로 읽는다.
+#   관제가 DB 값을 Goal에 실어 보내고, place()의 poses 인자로 들어온다 (Goal마다 갱신).
+#     poses['home_j']              HOME 관절 각도 [deg]
+#     poses['measure_zone']        측정존 x, y, z [mm, base]   (None = 미설정)
+#     poses['place_zones']['A']    A 구역 1단 x, y [mm, base]  (None = 미설정)
+#   좌표는 __init__에서 저장해 두지 말고, place() 안에서 매번 poses로 읽는다.
 # ----------------------------------------------------------------------
 
 # ----------------------------------------------------------------------
@@ -79,22 +88,18 @@ BOX_HEIGHT = {           # 놓는 방향 기준 박스 높이 (판별이 위상�
 LEVEL_TOL = 0.35         # 층 판단 허용 오차 (박스 높이 대비 비율). 넘으면 기울어짐 등으로 보고 경고
 PLACE_RPY = [0.0, 180.0, 0.0]   # 적재 자세 a, b, c [deg] — 실제 그리퍼 방향에 맞게
 
+SPEED, ACC = 60.0, 100.0         # 직선 이동 속도 [mm/s], 가속 [mm/s²]
+HOME_VEL = 30.0                  # 관절 이동 속도 [deg/s]
+GRIP_WAIT = 1.5                  # 그리퍼 동작 대기 [s]
+
 LEVELS = STACK['levels']         # 층 수 (common.py, 전 파트 공통 — 현재 3)
 MAX_TIERS = STACK['max_tiers']   # 구역당 단 수 (common.py, 전 파트 공통)
 
 
-class PlaceWork:
-    def __init__(self, node):
-        self.node = node
+class PlaceAlgorithm:
+    def __init__(self, node, robot):
         self.log = node.get_logger()
-
-        # ---- 두산 로봇 사용 시 ----
-        # 반드시 box_comm의 connect_dsr()로 연결한다. (클래스 안에서 DR_init.__dsr__node = ...를
-        # 직접 쓰면 파이썬 이름 변경 규칙 때문에 두산 쪽이 노드를 못 찾는다)
-        # from box_comm.robot import connect_dsr      ← 파일 맨 위 import에 추가
-        # self.dr, self.dsr_node = connect_dsr('place_dsr')
-        # 이후 self.dr.movej(self.poses['home_j']), self.dr.movel([...]) 처럼 사용
-        # TCP·툴(set_tcp/set_tool)은 box_comm이 Goal마다 자동으로 맞추므로 부르지 않아도 된다.
+        self.robot = robot                 # 관제가 넣어 줌 (None이면 두산 패키지 없이 FAKE로만 실행)
 
         # [FAKE 전용] 실제 구현 시 삭제 — 구역별로 쌓인 개수를 메모리에 흉내 냄
         node.declare_parameter('fake_delay_sec', 1.0)
@@ -106,24 +111,24 @@ class PlaceWork:
     # ------------------------------------------------------------------
     # 약속된 함수
     # ------------------------------------------------------------------
-    def run(self, result_class, report) -> int:
+    def place(self, result_class, poses, report) -> int:
+        home = poses['home_j']
         if result_class == 'U':                    # 미분류: 놓기만 하고 0 (v0.5)
             report('picking')
-            self.pick_from_measure_zone()
+            self.pick_from_measure_zone(poses)
             report('moving')
             report('placing')
-            report.check()
             self.log.info('[place] (FAKE) 미분류 투하 위치에 놓음 → 0 반환')
             report.log('미분류 투하 완료')
-            self.go_home()
+            self.go_home(home)
             return 0
-        x1, y = self._zone_xy(result_class)
+        x1, y = self._zone_xy(poses, result_class)
         h = BOX_HEIGHT[result_class]
         self.log.info(f'[place] {result_class} 구역 1단 x={x1}, y={y}, 박스 높이 {h}mm')
 
         # 1. 측정존 물품 픽업
         report('picking')
-        self.pick_from_measure_zone()
+        self.pick_from_measure_zone(poses)
 
         # 2. 구역 1단 위로 이동
         report('moving')
@@ -132,7 +137,6 @@ class PlaceWork:
         # 3. 1단부터 내려가며 놓을 자리 찾기
         report('placing')
         for tier in range(1, MAX_TIERS + 1):
-            report.check()                         # 정지 요청이면 여기서 멈춤 (로봇 명령 전에)
             x = x1 + (tier - 1) * TIER_PITCH_X
             if tier > 1:
                 self.move_above(x, y)
@@ -147,7 +151,7 @@ class PlaceWork:
 
             self.release(result_class, tier)
             self.move_above(x, y)
-            self.go_home()
+            self.go_home(home)
             count = count_from_position(tier, level)
             report.log(f'{result_class} {tier}단 {level}층에 적재 → 수량 {count}')
             self.log.info(f'[place] {result_class} {tier}단 {level}층에 적재 '
@@ -176,23 +180,24 @@ class PlaceWork:
     # ------------------------------------------------------------------
     # [FAKE] 아래를 실제 로봇 동작으로 교체
     # ------------------------------------------------------------------
-    def pick_from_measure_zone(self):
-        zone = self._measure_zone_xyz()   # 실제: movel([*zone, *PLACE_RPY]) → 그리퍼 닫기
+    def pick_from_measure_zone(self, poses):
+        zone = self._measure_zone_xyz(poses)
+        # 실제: self.robot.grip(True, GRIP_WAIT); self.robot.movel([*zone, *PLACE_RPY], vel=SPEED, acc=ACC)
+        #       self.robot.grip(False, GRIP_WAIT)
         time.sleep(self._delay * 0.5)
 
     def move_above(self, x, y):
-        # 실제: self.dr.movel([x, y, APPROACH_Z, *PLACE_RPY])
+        # 실제: self.robot.movel([x, y, APPROACH_Z, *PLACE_RPY], vel=SPEED, acc=ACC)
         time.sleep(self._delay * 0.3)
 
     def descend_until_contact(self, result_class, tier) -> float:
         """박스를 쥔 채 내려가다가 더 내려가지 않는 지점의 TCP z를 돌려준다.
-        실제 구현 예 (DSR):
-          self.dr.task_compliance_ctrl([3000, 3000, 500, 200, 200, 200])     # z만 부드럽게
-          self.dr.set_desired_force([0, 0, -15, 0, 0, 0], [0, 0, 1, 0, 0, 0], mod=DR_FC_MOD_REL)
-          while not self.dr.check_force_condition(DR_AXIS_Z, min=10): ...     # 닿을 때까지 대기
-          z = self.dr.get_current_posx()[0][2]
-          self.dr.release_force(); self.dr.release_compliance_ctrl()
-          또는 movel로 조금씩 내리면서 외력(get_tool_force) 확인
+        실제 구현 예 (robot = DsrIO, 정지 확인·진행 알림 자동) — 완성 코드는 place_algorithm.py의 _descend
+          self.robot.compliance_on([3000, 3000, 500, 200, 200, 200])          # z만 부드럽게
+          self.robot.force_on([0, 0, -15, 0, 0, 0], [0, 0, 1, 0, 0, 0])      # 아래로 15N
+          while self.robot.force_z() - base < 6.0: ...                        # 닿을 때까지 (매 반복 진행 알림)
+          self.robot.stop()                                                   # 힘·순응제어 해제
+          z = self.robot.pose()[2]
         """
         stack = self._fake_stack[result_class]                 # [FAKE]
         below = stack[tier - 1] if tier - 1 < len(stack) else 0
@@ -200,30 +205,30 @@ class PlaceWork:
         return FLOOR_Z + below * BOX_HEIGHT[result_class]
 
     def release(self, result_class, tier):
-        # 실제: 그리퍼 열기 (result_class, tier는 FAKE 스택 갱신용)
+        # 실제: self.robot.grip(True, GRIP_WAIT) (result_class, tier는 FAKE 스택 갱신용)
         stack = self._fake_stack[result_class]                 # [FAKE]
         while len(stack) < tier:
             stack.append(0)
         stack[tier - 1] += 1
         time.sleep(self._delay * 0.2)
 
-    def go_home(self):
-        # 실제: self.dr.movej(self.poses['home_j'])
+    def go_home(self, home):
+        # 실제: self.robot.movej(home, vel=HOME_VEL, acc=HOME_VEL)
         time.sleep(self._delay * 0.3)
 
     # ------------------------------------------------------------------
     # 좌표 헬퍼
     # ------------------------------------------------------------------
-    def _zone_xy(self, result_class):
+    def _zone_xy(self, poses, result_class):
         """구역 1단 x, y (Goal로 받은 DB 값). 없으면 움직이지 않고 실패."""
-        xy = (self.poses.get('place_zones') or {}).get(result_class)
+        xy = (poses.get('place_zones') or {}).get(result_class)
         if xy is None:
             raise PartError('PLACE_FAILED', f'{result_class} 구역 좌표 없음 (DB place_zones 확인)')
         return float(xy[0]), float(xy[1])
 
-    def _measure_zone_xyz(self):
+    def _measure_zone_xyz(self, poses):
         """측정존 x, y, z (Goal로 받은 DB 값). 미설정이면 실제 동작에서는 움직이면 안 된다."""
-        zone = self.poses.get('measure_zone')
+        zone = poses.get('measure_zone')
         if zone is None or all(abs(v) < 1e-6 for v in zone):     # (0, 0, 0)도 미설정으로 본다
             if not getattr(self, '_zone_warned', False):
                 self.log.warn('측정존 좌표가 아직 미설정 — '
@@ -239,7 +244,7 @@ def _layout(n):
 
 
 def main():
-    start(PlaceWork)
+    start_algorithm(PlaceAlgorithm)
 
 
 if __name__ == '__main__':

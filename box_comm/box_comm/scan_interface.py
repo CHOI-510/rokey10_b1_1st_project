@@ -26,6 +26,11 @@ scan_interface.py — 탐지 파트 통신 계층
 
 실행
   box_scan/scan.py의 main()에서 start(ScanWork) 호출
+  → 기존 방식 (run 안에서 self.poses·로봇을 직접 다룸, box_control의 fake·test_*_motion 노드가 씀)
+
+권장 (11/17): 알고리즘 방식 — box_scan/scan.py의 main()에서 start_algorithm(ScanAlgorithm)
+  알고리즘은 담당자 코드(관제 코드 없음), 로봇 명령·정지 확인은 box_comm/dsr_io.py,
+  실패 시 로봇 정지·예외 변환은 box_comm/algorithm.py. 약속은 start_algorithm() 설명 참고.
 ================================================================
 """
 
@@ -131,6 +136,24 @@ def _finish_failed(goal_handle):
         goal_handle.canceled()
     else:
         goal_handle.abort()
+
+
+def start_algorithm(algo_cls, args=None):
+    """scan 알고리즘 실행 (box_scan/scan.py의 main()에서 호출). 연결은 box_comm/algorithm.py
+
+    알고리즘 약속 (담당자 소유, 관제 코드 없음)
+      class ScanAlgorithm:
+          def __init__(self, node, robot): ...     # robot = box_comm.dsr_io.DsrIO (관제가 만들어 줌, 없으면 None)
+          def scan(self, poses, report) -> bool:
+              # poses = {'home_j': [6], 'measure_zone': [x, y, z], ...}  (Goal의 DB 값)
+              # 로봇은 robot.movel / movej / grip / force_z / compliance_on / force_on / stop 으로만 움직인다
+              #   → 명령 전 정지 확인·진행 알림이 자동 (report.check / keepalive를 부를 필요 없음)
+              # report(stage), report.log(msg) 로 진행·로그를 알린다
+              # 물품을 측정존에 두고 HOME까지 끝났으면 True, 작업공간에 물품이 없으면 False
+              # 실패하면 raise PartError('GRASP_FAILED', '이유') 또는 아무 예외 (→ 로봇 정지 후 GRASP_FAILED)
+    """
+    from box_comm.algorithm import AlgorithmWork
+    start(lambda node: AlgorithmWork(node, algo_cls, 'scan', 'scan_dsr', DEFAULT_ERROR), args)
 
 
 def start(work_cls, args=None):
