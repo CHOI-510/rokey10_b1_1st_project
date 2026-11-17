@@ -292,7 +292,8 @@ GRIPPER = {
     'open_width_mm': 100.0,      # 기본 여는 패드 간격 (grip(opened=True))
     'open_force_n': 20.0,        # 여는 힘
     'grip_force_n': 20.0,        # 기본 잡는 힘 (grip(opened=False)). RG2 최대 40N
-    'empty_raw_mm': 1.0,         # 닫은 뒤 원시 폭이 이 이하면 빈손
+    'empty_width_mm': 5.0,       # 닫은 뒤 패드 사이 간격(보정 폭)이 이 이하면 빈손. 원시 폭은 패드 두께(~10mm) 때문에
+                                 # 빈손이어도 0이 안 됨 → 원시 폭으로 판정하면 안 됨 (11/17 실물에서 확인). 가장 얇은 박스 20mm
     'cal_gain': 1.0,             # 폭 보정 기울기
     'cal_offset_mm': 0.30,       # 폭 보정 오프셋
     'timeout_s': 5.0,            # 닫기 대기 최대 시간

@@ -63,7 +63,8 @@ import time
 #   판별 알고리즘은 robot.gripper(Goal 동안 접속)로 받고, 아래 단독 실행(main)은 RG2를 직접 만든다.
 from box_comm.gripper import RG2  # noqa: E402,F401
 
-EMPTY_GRIP_MM = 1.0          # 원시 폭이 이보다 작으면 물체 없이 닫힌 것으로 본다
+EMPTY_GRIP_MM = 1.0          # (예전 기준, 쓰지 않음) 원시 폭은 빈손이어도 패드 두께(~10mm)만큼 남아 판정이 안 됨
+EMPTY_WIDTH_MM = 5.0         # 보정 폭(패드 사이 간격)이 이 이하면 빈손 (11/17 관제, common.GRIPPER empty_width_mm와 같은 값)
 
 
 # ---------------------------------------------------------------- 핑거 끝 높이 (onrobot-ros2 드라이버 링크 모델)
@@ -212,7 +213,7 @@ class SyncGripper:
 
         raw, spread = g.settled_width(self.samples)
         st = g.status()
-        if not st["grip"] or raw <= EMPTY_GRIP_MM:
+        if not st["grip"] or self.calibrated(raw) <= EMPTY_WIDTH_MM:   # 11/17: 원시 폭은 빈손이어도 패드 두께만큼 남음
             raise RuntimeError(f"물체가 잡히지 않음 (잡힘={st['grip']}, 원시 폭={raw:.1f})")
         width = self.calibrated(raw)
         self.log(f"폭 {width:.2f} mm (원시 {raw:.1f}, 편차 {spread:.1f}) | z {dsr.cur_z() - base0:+.1f} mm "

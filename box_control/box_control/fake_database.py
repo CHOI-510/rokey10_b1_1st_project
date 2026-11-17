@@ -24,11 +24,11 @@ UI 대신 상태·재고가 바뀔 때마다 로그로 보여 준다.
 from box_comm.common import FIXED_POSES, INVENTORY_KEYS, UNCLASSIFIED, stack_layout
 from box_comm.database_interface import start
 
-FAKE_SPECS = [
-    {'class_id': 'A', 'width_mm': 40.0,  'depth_mm': 40.0, 'height_mm': 40.0, 'weight_g': 100.0},
-    {'class_id': 'B', 'width_mm': 60.0,  'depth_mm': 40.0, 'height_mm': 30.0, 'weight_g': 150.0},
-    {'class_id': 'C', 'width_mm': 80.0,  'depth_mm': 60.0, 'height_mm': 40.0, 'weight_g': 250.0},
-    {'class_id': 'D', 'width_mm': 100.0, 'depth_mm': 80.0, 'height_mm': 50.0, 'weight_g': 400.0},
+FAKE_SPECS = [   # 실제 박스 치수 (11/17 표, 가로 = base X). 무게는 적재 설정 실측값, 모르는 값은 임시
+    {'class_id': 'A', 'width_mm': 60.0, 'depth_mm': 40.0, 'height_mm': 20.0, 'weight_g': 130.0},
+    {'class_id': 'B', 'width_mm': 75.0, 'depth_mm': 29.0, 'height_mm': 25.0, 'weight_g': 50.0},
+    {'class_id': 'C', 'width_mm': 50.0, 'depth_mm': 40.0, 'height_mm': 20.0, 'weight_g': 108.0},
+    {'class_id': 'D', 'width_mm': 60.0, 'depth_mm': 40.0, 'height_mm': 20.0, 'weight_g': 130.0},  # A 또는 C와 같은 크기, 물성으로 구분 (임시 A)
 ]
 
 

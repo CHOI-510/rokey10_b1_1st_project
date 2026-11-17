@@ -41,7 +41,7 @@ SETTLE_TOL_MM = 0.1
 
 
 class GripResult(NamedTuple):
-    grabbed: bool        # 물체를 잡았는지 (잡힘 비트 + 원시 폭이 빈손 기준보다 큼)
+    grabbed: bool        # 물체를 잡았는지 (잡힘 비트 + 패드 사이 간격이 empty_width_mm보다 큼)
     width_mm: float      # 보정 폭 (패드 사이 실제 간격) [mm]
     raw_mm: float        # 원시 폭 (알루미늄 핑거 사이) [mm]
 
@@ -149,7 +149,7 @@ class RG2:
     # ---- 공용 (관제 추가) ----
     def calibrated(self, raw_mm):
         """원시 폭 → 패드 사이 실제 간격 [mm]"""
-        return (raw_mm - GRIPPER['cal_offset_mm']) / GRIPPER['cal_gain'] - self.pad_total
+        return max(0.0, (raw_mm - GRIPPER['cal_offset_mm']) / GRIPPER['cal_gain'] - self.pad_total)
 
     def grip(self, force_n, timeout=None) -> GripResult:
         """닫고(목표 폭 0) 다 닫힐 때까지 기다린 뒤 잡힘 여부·폭을 돌려준다. 예외는 통신 오류일 때만."""
@@ -157,8 +157,9 @@ class RG2:
             raise RuntimeError('그리퍼 닫기가 시간 안에 끝나지 않음')
         raw, _ = self.settled_width(n_samples=3)
         st = self.status()
-        grabbed = bool(st['grip']) and raw > GRIPPER['empty_raw_mm']
-        return GripResult(grabbed, self.calibrated(raw), raw)
+        width = self.calibrated(raw)
+        grabbed = bool(st['grip']) and width > GRIPPER['empty_width_mm']
+        return GripResult(grabbed, width, raw)
 
     def width(self) -> float:
         return self.calibrated(self.status()['width_raw_mm'])
@@ -195,7 +196,7 @@ class FakeRG2:
     def _close(self):
         if FakeRG2._fails_left > 0:
             FakeRG2._fails_left -= 1
-            self._raw, self._grip = 0.5, 0          # 빈손으로 끝까지 닫힘
+            self._raw, self._grip = self.pad_total + 0.3, 1   # 빈손: 패드끼리 닿음 (실물처럼 원시 폭≈패드 두께, 잡힘 비트도 켜짐)
         else:
             self._raw, self._grip = self.fake_raw, 1
         time.sleep(0.3)
@@ -216,12 +217,13 @@ class FakeRG2:
         return self._raw, 0.0
 
     def calibrated(self, raw_mm):
-        return (raw_mm - GRIPPER['cal_offset_mm']) / GRIPPER['cal_gain'] - self.pad_total
+        return max(0.0, (raw_mm - GRIPPER['cal_offset_mm']) / GRIPPER['cal_gain'] - self.pad_total)
 
     def grip(self, force_n, timeout=None) -> GripResult:
         self._close()
-        grabbed = bool(self._grip) and self._raw > GRIPPER['empty_raw_mm']
-        return GripResult(grabbed, self.calibrated(self._raw), self._raw)
+        width = self.calibrated(self._raw)
+        grabbed = bool(self._grip) and width > GRIPPER['empty_width_mm']
+        return GripResult(grabbed, width, self._raw)
 
     def width(self) -> float:
         return self.calibrated(self._raw)

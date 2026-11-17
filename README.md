@@ -365,7 +365,7 @@ ros2 run box_place place_main --ros-args -p sim_contact:=true        # 에뮬레
 ### 그리퍼 (RG2 Modbus, 11/17)
 
 세 파트 모두 그리퍼를 **Modbus TCP**(`box_comm/gripper.py`, Compute Box `192.168.1.1:502`)로 씁니다. 예전 디지털 출력(DO 1·2) 방식은 쓰지 않습니다(`robot`이 준비할 때 DO 1·2를 끔).
-- 폭과 잡힘 여부를 읽을 수 있어 **집기 실패 감지**와 판별 폭 측정에 씁니다. 설정은 `common.GRIPPER`(열 폭 100mm, 여는 힘 20N, 잡는 힘 20N, 빈손 기준 원시 폭 1mm, 폭 보정 = 판별 실측값).
+- 폭과 잡힘 여부를 읽을 수 있어 **집기 실패 감지**와 판별 폭 측정에 씁니다. 설정은 `common.GRIPPER`(열 폭 100mm, 여는 힘 20N, 잡는 힘 20N, 빈손 기준 패드 사이 간격 5mm, 폭 보정 = 판별 실측값).
 - Compute Box는 **동시 접속 1개**입니다. `robot`(DsrIO)이 그리퍼 명령을 처음 쓸 때 접속하고 Goal이 끝나면 끊어서, 탐지·판별·적재가 번갈아 씁니다.
 - **실제 로봇**: `m0609_rg2_bringup mode:=real`로 띄우면 OnRobot 드라이버(`OnRobotRGControllerServer`)가 먼저 접속을 잡습니다 → `ros2 node list | grep -i onrobot`으로 확인하고 `pkill -f OnRobotRGControllerServer`로 끕니다(RViz 손가락 표시만 멈춤). 사전 점검이 접속을 확인해 막혀 있으면 FAIL.
 - **에뮬레이터·fake**: 환경변수 `BOX_GRIPPER=fake` → 가짜 그리퍼(닫으면 잡힌 것으로). `BOX_FAKE_GRIP_FAILS=N`이면 처음 N번 닫기가 빈손. `fake_run.sh`는 기본 fake(실제 적재 `PLACE_MAIN=1`을 SIM 없이 돌릴 때만 modbus).

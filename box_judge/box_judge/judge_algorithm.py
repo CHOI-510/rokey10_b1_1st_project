@@ -29,8 +29,9 @@ judge_algorithm.py — 판별 파트 메인 로직 (judge_template.py 약속에 
     raise PartError('GRASP_FAILED') → 관제가 측정존을 비우고 공간 스캔부터 다시 (재시도는 아직 미구현)
 
   파라미터 (node.declare_parameter): table_z, grasp_height, ref_width, table_ref_file 등 — 아래 PARAMS 참고
-  테이블 기준: 물체가 없을 때 한 번 재서 저장한 값을 쓴다 (~/.rokey_judge_table_ref.json, rokey1 judge_flow_test
-               --table-ref measure 로 저장). 측정존에 물체가 있는 상태에서는 잴 수 없다.
+  테이블 기준(측정존 바닥 Z): 기본은 Goal로 받은 DB 측정존 좌표의 z (poses['measure_zone'][2], 11/17 관제).
+               적재와 같은 값을 쓴다. 따로 실측한 값을 쓰려면 -p table_ref_file:=~/.rokey_judge_table_ref.json
+               (rokey1 judge_flow_test --table-ref measure로 저장한 파일, 측정존이 빈 상태에서 잼)
 ================================================================
 """
 
@@ -94,7 +95,7 @@ PARAMS = {
     'tol_mm': (3.0, '분류 허용 오차 [mm] (세 길이 모두 이 안이어야 그 class, 아니면 U)'),
     'speed': (60.0, '일반 직선 이동 속도 [mm/s]'),
     'gripper_ip': ('192.168.1.1', 'RG2 Compute Box'),
-    'table_ref_file': ('~/.rokey_judge_table_ref.json', '테이블 기준 저장 파일'),
+    'table_ref_file': ('', '테이블 기준 파일 (빈 값 = DB 측정존 z 사용, 11/17)'),
 }
 
 
@@ -234,7 +235,7 @@ class JudgeAlgorithm:
         self._make_sync_gripper()
         zone = self._measure_zone(poses)
         home = poses['home_j']
-        table_z = self._table_ref()
+        table_z = self._table_ref(zone)
         px, py = zone[0], zone[1]
         io, p = self.io, self.p
         H = None
@@ -472,14 +473,21 @@ class JudgeAlgorithm:
         ang_t = math.degrees(math.atan2(py, px)) + 90.0
         return (ang_f - ang_t + 90.0) % 180.0 - 90.0
 
-    def _table_ref(self):
-        f = os.path.expanduser(self.p['table_ref_file'])
+    def _table_ref(self, zone):
+        """측정존 바닥 Z. 기본은 DB 측정존 z(적재와 같은 값), table_ref_file을 주면 그 실측값."""
+        path = str(self.p['table_ref_file'] or '').strip()
+        if not path:
+            self.log.info(f'[judge] 테이블 기준 = DB 측정존 z {zone[2]:.2f} mm')
+            return float(zone[2])
+        f = os.path.expanduser(path)
         if not os.path.exists(f):
-            raise PartError('MEASURE_FAILED', f'테이블 기준 없음 ({f}): 측정존을 비우고 기준을 먼저 잴 것')
+            raise PartError('MEASURE_FAILED', f'테이블 기준 파일 없음 ({f}): 측정존을 비우고 기준을 먼저 잴 것 '
+                                              '(또는 table_ref_file을 비워 DB 측정존 z 사용)')
         with open(f) as fh:
             ref = json.load(fh)
         if ref.get('pad_total') is not None and abs(float(ref['pad_total']) - self.io.pad_total) > 0.2:
             self.log.warn('[judge] 테이블 기준을 잴 때와 패드 두께가 다르다 -> 다시 잴 것')
+        self.log.info(f'[judge] 테이블 기준 = 파일 {f}: {float(ref["z"]):.2f} mm')
         return float(ref['z'])
 
     def _cleanup(self, H, table_z):

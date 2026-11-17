@@ -8,6 +8,8 @@ scan_template / 담당 메인 코드 대신 띄워서 관제(control.py)를 테�
 파라미터
   box_count       (int,   기본 3)   이 개수만큼 found=True, 그 뒤 found=False
   fake_delay_sec  (float, 기본 1.0) 동작 하나당 가짜 소요 시간
+  hand_wait_sec   (float, 기본 0.0) 실물 시험용(11/17): 2번째 박스부터, 사람이 측정존에 박스를 손으로 놓을 시간 [s].
+                                     기다리는 동안 UI 로그로 남은 시간을 알림 (진행 알림도 보내서 진행 감시에 안 걸림)
   grasp_fail_at   (str,   기본 "")  "2,3"처럼 주면 그 번째 Goal에서 집기 실패(GRASP_FAILED, 11/17)
                                      → 관제가 공간 스캔부터 다시 하는지 시험. 박스 수는 줄지 않음
   관제가 측정존 박스를 스캔 공간으로 '밀어냈으면'(clear_zone fake_ok) 파일(BOX_FAKE_RETURN_FILE,
@@ -51,6 +53,9 @@ class FakeScan:
         node.declare_parameter('box_count', 3)
         node.declare_parameter('fake_delay_sec', 1.0)
         node.declare_parameter('grasp_fail_at', '', ANY_TYPE)
+        node.declare_parameter('hand_wait_sec', 0.0, ANY_TYPE)
+        self.hand_wait = float(node.get_parameter('hand_wait_sec').value)
+        self.found = 0
         self.remaining = node.get_parameter('box_count').value
         self.delay = node.get_parameter('fake_delay_sec').value
         self.fail_at = parse_at(node.get_parameter('grasp_fail_at').value)
@@ -71,6 +76,8 @@ class FakeScan:
             self.log.info('[fake_scan] 남은 박스 없음 → found=False')
             return False
 
+        if self.hand_wait > 0 and self.found > 0:        # 2번째 박스부터: 사람이 측정존에 놓을 시간
+            self._wait_for_hand(report)
         report.log(f'물품 감지 (남은 박스 {self.remaining}개)')      # 이벤트 로그 예시
         report('picking')
         time.sleep(self.delay)
@@ -85,8 +92,23 @@ class FakeScan:
         time.sleep(self.delay * 0.5)
 
         self.remaining -= 1
+        self.found += 1
         self.log.info(f'[fake_scan] 측정존에 놓음 (남은 박스 {self.remaining})')
         return True
+
+    def _wait_for_hand(self, report):
+        """측정존에 다음 박스를 손으로 놓을 시간. 5초마다 남은 시간 로그, 1초마다 진행 알림."""
+        end = time.monotonic() + self.hand_wait
+        report.log(f'측정존에 다음 박스를 놓으세요 ({self.hand_wait:.0f}초)', 'WARN')
+        last = None
+        while (left := end - time.monotonic()) > 0:
+            sec = int(left + 0.999)
+            if sec % 5 == 0 and sec != last and sec != int(self.hand_wait):
+                report.log(f'  {sec}초 남음')
+                last = sec
+            report.keepalive()                           # 정지 확인 포함
+            time.sleep(min(1.0, left))
+        report.log('박스 놓기 시간 끝 → 판별 시작')
 
 
 def main():

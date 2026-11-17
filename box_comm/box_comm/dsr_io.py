@@ -39,6 +39,8 @@ dsr_io.py — 파트가 쓰는 두산 로봇 명령 모음 (정지 확인 내장
   grip_open(width_mm, force_n)    지정 폭으로 열기 → 원시 폭 반환
   grip_close(force_n) -> GripResult(grabbed, width_mm, raw_mm)   닫기 + 잡힘 여부·폭 (못 잡아도 예외 없음)
   gripper_width() -> float        지금 폭 (패드 사이, 보정 반영) [mm]
+  wait(seconds)                   그냥 기다리기. 기다리는 동안 정지 확인 + 진행 알림 (time.sleep 대신, 11/17 적재팀 제안)
+  digital_input(index) -> 0/1     컨트롤러 DI 읽기 (1~16, 정지 확인 + 진행 알림 포함, 11/17 적재팀 제안)
   gripper                         RG2 객체 그대로 (판별 폭 측정처럼 세밀한 제어용)
   compliance_on(stx)              순응제어 시작 (task_compliance_ctrl)
   force_on(fd, direction, time)   목표 힘 (set_desired_force, 상대 모드)
@@ -72,6 +74,12 @@ _SERVICES = (           # 키, dsr_msgs2.srv 타입 이름, 서비스 이름 (RO
 )
 
 
+# 처음 쓸 때만 준비를 기다리는 서비스 (ready()가 기다리지 않음 → 없는 환경에서도 나머지 명령은 동작)
+_LAZY_SERVICES = (
+    ('digital_input', 'GetCtrlBoxDigitalInput', 'io/get_ctrl_box_digital_input'),
+)
+
+
 class DsrIO:
     def __init__(self, node_name: str):
         import dsr_msgs2.srv as srv                     # 두산 워크스페이스에서만 있음
@@ -86,6 +94,8 @@ class DsrIO:
         ns = ROBOT['service_ns'].rstrip('/')
         self._clients = {key: self._io_node.create_client(getattr(srv, typ), f'{ns}/{name}')
                          for key, typ, name in _SERVICES}
+        self._lazy = {key: self._io_node.create_client(getattr(srv, typ), f'{ns}/{name}')
+                      for key, typ, name in _LAZY_SERVICES}
         self.force_active = False
         self.compliance_active = False
         self.moved = False              # 이번 Goal에서 로봇에 동작 명령을 보냈는지 (실패 시 정지 판단용)
@@ -132,7 +142,7 @@ class DsrIO:
     # 서비스 호출
     # ------------------------------------------------------------------
     def _request(self, key, request, timeout=2.0, allow_failure=False):
-        client = self._clients[key]
+        client = self._clients.get(key) or self._lazy[key]
         if not client.service_is_ready():
             raise RuntimeError(f'두산 서비스 준비 안 됨: {key}')
         future = client.call_async(request)
@@ -203,6 +213,34 @@ class DsrIO:
         if len(values) != 6 or not all(math.isfinite(v) for v in values):
             raise RuntimeError('유효하지 않은 외력 응답')
         return [float(v) for v in values]
+
+    def wait(self, seconds: float):
+        """기다리기. 기다리는 동안 관제 정지 확인 + 진행 알림 (멈춤 요청이면 PartError('CANCELED'))"""
+        if type(seconds) not in (int, float) or not math.isfinite(seconds) or seconds < 0:
+            raise ValueError('wait seconds는 0 이상 유한한 값이어야 합니다')
+        until = time.monotonic() + seconds
+        self._alive()
+        while self.ok() and time.monotonic() < until:
+            time.sleep(min(0.05, max(0.0, until - time.monotonic())))
+            self._alive()
+        if not self.ok():
+            raise RuntimeError('대기 중 ROS 종료')
+
+    def digital_input(self, index: int, timeout=0.5) -> int:
+        """컨트롤러 디지털 입력 index(1~16) 값 0/1 (정지 확인 + 진행 알림 포함)"""
+        if type(index) is not int or not 1 <= index <= 16:
+            raise ValueError('digital_input index는 1~16 정수여야 합니다')
+        self._alive()
+        self._prepare()
+        client = self._lazy['digital_input']
+        if not client.service_is_ready() and not client.wait_for_service(timeout_sec=2.0):
+            raise RuntimeError(f'서비스 준비 안 됨: {client.srv_name}')
+        req = self._srv.GetCtrlBoxDigitalInput.Request()
+        req.index = index
+        value = self._request('digital_input', req, timeout=timeout).value
+        if value not in (0, 1):
+            raise RuntimeError(f'DI{index} 응답 오류: {value}')
+        return int(value)
 
     def force_z(self) -> float:
         """툴 외력 Fz (BASE). 힘 제어 하강 루프용 (정지 확인 + 진행 알림 포함)"""

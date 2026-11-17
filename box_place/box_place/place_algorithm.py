@@ -8,6 +8,11 @@ place_algorithm.py — 적재 알고리즘 (담당: 정수현)
     진행 알림(keepalive)이 자동으로 된다 → 여기서 report.check()·keepalive를 부를 필요 없음.
   - 실패하면 예외를 그냥 던진다. box_comm이 로봇을 멈추고(힘·순응제어 해제 + move_stop) Result로 바꾼다.
     적재 칸이 없을 때만 PartError('NO_SLOT')를 직접 쓴다. 나머지는 PLACE_FAILED로 보고된다.
+  - 집기 확인 (11/17, 적재팀 재시도 로직을 Modbus 그리퍼로): 닫은 뒤 grip_close().grabbed로 잡혔는지,
+    들어 올린 뒤 그리퍼 폭으로 계속 쥐고 있는지 확인. 못 잡았으면 같은 자세로 다시 (common.GRIP_RETRY = 3번,
+    설정 grip_retry로 바꿀 수 있음). 다 실패하면 그리퍼 열고 이송 높이로 올라간 뒤 PartError('GRASP_FAILED')
+    → 관제가 측정존을 비우고 공간 스캔부터 다시. 이송 중 놓쳤으면(적재 직전 빈손) PLACE_FAILED → 작업 종료
+    잡는 힘은 설정 grip_force_n (없으면 common.GRIPPER 20 N)
   - TCP·툴은 box_comm이 Goal마다 run 전에 맞춰 준다.
 
 약속 (box_comm/place_interface.py start_algorithm)
@@ -49,8 +54,8 @@ import math
 import time
 from pathlib import Path
 
-from box_comm.common import (PartError, RESULT_CLASSES, STACK, TCP, UNCLASSIFIED, VALID_CLASSES,
-                             count_from_position)
+from box_comm.common import (GRIP_RETRY, GRIPPER, PartError, RESULT_CLASSES, STACK, TCP, UNCLASSIFIED,
+                             VALID_CLASSES, count_from_position)
 
 
 def default_config_path() -> str:
@@ -205,7 +210,22 @@ class PlaceAlgorithm:
             self._move(pose)
 
     def _grip(self, opened):
-        self.robot.grip(opened, self.c['gripper_wait_s'])
+        """열기/닫기 (RG2 Modbus). 닫기는 GripResult(grabbed, width_mm, raw_mm)를 돌려준다."""
+        if opened:
+            self.robot.grip_open()
+            return None
+        return self.robot.grip_close(self.c.get('grip_force_n') or GRIPPER['grip_force_n'])
+
+    def _holding(self) -> bool:
+        """지금 박스를 쥐고 있는지 (잡힘 비트 + 패드 사이 간격이 빈손 기준보다 큼)"""
+        g = self.robot.gripper
+        st = g.status()
+        return bool(st['grip']) and g.calibrated(st['width_raw_mm']) > GRIPPER['empty_width_mm']
+
+    def _ensure_holding(self, where):
+        """이송 중 놓쳤는지 확인. 놓쳤으면 박스가 어디 떨어졌는지 모르므로 작업 종료(PLACE_FAILED)"""
+        if not self._holding():
+            raise PartError('PLACE_FAILED', f'{where}: 이송 중 박스를 놓침 (그리퍼 빈손) → 떨어진 위치 확인 필요')
 
     def go_home(self, home):
         self.robot.movej(home, vel=self.c['home_speed_deg_s'], acc=self.c['home_acc_deg_s2'])
@@ -216,14 +236,39 @@ class PlaceAlgorithm:
             self.go_home(home)
             self._home_initialized = True
 
-    def pick_from_measure_zone(self, zone):
+    def pick_from_measure_zone(self, zone, report):
+        """측정존에서 집기. 못 잡거나 들다가 놓치면 같은 자세로 다시 (최대 grip_retry번).
+        다 실패하면 그리퍼 열고 이송 높이에서 GRASP_FAILED (관제가 측정존을 비우고 재스캔)."""
         pick = [*zone, *self.c['pick_orientation']]
+        above = [pick[0], pick[1], self.c['travel_z'], *pick[3:]]
+        tries = int(self.c.get('grip_retry') or GRIP_RETRY)
         self._raise()
-        self._move([pick[0], pick[1], self.c['travel_z'], *pick[3:]])
-        self._grip(True)
-        self._move(pick)
-        self._grip(False)
-        self._move([pick[0], pick[1], self.c['travel_z'], *pick[3:]])
+        self._move(above)
+        why = ''
+        at_pick = False
+        for attempt in range(1, tries + 1):
+            self._pending(grasp_attempt=attempt)
+            self._grip(True)                       # 같은 파지 위치에서 다시 열기 (적재팀 원래 방식)
+            if not at_pick:
+                self._move(pick)
+                at_pick = True
+            res = self._grip(False)
+            if not res.grabbed:
+                why = f'빈손으로 닫힘 (폭 {res.width_mm:.1f} mm)'
+            else:
+                self._move(above)
+                at_pick = False
+                if self._holding():
+                    if attempt > 1:
+                        report.log(f'집기 성공 ({attempt}/{tries}번째 시도, 폭 {res.width_mm:.1f} mm)')
+                    return res
+                why = '들어 올리는 중 놓침'
+            nxt = f'재시도 {attempt + 1}/{tries}' if attempt < tries else '포기'
+            report.log(f'집기 실패 {attempt}/{tries}: {why} → {nxt}', 'WARN')
+        self._grip(True)                           # 최종 실패: 열고 이송 높이로 올라간 뒤 중단
+        self._raise()
+        self._pending_done()          # 아무것도 안 쥐고 끝남 → 다음 Goal(재스캔 뒤)을 막지 않게 미완료 기록 지움
+        raise PartError('GRASP_FAILED', f'{tries}회 시도 모두 실패 ({why}). 그리퍼 열고 이송 높이에서 중단')
 
     def move_above(self, category, x, y):
         # 박스를 쥔 채라도 옆으로 가기 전에 항상 수직으로 올라간다.
@@ -406,7 +451,7 @@ class PlaceAlgorithm:
         self._pending(**{'class': UNCLASSIFIED, 'route': 'unclassified', 'phase': 'picking'})
         report('picking')
         self._home_once(home)
-        self.pick_from_measure_zone(zone)
+        self.pick_from_measure_zone(zone, report)
         self._pending(phase='moving')
         report('moving')
         current = self.robot.pose()                     # 옆으로 가기 전에 접근 높이까지 수직 상승
@@ -416,6 +461,7 @@ class PlaceAlgorithm:
         self._move(above)
         self._pending(phase='placing', release_pose=release_pose)
         report('placing')
+        self._ensure_holding('미분류 투하 전')
         self._move(release_pose)                        # 위치 이동만 (힘 제어 하강 없음)
         self._pending(phase='releasing')
         self.release()
@@ -451,7 +497,7 @@ class PlaceAlgorithm:
         self._pending(**{'class': result_class, 'phase': 'picking'})
         report('picking')
         self._home_once(home)
-        self.pick_from_measure_zone(zone)
+        self.pick_from_measure_zone(zone, report)
         self._pending(phase='moving')
         report('moving')
         approach = self.move_above(result_class, xy[0], xy[1])
@@ -462,6 +508,7 @@ class PlaceAlgorithm:
             if tier > 1:
                 approach = self.move_above(result_class, x, y)
             self._pending(phase='placing', tier=tier)
+            self._ensure_holding(f'{result_class} {tier}번 자리 하강 전')
             reference = references[tier-1]
             if self.sim_contact:
                 z = self._sim_descend(result_class, tier, approach, reference)
