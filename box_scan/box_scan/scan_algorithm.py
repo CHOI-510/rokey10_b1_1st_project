@@ -15,16 +15,16 @@ scan_algorithm.py — 탐지 알고리즘 (담당: 김창균)
 
 Goal 한 번 = 물품 1개 (원본은 한 번 실행에 전체 영역을 돌며 여러 개를 놓았음)
   노드는 작업 내내 켜져 있고 이 객체도 하나다 → 어디까지 훑었는지(탐색 커서)를 self에 들고 있다가
-  다음 Goal에서 '마지막 접촉 Y - 50mm'부터 이어서 훑는다 (원본 복귀 규칙 그대로).
+  다음 Goal에서 마지막 정지점에서 진행 방향 뒤쪽으로 이동해 같은 선을 이어서 훑는다.
   커서는 False를 반환할 때(다 훑음)와 예상 못 한 오류 때 처음으로 돌아간다. 노드를 다시 켜도 처음부터.
 
 한 Goal의 흐름
   space_scan : HOME → 그리퍼 닫기(핑거가 탐침) → 탐색 시작점(또는 재개점) → 지그재그 Y 탐색
                Y 양 끝 40mm를 제외한 구간에서 경로별 Fy 보정표와 비교해 |Fy - 기준| >= 2.0 N이면 빠른 정지 (접촉)
   picking    : 접촉점 앞쪽 부채꼴 최대 4점을 차례로 Force 하강해 윗면 높이 탐지
-               (쓰러진 물품 대비) → 처음 찾은 점에서 윗면 - 15mm 높이를 0 / 45 / 90도로 최대 3번 집기
-               4점 모두 높이 없음 → Y-50 재개해 탐색 계속. 같은 자리에서 3번이면 '스캔공간 막힘'(_on_scan_blocked)
-               3번 다 실패 → GRASP_FAILED (커서는 남겨 둠: 다음 Goal에서 그 접촉점 -50mm부터)
+               (쓰러진 물품 대비) → 처음 찾은 점에서 윗면 - 25mm 높이를 0 / 45 / 90도로 최대 3번 집기
+               4점 모두 높이 없음 → 진행 방향 뒤쪽에서 재개해 탐색 계속. 같은 자리에서 3번이면 '스캔공간 막힘'(_on_scan_blocked)
+               3번 다 실패 → GRASP_FAILED (커서는 남겨 둠: 다음 Goal에서 그 정지점의 진행 방향 뒤쪽부터)
   moving     : 들어 올려 측정존 위로 (관절 보간)
   placing    : 천천히 내려가다 바닥에 닿으면 멈추고 놓음 (판별 _pos_descent 방식) → 들어 올림 → HOME
 
@@ -34,10 +34,10 @@ Goal 한 번 = 물품 1개 (원본은 한 번 실행에 전체 영역을 돌며 
     (원본의 '이송 중 50ms마다 DI 확인'은 없음 → 측정존 내려놓기 직전에 한 번 확인)
   - 원본은 한 점에서 3번 실패하면 다음 높이 점에서 다시 3번 시도했음 → 첫 점 기준 3번으로 줄임
   - 높이 탐지와 집기 접근의 Force 하강을 함수 하나(_force_down)로 합침
-  - 높이 없음 → Y-50 재개가 같은 자리에서 3번 반복되면 멈춤 (원본은 40mm 미만 물체에서 끝없이 반복)
+  - 높이 없음 → 진행 방향 뒤쪽에서 재개가 같은 자리에서 3번 반복되면 멈춤 (원본은 40mm 미만 물체에서 끝없이 반복)
     멈춘 뒤 처리는 팀 결정 전이라 임시로 SCAN_FAILED (_on_scan_blocked 한 곳만 바꾸면 됨)
   - 배치 높이: PLACE_Z_OFFSET(+35) 대신 측정존 z(바닥) 기준 접촉 하강
-  - 집는 높이: 윗면 높이의 50% → 윗면 - 15mm (11/18, 겹친 박스·얇은 박스 대비). 높이 탐지 하한은 BASE TCP Z 50mm
+  - 집는 높이: 윗면 높이의 50% → 윗면 - 25mm. 높이 탐지 하한은 BASE TCP Z 40mm
   - CSV 기록은 파라미터 csv_dir을 줄 때만 (보정표를 다시 만들 때)
 
 파라미터
@@ -288,7 +288,7 @@ class ScanAlgorithm:
 
         if self.resume is not None:
             self._go_resume(self.resume, orient)
-            report.log(f'{self.lane+1}번 선 이어서 탐색 (지난 접촉 Y{SCAN_RESUME_Y_OFFSET_MM:+g}mm)')
+            report.log(f'{self.lane+1}번 선 이어서 탐색 (재개 Y={r.pose()[1]:.1f}mm)')
             ignore = RESUME_IGNORE_MM
         else:
             x = X_LANES[self.lane]
@@ -313,7 +313,7 @@ class ScanAlgorithm:
                 sp = contact['stopped_pose']
                 report.log(f'물품 접촉: {lane}번 선 {d}, x={sp[0]:.0f}, y={sp[1]:.0f}, '
                            f'dFy={contact["residual_n"]:+.2f} N')
-                self.resume = contact                       # 이 뒤로 무슨 일이 있어도 여기 -50mm부터 재개
+                self.resume = contact                       # 이 뒤로 무슨 일이 있어도 이 정지점 기준으로 재개
                 report('picking')
                 grip = self._find_and_grip(contact, reference, report)
                 if grip is not None:
@@ -321,7 +321,7 @@ class ScanAlgorithm:
                     r.movej(home, vel=HOME_VEL, acc=HOME_ACC)
                     report.log('물품 1개 측정존 배치 완료, HOME 복귀')
                     return True
-                # 원본은 여기서 Y-50 재개 → 낮은 물체(40mm 미만)면 같은 물체에 다시 닿아 끝없이 반복함
+                # 원본은 여기서 진행 방향 뒤쪽에서 재개 → 낮은 물체(40mm 미만)면 같은 물체에 다시 닿아 끝없이 반복함
                 if (self._last_miss and self._last_miss[0] == lane
                         and abs(self._last_miss[1] - sp[1]) < HEIGHT_MISS_SAME_SPOT_MM):
                     misses = self._last_miss[2] + 1
@@ -399,9 +399,11 @@ class ScanAlgorithm:
         return ok
 
     def _go_resume(self, contact, orient):
-        """접촉 Y -50mm(탐색 범위 안으로 자름) 위로 높이 이동 → 탐색 높이로 내려감 (원본 resume_scan)"""
+        """정지점에서 진행 방향 뒤로 이동할 재개점을 구하고 탐색 높이로 하강"""
         lane, d = contact['lane'], contact['direction']
-        y = contact['stopped_pose'][1] + SCAN_RESUME_Y_OFFSET_MM
+        distance = abs(SCAN_RESUME_Y_OFFSET_MM)
+        offset = distance if d == '-Y' else -distance
+        y = contact['stopped_pose'][1] + offset
         y = max(min(Y_START, Y_END), min(max(Y_START, Y_END), y))
         x = X_LANES[lane-1]
         self._move_z(max(PROBE_START_Z, self.robot.pose()[2]))
@@ -591,6 +593,11 @@ class ScanAlgorithm:
                     if self._holding():
                         self._sim_take()
                         report.log(f'집기 성공 ({n}/{len(angles)}번째, {angle:+g}도, 폭 {res.width_mm:.1f} mm)')
+                        if angle == 45.0:
+                            # 물품을 들어 올린 뒤 집기 전 0도 자세로 복귀
+                            self._move_z(retry_z)
+                            self._orient(initial, GRIP_ROTATE_VEL, GRIP_ROTATE_ACC)
+                            o = initial
                         return {'grip_z': grip_z, 'top_z': top[2], 'orientation': o}
                     why = f'들어 올리다 놓침: {self._hold_why}'
                 self._open()
