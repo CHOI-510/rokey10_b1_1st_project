@@ -288,7 +288,7 @@ class ScanAlgorithm:
 
         if self.resume is not None:
             self._go_resume(self.resume, orient)
-            report.log(f'{self.lane+1}번 선 이어서 탐색 (지난 접촉 Y{SCAN_RESUME_Y_OFFSET_MM:+g}mm)')
+            report.log(f'{self.lane+1}번 선 이어서 탐색 (지난 접촉점 뒤 {abs(SCAN_RESUME_Y_OFFSET_MM):g}mm 기준)')
             ignore = RESUME_IGNORE_MM
         else:
             x = X_LANES[self.lane]
@@ -313,7 +313,7 @@ class ScanAlgorithm:
                 sp = contact['stopped_pose']
                 report.log(f'물품 접촉: {lane}번 선 {d}, x={sp[0]:.0f}, y={sp[1]:.0f}, '
                            f'dFy={contact["residual_n"]:+.2f} N')
-                self.resume = contact                       # 이 뒤로 무슨 일이 있어도 여기 -50mm부터 재개
+                self.resume = contact                       # 현재 경로의 재개 기준점 저장
                 report('picking')
                 grip = self._find_and_grip(contact, reference, report)
                 if grip is not None:
@@ -321,7 +321,7 @@ class ScanAlgorithm:
                     r.movej(home, vel=HOME_VEL, acc=HOME_ACC)
                     report.log('물품 1개 측정존 배치 완료, HOME 복귀')
                     return True
-                # 원본은 여기서 Y-50 재개 → 낮은 물체(40mm 미만)면 같은 물체에 다시 닿아 끝없이 반복함
+                # 낮은 물체는 재개 후 다시 감지될 수 있으므로 같은 위치의 실패 횟수를 제한함
                 if (self._last_miss and self._last_miss[0] == lane
                         and abs(self._last_miss[1] - sp[1]) < HEIGHT_MISS_SAME_SPOT_MM):
                     misses = self._last_miss[2] + 1
@@ -401,9 +401,10 @@ class ScanAlgorithm:
         return ok
 
     def _go_resume(self, contact, orient):
-        """접촉 Y -50mm(탐색 범위 안으로 자름) 위로 높이 이동 → 탐색 높이로 내려감 (원본 resume_scan)"""
+        """기존 진행 방향을 유지하며 접촉점 뒤쪽에서 탐색을 재개한다."""
         lane, d = contact['lane'], contact['direction']
-        y = contact['stopped_pose'][1] + SCAN_RESUME_Y_OFFSET_MM
+        direction_sign = 1.0 if d == '+Y' else -1.0
+        y = contact['stopped_pose'][1] - direction_sign * abs(SCAN_RESUME_Y_OFFSET_MM)
         y = max(min(Y_START, Y_END), min(max(Y_START, Y_END), y))
         x = X_LANES[lane-1]
         self._move_z(max(PROBE_START_Z, self.robot.pose()[2]))
@@ -632,8 +633,13 @@ class ScanAlgorithm:
         transfer_z = max(home_z, PROBE_START_Z, grip['top_z'] + PROBE_CLEARANCE_MM,
                          contact_z + PLACE_SLOW_FROM_MM + PICK_LIFT_MM)
         report('moving')
-        r.movejx([zone[0], zone[1], transfer_z, *grip['orientation']],
-                 vel=TRANSFER_JOINT_VEL, acc=TRANSFER_JOINT_ACC)
+        # 파지 위치에서 수직으로 이탈한 뒤 도달한 높이와 자세로 수평 이송한다.
+        self._move_z(max(transfer_z, r.pose()[2]))
+        if not self._holding():
+            raise RuntimeError(f'이송 높이까지 상승 중 박스를 놓침 ({self._hold_why})')
+        transfer_pose = r.pose()
+        transfer_pose[:2] = zone[:2]
+        self._move(transfer_pose)
         report('placing')
         if not self._holding():
             raise RuntimeError(f'측정존 도착 전 박스를 놓침 ({self._hold_why}) — 떨어진 위치 확인 필요')
