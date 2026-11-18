@@ -22,7 +22,7 @@ SCAN_Z = 35.0
 SCAN_VEL, SCAN_ACC = 120.0, 200.0  # mm/s, mm/s²
 FORCE_LIMIT = 2.0            # 보정 외력 |Fy - 기준| [N]. 한 샘플이 한계 이상이면 즉시 정지
 SAMPLE_PERIOD = 0.05         # 기준 데이터 측정 주기와 동일
-BACKWARD_TILT_DEG = 15.0
+BACKWARD_TILT_DEG = 20.0
 
 # 탐색 재개 · 대기
 # SCAN_RESUME_Y_OFFSET_MM = -50.0   # 접촉 Y에서 BASE Y -50mm 지점부터 다시
@@ -36,7 +36,8 @@ SETTLE_SECONDS = 0.2
 # 집기 높이 · 재시도
 Z0 = 0.0                     # 탐색 작업대 바닥 TCP Z
 MAX_OBJECT_HEIGHT_MM = 80.0
-GRIP_DEPTH_FROM_TOP_MM = 25.0   # 집는 TCP Z = 윗면 Z - 25mm
+GRIP_DEPTH_FROM_TOP_MM = 15.0   # 집는 높이 = 윗면 - 이 값 (그리퍼 팁 길이, 11/18). 가장 얇은 박스 20mm → 바닥에 안 닿음
+                                # (원본: 윗면 높이의 50%. 박스가 겹쳐 있으면 아래 박스까지 걸려서 바꿈)
 MIN_GRIP_ABOVE_Z0_MM = 2.0
 GRIP_RETRY_ANGLES = (0.0, 45.0, 90.0)    # 원본 실로봇 시험값 (11/17 팀 논의안 0/+30/-30은 보류)
 GRIP_RETRY_LIFT_MM = 20.0
@@ -55,7 +56,7 @@ HEIGHT_MISS_SAME_SPOT_MM = 30.0
 PROBE_START_Z = 100.0
 PROBE_POINTS = ((25.0, 0.0), (60.0, 20.0), (60.0, 0.0), (60.0, -20.0))   # (반지름 mm, 각도 deg)
 PROBE_CLEARANCE_MM = 20.0
-PROBE_MIN_Z = 40.0          # 높이 탐지 하강 하한 (BASE TCP Z, mm). 하한까지 윗면이 없으면 다음 후보로 이동
+PROBE_MIN_Z = 50.0          # 높이 탐지 하강 하한 (BASE TCP Z, mm). 하한까지 윗면이 없으면 다음 후보로 이동
 PROBE_CONTACT_N = 8.0        # 기준 대비 Fz 증가량
 PROBE_FORCE_TARGET_N = 25.0
 PROBE_SAFETY_N = 50.0
