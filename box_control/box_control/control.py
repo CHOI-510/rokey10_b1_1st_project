@@ -39,6 +39,8 @@ control.py — 관제 메인 (작업 시퀀스 · 재고 반영 · 중단 처리
     탐지였으면 바로, BOX_RETRY 경고를 남긴 뒤 공간 스캔부터 다시 한다 (재고·박스 번호 그대로).
     연속 RECOVER_LIMIT번을 넘으면 RETRY_LIMIT로 종료. 박스 하나를 적재까지 끝내면 연속 횟수는 0으로.
     측정존을 비우지 못하면(RECOVERY_FAILED) 측정존 사용 불가 → 바로 작업 종료.
+    11/18 임시: 밀어내기 경로(common.RECOVERY push_path)가 없으면 비우기를 fake로 넘기고(WARN 로그) 바로 재스캔
+    → 스캔하는 동안 사람이 측정존을 치운다.
   - 진행 추적: 중단 시 해당 파트의 마지막 Feedback stage와 경과 시간을 함께 기록한다.
   - 작업 중 중단 (abort_job): DB status를 ERROR(공정 오류) 또는 STOPPED(로봇 정지)로 바꾸고
     이유를 함께 기록한다 (예: 'ERROR : Fail to pick').
@@ -73,12 +75,17 @@ TODO(나중에): UI 시작 버튼 연동, error_code별 정책 (재시도 / 이 
       ros2 run box_control control --ros-args -p start_delay_sec:=3.0
       ros2 run box_control control --ros-args -p progress_timeout_sec:=60.0
       ros2 run box_control control --ros-args -p robot_monitor:=off   (bringup 없이 fake 파트로 테스트)
+      ros2 run box_control control --ros-args -p gui:=false           (모니터 GUI 창 없이)
+모니터 GUI (11/18): 관제를 실행하면 monitor_gui 창이 같이 뜬다 (별도 프로세스, box_control/monitor_gui.py).
+  관제가 끝나도 창은 남는다 (결과 확인용). 관제 상태는 /control_status로 보낸다.
 ================================================================
 """
 
 import math
 import os
 import select
+import shutil
+import subprocess
 import sys
 import time
 from enum import Enum
@@ -156,6 +163,7 @@ class Control:
         self.box_seq = 0
         self.job_id = time.strftime('%Y%m%d_%H%M%S')   # 실행마다 고유한 작업 ID
         self._current_class = ''          # 지금 박스의 판별 결과 (중단 이유 표시용)
+        self._current_box = ''            # 지금 박스 box_id (모니터 GUI 표시용)
         self.count_mismatches = []         # 재고 불일치 기록 (box_id, class, 기대 수량, 측정 수량)
         self.grasp_retries = 0             # 집기 실패 → 재스캔 연속 횟수 (박스 하나 적재 완료 시 0)
         self.grasp_retry_total = 0         # 이번 작업 전체 재스캔 횟수 (요약용)
@@ -180,6 +188,17 @@ class Control:
     def set_state(self, state: State):
         self.state = state
         self.log.info(f'[control] ===== {state.value} ({state.label}) =====')
+        self.publish_status()
+
+    def publish_status(self, reason=None):
+        """모니터 GUI용 상태 발행 (/control_status). 단계 바뀔 때·재고 반영 후·중단 시 호출."""
+        self.io.publish_status(
+            state=self.state.value if self.state else '', job_id=self.job_id,
+            box_seq=self.box_seq, box_id=self._current_box, class_id=self._current_class,
+            inventory=self.inventory, mismatches=len(self.count_mismatches),
+            retries=self.grasp_retry_total,
+            standby_sec=self.start_delay if self.state == State.STANDBY else 0,
+            reason=reason)
 
     # ------------------------------------------------------------------
     # 메인 시퀀스
@@ -216,6 +235,7 @@ class Control:
 
         while True:
             box_id = f'{self.job_id}_{self.box_seq + 1:03d}'   # 이번 박스 (적재까지 끝나야 확정)
+            self._current_box = box_id
             self._current_class = ''
             self.io.set_log_context(box_id=box_id, class_id='')
 
@@ -265,6 +285,7 @@ class Control:
             if err := self.io.update_inventory(box_id, inventory_new):
                 return self.abort_job(err)
             self.inventory = inventory_new
+            self.publish_status()                  # 재고 바뀜 → GUI 갱신
             self.grasp_retries = 0                 # 박스 하나를 끝까지 처리 → 연속 집기 실패 횟수 초기화
             self.log.info(f'[control] {box_id} {done_msg} → inventory={self.inventory}')
             self.io.log_event('INFO', 'BOX_DONE', done_msg)
@@ -323,7 +344,10 @@ class Control:
             self.log.error(f'[control] 측정존 비우기 실패: {why}')
             self.io.log_event('ERROR', 'ZONE_CLEAR', f'측정존 비우기 실패: {why}')
             return err
-        self.io.log_event('INFO', 'ZONE_CLEAR', '측정존 비움')
+        if getattr(self.recovery, 'skipped', False):
+            self.io.log_event('WARN', 'ZONE_CLEAR', '측정존 비우기 (fake): 밀어내기 경로 미정 → 사람이 치움, 바로 재스캔')
+        else:
+            self.io.log_event('INFO', 'ZONE_CLEAR', '측정존 비움')
         return None
 
     # ------------------------------------------------------------------
@@ -466,14 +490,44 @@ class Control:
         self.log.error(msg)
 
         self.set_state(State.STOPPED if status == 'STOPPED' else State.ERROR)
+        self.publish_status(reason=f'{status} : {reason}')
         db_err = self.io.set_job_status(status, reason)      # DB가 원인이어도 한 번은 시도
         self.log.error(f'[control] ===== {status} : {reason} =====' +
                        (f' (DB 기록 실패: {db_err})' if db_err else ''))
         self.io.log_event('ERROR', 'JOB_STOPPED' if status == 'STOPPED' else 'JOB_ERROR',
                           f'{status} : {reason} — {msg.replace("[control] ", "")}', stage=stage)
 
+def _launch_monitor_gui():
+    """관제와 같이 모니터 GUI 창을 띄운다 (별도 프로세스 → GUI가 죽어도 관제는 계속).
+    끄기: --ros-args -p gui:=false  /  화면(DISPLAY)이 없으면 자동으로 안 띄움.
+    robot_monitor:=off/fake로 실행하면 GUI도 로봇 상태 조회를 끈다."""
+    argv = ' '.join(sys.argv)
+    if 'gui:=false' in argv.replace(' ', '').lower():
+        return None
+    if not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')):
+        print('[control] 화면(DISPLAY)이 없어 모니터 GUI를 띄우지 않습니다.', flush=True)
+        return None
+    poll = 'false' if ('robot_monitor:=off' in argv or 'robot_monitor:=fake' in argv) else 'true'
+    exe = shutil.which('ros2')
+    cmd = ([exe, 'run', 'box_control', 'monitor_gui'] if exe
+           else [sys.executable, '-m', 'box_control.monitor_gui'])
+    cmd += ['--ros-args', '-p', f'robot_poll:={poll}']
+    try:
+        return subprocess.Popen(cmd, stdin=subprocess.DEVNULL, start_new_session=True)
+    except OSError as e:
+        print(f'[control] 모니터 GUI 실행 실패: {e}', flush=True)
+        return None
+
+
 def main():
-    start(Control)
+    gui = _launch_monitor_gui()
+    try:
+        start(Control)
+    finally:
+        # 관제가 끝나도 GUI는 남겨 둔다 (마지막 결과·로그 확인용). 창은 직접 닫는다.
+        if gui is not None and gui.poll() is None:
+            print('[control] 관제 종료 — 모니터 GUI 창은 결과 확인용으로 남겨 둡니다 (창을 닫으면 종료).',
+                  flush=True)
 
 
 if __name__ == '__main__':

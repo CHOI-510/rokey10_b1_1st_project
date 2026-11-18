@@ -19,6 +19,7 @@ setup(
     entry_points={
         'console_scripts': [
             'control = box_control.control:main',
+            'monitor_gui = box_control.monitor_gui:main',
             'fake_scan = box_control.fake_scan:main',
             'fake_judge = box_control.fake_judge:main',
             'fake_place = box_control.fake_place:main',

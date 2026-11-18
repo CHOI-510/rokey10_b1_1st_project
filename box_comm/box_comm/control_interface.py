@@ -30,6 +30,8 @@ control_interface.py — 관제 통신 계층
   이벤트 로그 (/event_log 토픽, 보내기만 함)
   log_event(level, code, message, box_id='', class_id='', expected=-1, measured=-1)
     관제 자신의 판단(작업 시작·완료·중단, 재고 불일치 등)을 올린다.
+  publish_status(**fields)
+    /control_status (std_msgs/String JSON, transient_local 1개)로 관제 상태를 보낸다 (모니터 GUI용, 11/18).
   set_log_context(job_id, box_id='', class_id='')
     지금 처리 중인 박스. 파트 Feedback 로그에 이 값이 붙는다.
   파트 Feedback에 log_msg가 있으면(report.log) 자동으로 /event_log에 넘긴다 (code=PART_LOG).
@@ -76,6 +78,7 @@ control_interface.py — 관제 통신 계층
 ================================================================
 """
 
+import json
 import threading
 import time
 
@@ -84,6 +87,8 @@ from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import String
 
 from box_interfaces.action import Judge, Place, Scan
 from box_interfaces.msg import ClassSpec, FixedPoses, Inventory, LogEvent, PlaceZone
@@ -96,6 +101,7 @@ from rcl_interfaces.msg import ParameterDescriptor
 NODE_NAME = 'control'
 SERVER_WAIT_SEC = 3.0        # 서버가 떠 있는지 기다리는 시간
 SRV_EMERGENCY_STOP = '/emergency_stop'
+STATUS_TOPIC = '/control_status'   # 관제 상태 (std_msgs/String JSON, 모니터 GUI용 임시 — 11/18)
 WAIT_SLICE = 0.05            # Action 결과를 기다리며 정지 요청을 확인하는 간격
 
 
@@ -152,6 +158,12 @@ class ControlInterface(Node):
         # 이벤트 로그 (보내기만 함)
         self._log_pub = self.create_publisher(LogEvent, LOG_TOPIC, log_qos())
         self._log_ctx = {'job_id': '', 'box_id': '', 'class_id': ''}
+
+        # 관제 상태 (모니터 GUI용, 마지막 1개 유지 → GUI가 늦게 켜도 받음)
+        self._status_pub = self.create_publisher(
+            String, STATUS_TOPIC,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
 
         # Feedback 진행 추적: name -> (stage, 받은 시각)
         self._progress_lock = threading.Lock()
@@ -272,6 +284,15 @@ class ControlInterface(Node):
             self._log_pub.publish(msg)
         except Exception as e:      # 로그 때문에 작업이 멈추면 안 됨
             self.get_logger().warn(f'[control] 이벤트 로그 발행 실패: {type(e).__name__}: {e}')
+
+    def publish_status(self, **fields):
+        """/control_status에 관제 상태 한 장 발행 (모니터 GUI용). 실패해도 작업은 계속."""
+        try:
+            stop = self.stop_reason()
+            fields.setdefault('stop', list(stop) if stop else None)
+            self._status_pub.publish(String(data=json.dumps(fields, ensure_ascii=False)))
+        except Exception as e:
+            self.get_logger().warn(f'[control] 상태 발행 실패: {type(e).__name__}: {e}')
 
     # ==================================================================
     # 정지 기능
