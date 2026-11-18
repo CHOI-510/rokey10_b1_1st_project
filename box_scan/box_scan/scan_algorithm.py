@@ -521,13 +521,22 @@ class ScanAlgorithm:
         return pose
 
     def _sync_approach(self, gz):
-        """적재와 같은 방식 (11/18 정쓰): 연 그리퍼로 sync 집기 높이(gz)까지 위치 이동.
-        SYNC_SLOW_FROM_MM 위까지는 보통 속도, 마지막은 SYNC_SLOW_VEL로. 접촉 감시 없음"""
-        self._move_z(max(self.robot.pose()[2], gz + SYNC_SLOW_FROM_MM))
-        self._move_z(gz + SYNC_SLOW_FROM_MM)
-        p = self.robot.pose()
-        p[2] = gz
-        self.robot.movel(p, vel=[SYNC_SLOW_VEL, 20.0], acc=[SYNC_SLOW_VEL * 3, 40.0], tol=1.0)
+        """열린 핑거를 순응·힘 제어로 내리고, 재시도할 경우 이유를 반환한다."""
+        if self.sim_boxes is not None:
+            self._move_z(gz)
+            return None
+        if not math.isfinite(gz):
+            raise ValueError('집기 접근 목표 Z가 유효하지 않음')
+
+        result, stopped_pose = self._force_down(
+            gz, GRIP_APPROACH_FORCE_TARGET_N, GRIP_APPROACH_CONTACT_N,
+            GRIP_APPROACH_SAFETY_N, check_xyz=True)
+        if result == 'contact':
+            return f'열린 핑거 하강 중 접촉 (ΔFz ≥ {GRIP_APPROACH_CONTACT_N:g} N)'
+        actual_z = stopped_pose[2]
+        if abs(actual_z - gz) > GRIP_APPROACH_Z_TOL_MM:
+            return f'힘 제어 해제 후 집기 Z 오차 (현재 {actual_z:.1f}, 목표 {gz:.1f} mm)'
+        return None
 
     # ==================================================================
     # 높이 탐지 + 집기 (원본 pick_and_place의 앞부분 + try_pick_and_place의 집기)
@@ -559,12 +568,12 @@ class ScanAlgorithm:
 
     def _grip(self, top, reference, report):
         """sync 집기 (11/18 정쓰, 적재와 같은 방식). 높이 탐지한 윗면 기준:
-        윗면 위로 올라감 → 100mm로 열기 → 핑거 끝이 윗면 − GRIP_DEPTH_FROM_TOP_MM(25)에 오는 TCP 높이까지 위치 이동
-        (마지막 SYNC_SLOW_FROM_MM은 천천히, 접촉 감시 없음) → sync로 닫기(핑거 끝 높이 유지) → 40N 조임 → 0.5초 → 천천히 들기.
-        못 잡으면 그리퍼 열고 올라가서 툴 각도를 바꿔(GRIP_RETRY_ANGLES) 다시. 기존 힘 제어 접근·약하게 닫기는 쓰지 않음.
-        얇은 박스라 윗면 − 25가 작업대 바닥(TABLE_Z) + 2.6보다 낮으면 TABLE_Z + 2.6에서 집음 (적재의 '바닥 + 2.6'과 같은 기준)."""
+        윗면 위로 올라감 → 100mm로 열기 → 핑거 끝이 윗면 − GRIP_DEPTH_FROM_TOP_MM에 오는 TCP 높이까지 위치 이동
+        (순응·힘 제어로 하강하고 조기 접촉 감시) → sync로 닫기(핑거 끝 높이 유지) → 40N 조임 → 0.5초 → 천천히 들기.
+        못 잡으면 그리퍼 열고 올라가서 툴 각도를 바꿔(GRIP_RETRY_ANGLES) 다시. 
+        얇은 박스라 윗면 − GRIP_DEPTH_FROM_TOP_MM가 작업대 바닥(TABLE_Z) + 2.6보다 낮으면 TABLE_Z + 2.6에서 집음 (적재의 '바닥 + 2.6'과 같은 기준)."""
         r = self.robot
-        tip_z = calculate_grip_z(top[2])                   # 핑거 끝이 물 높이 = 윗면 − 25
+        tip_z = calculate_grip_z(top[2])                   # 핑거 끝이 물 높이 = 윗면 − GRIP_DEPTH_FROM_TOP_MM
         floor_tip = TABLE_Z + SYNC_GRIP['tip_above_floor_mm']   # 작업대 바닥 + 2.6 (20mm 박스: 32.4 = 윗면 − 17.4)
         on_floor = tip_z < floor_tip
         tip_z = max(tip_z, floor_tip)
@@ -582,7 +591,13 @@ class ScanAlgorithm:
             raw_open = self._open()                        # 최대로 열기 (OPEN_WIDTH_MM, 기본 100)
             self._orient(o, GRIP_ROTATE_VEL, GRIP_ROTATE_ACC)
             gz = sg.grasp_z_for_open(raw_open)             # 열린 폭에서 핑거 끝이 tip_z가 되는 TCP Z
-            self._sync_approach(gz)
+            approach_failure = self._sync_approach(gz)
+            if approach_failure is not None:
+                why = approach_failure
+                nxt = f'다음 {angles[n]:+g}도' if n < len(angles) else '포기'
+                report.log(f'집기 실패 {n}/{len(angles)} ({angle:+g}도): {why} → {nxt}', 'WARN')
+                self._move_z(retry_z)
+                continue
             try:
                 res = sg.close_with_lift(SYNC_GRIP['est_raw_mm'])
             except GripMissed as e:
