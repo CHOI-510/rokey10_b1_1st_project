@@ -58,6 +58,7 @@ from datetime import datetime
 from pathlib import Path
 
 from box_comm.common import GRIP_RETRY, GRIPPER, PartError
+from box_comm.gripper import check_grip, holding
 
 from box_scan.scan_config import *  # noqa: F401,F403  (설정값 이름을 원본 그대로 씀)
 
@@ -233,6 +234,8 @@ class ScanAlgorithm:
     def __init__(self, node, robot):
         self.log = node.get_logger()
         self.robot = robot
+        self._grip_width = None             # 닫았을 때 폭 (들어 올린 뒤·이송 중 놓침 판정 기준)
+        self._hold_why = ''
         validate_config()
         node.declare_parameter('csv_dir', '')
         node.declare_parameter('sim_boxes', '')
@@ -388,11 +391,12 @@ class ScanAlgorithm:
 
     def _open(self):
         self.robot.grip_open(OPEN_WIDTH_MM, None)
+        self._grip_width = None
 
     def _holding(self) -> bool:
-        g = self.robot.gripper
-        st = g.status()
-        return bool(st['grip']) and g.calibrated(st['width_raw_mm']) > GRIPPER['empty_width_mm']
+        """쥐고 있는지: 잡힘 비트 + 폭이 박스 범위 안 + 닫았을 때 폭에서 안 변함 (box_comm.gripper.holding, 11/18)"""
+        ok, self._hold_why, _w = holding(self.robot.gripper, getattr(self, '_grip_width', None))
+        return ok
 
     def _go_resume(self, contact, orient):
         """접촉 Y -50mm(탐색 범위 안으로 자름) 위로 높이 이동 → 탐색 높이로 내려감 (원본 resume_scan)"""
@@ -570,17 +574,18 @@ class ScanAlgorithm:
             ok, why = self._grip_approach(grip_z)
             if ok:
                 res = r.grip_close(GRIP_FORCE_N or GRIPPER['grip_force_n'])
-                if res.grabbed:
+                # 11/18: 잡힘 비트만 보지 않고 폭이 박스 범위 안인지 확인 (한쪽 핑거만 걸려 멈춘 경우 거름,
+                #        원본은 WebLogic 폭 조건 → DI로 같은 확인). 들어 올린 뒤 폭이 변했으면 놓친 것
+                ok, why = check_grip(res.width_mm, 1) if res.grabbed else (False, f'빈손으로 닫힘 (폭 {res.width_mm:.1f} mm)')
+                if ok:
+                    self._grip_width = res.width_mm
                     self._move_z(grip_z + PICK_LIFT_MM)
                     time.sleep(PICK_HOLD_SECONDS)
                     if self._holding():
                         self._sim_take()
-                        if n > 1:
-                            report.log(f'집기 성공 ({n}/{len(angles)}번째, {angle:+g}도, 폭 {res.width_mm:.1f} mm)')
+                        report.log(f'집기 성공 ({n}/{len(angles)}번째, {angle:+g}도, 폭 {res.width_mm:.1f} mm)')
                         return {'grip_z': grip_z, 'top_z': top[2], 'orientation': o}
-                    why = '들어 올리다 놓침'
-                else:
-                    why = f'빈손으로 닫힘 (폭 {res.width_mm:.1f} mm)'
+                    why = f'들어 올리다 놓침: {self._hold_why}'
                 self._open()
             nxt = f'다음 {angles[n]:+g}도' if n < len(angles) else '포기'
             report.log(f'집기 실패 {n}/{len(angles)} ({angle:+g}도): {why} → {nxt}', 'WARN')
@@ -602,7 +607,7 @@ class ScanAlgorithm:
                  vel=TRANSFER_JOINT_VEL, acc=TRANSFER_JOINT_ACC)
         report('placing')
         if not self._holding():
-            raise RuntimeError('측정존 도착 전 박스를 놓침 (떨어진 위치 확인 필요)')
+            raise RuntimeError(f'측정존 도착 전 박스를 놓침 ({self._hold_why}) — 떨어진 위치 확인 필요')
         self._move_z(contact_z + PLACE_SLOW_FROM_MM)
         status, z = self._descend_until_contact(zone[2] + PLACE_MIN_ABOVE_FLOOR_MM, contact_z)
         if status == 'clear':

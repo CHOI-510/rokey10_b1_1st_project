@@ -46,8 +46,9 @@ class FakeGripper:
 
 
 class FakeRobot:
-    def __init__(self, clock, boxes, grip_ok=True, emulator=False):
+    def __init__(self, clock, boxes, grip_ok=True, emulator=False, stall_width=None):
         self.c, self.boxes, self.grip_ok = clock, list(boxes), grip_ok
+        self.stall_width = stall_width  # 한쪽 핑거만 걸려 멈춤 흉내: 잡힘 비트 켜지고 이 폭에서 멈추지만 실제로는 안 잡힘
         self.emulator = emulator      # 에뮬레이터 흉내: 힘 센서 0, 그리퍼는 닫으면 항상 잡힘(FakeRG2)
         self.p = HOME_POSE[:]
         self.motion = None        # (start, target, t0, duration)
@@ -168,6 +169,8 @@ class FakeRobot:
         if self.emulator:
             self.held, self.held_grip_z = 'fake', self.p[2]
             return types.SimpleNamespace(grabbed=True, width_mm=40.0, raw_mm=50.3)
+        if self.stall_width is not None:
+            return types.SimpleNamespace(grabbed=True, width_mm=self.stall_width, raw_mm=self.stall_width + 10.3)
         for b in self.boxes:
             if b.under(self.p[0], self.p[1], pad=5.0) and 0 < self.p[2] < b.h and self.grip_ok:
                 self.held = b
@@ -263,6 +266,28 @@ class Flow(unittest.TestCase):
         self.assertEqual(sum(1 for lv, m in rep.logs if lv == 'WARN' and '집기 실패' in m), 3)
         self.assertIsNotNone(algo.resume)                     # 재스캔은 그 접촉점 -50mm부터
         self.assertTrue(self.robot.opened)
+
+    def test_finger_stall_out_of_range_is_not_a_grip(self):
+        """한쪽 핑거만 걸려 12mm에서 멈춤(잡힘 비트 켜짐) → 박스 폭 범위 밖이라 못 잡은 것으로 보고 각도 재시도 (11/18)"""
+        algo = self.make([Box(420, 100, 50)], stall_width=12.0)
+        rep = Report()
+        with self.assertRaises(PartError) as ctx:
+            algo.scan(POSES, rep)
+        self.assertEqual(ctx.exception.code, 'GRASP_FAILED')
+        fails = [m for lv, m in rep.logs if lv == 'WARN' and '집기 실패' in m]
+        self.assertEqual(len(fails), 3)
+        self.assertTrue(all('범위' in m for m in fails))
+        self.assertEqual(self.robot.placed, [])               # 공기 운반 안 함
+
+    def test_finger_stall_in_range_caught_after_lift(self):
+        """범위 안 폭(30mm)에서 멈췄어도 들어 올리면 풀려 잡힘 비트가 꺼짐 → 놓침으로 보고 재시도 (공기 운반 안 함)"""
+        algo = self.make([Box(420, 100, 50)], stall_width=30.0)
+        rep = Report()
+        with self.assertRaises(PartError) as ctx:
+            algo.scan(POSES, rep)
+        self.assertEqual(ctx.exception.code, 'GRASP_FAILED')
+        self.assertTrue(all('놓침' in m for lv, m in rep.logs if lv == 'WARN' and '집기 실패' in m))
+        self.assertFalse(any(abs(at[0]-ZONE[0]) < 1 for _, at in self.robot.placed))
 
     def test_low_object_blocks_after_3_misses(self):
         algo = self.make([Box(420, 100, 10)])                 # 17mm 미만: 높이 탐지 불가 (윗면-15mm로 못 집음)
