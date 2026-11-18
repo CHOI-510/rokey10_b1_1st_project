@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =====================================================================
 # fake_run.sh — 로봇 없이 전체 흐름 시험 (터미널 하나)
-#   fake 노드 4개(database, scan, judge, place)를 백그라운드로 띄우고
+#   DB 노드(database_main, 파일 모드)와 fake 파트 3개(scan, judge, place)를 백그라운드로 띄우고
 #   관제(control)는 앞에서 실행한다 (q / s 키 그대로 사용 가능).
 #   관제가 끝나거나 Ctrl+C를 누르면 백그라운드 노드도 같이 끈다.
 #
@@ -10,8 +10,13 @@
 #   ./scripts/fake_run.sh -p progress_timeout_sec:=5.0     # 관제 파라미터 추가 (기본값 대신 이걸 씀)
 #   BOX_COUNT=6 CLASSES="A,A,B,C,D,D" ./scripts/fake_run.sh
 #   DB_ARGS="-p estop_at:=2" ./scripts/fake_run.sh          # 2번째 박스 뒤 UI 비상정지 흉내
-#   DB_MAIN=1 ./scripts/fake_run.sh                         # DB 노드 실제 코드(database_main). 키 없으면 파일 모드
-#   DB_MAIN=1 DB_STORE=file ./scripts/fake_run.sh            # Supabase 키가 있어도 파일로 (~/box_logs/fake_db/*.json)
+#   DB_ARGS="-p start_inventory:=[0,5,0,0,0]" ./scripts/fake_run.sh   # 재고 B=5로 시작 (불일치 시험)
+#   DB_STORE=auto ./scripts/fake_run.sh                     # Supabase 키가 있으면 Supabase로 (기본은 파일, 실제 데이터 보호)
+#   RESIDENT=1 ./scripts/fake_run.sh                        # 관제 상주 모드 (READY에서 시작 대기, 11/18)
+#   (11/18: fake_database는 없어지고 DB는 항상 database_main. 파일 모드 ~/box_logs/fake_db/*.json,
+#    매번 재고 0으로 시작 = -p start_inventory:=[0,0,0,0,0]. DB_MAIN은 더 이상 필요 없음)
+#     → 다른 터미널: curl -s -X POST localhost:8765/start  /  .../cancel  (관제 터미널 s: 시작, READY에서 q: 종료)
+#     RESIDENT 없이 실행하면 관제는 -p auto_start:=true (예전처럼 바로 한 번 실행하고 끝)
 #     → 다른 터미널: curl -s localhost:8765/state | python3 -m json.tool,  curl -s -X POST localhost:8765/estop
 #   PLACE_ARGS="-p miscount_at:=2" ./scripts/fake_run.sh    # 재고 불일치 시험
 #   MOTION=1 BOX_COUNT=2 ./scripts/fake_run.sh               # 로봇이 실제로 움직임 (아래 참고)
@@ -43,7 +48,7 @@
 #
 # MOTION=1 (에뮬레이터·실제 로봇, bringup 필요)
 #   탐지·판별·적재를 fake 대신 test_*_motion 노드로 띄운다 → 로봇이 HOME에서 50mm씩 위아래로 움직임.
-#   DB는 fake 그대로. 관제 기본값: robot_monitor=dsr, 대기 5초.
+#   DB는 database_main 파일 모드. 관제 기본값: robot_monitor=dsr, 대기 5초.
 #   움직이는 중에 비상정지를 걸어 로봇이 멈추는지 확인하는 용도. 작업공간을 비우고 실행할 것.
 #
 # PLACE_MAIN=1 (에뮬레이터·실제 로봇, bringup 필요)
@@ -96,7 +101,7 @@ else
 fi
 
 # 다른 터미널에서 이미 시험 중이면 멈춤 (서로 노드를 끄는 사고 방지)
-RUNNING_PATTERN='((box_control/(fake_database|fake_scan|fake_judge|fake_place|test_scan_motion|test_judge_motion|test_place_motion|control)|box_place/place_main|box_scan/scan_main|box_database/(database_main|database_template))( |$))'
+RUNNING_PATTERN='((box_control/(fake_scan|fake_judge|fake_place|test_scan_motion|test_judge_motion|test_place_motion|control)|box_place/place_main|box_scan/scan_main|box_judge/judge_main|box_database/(database_main|database_template))( |$))'
 if pgrep -f "$RUNNING_PATTERN" >/dev/null; then
     if [ "${FORCE:-0}" = 1 ]; then
         echo "[fake_run] FORCE=1 → 실행 중인 노드를 끄고 시작합니다."
@@ -153,7 +158,7 @@ cleanup() {
         done
     fi
     echo "[fake_run] DB 마지막 기록 ($LOG_DIR/database.log):"
-    grep -E "fake_db\]|\[database\] (SetJobStatus|재고|UI )" "$LOG_DIR/database.log" 2>/dev/null | tail -n 5 | sed 's/^/  /'
+    grep -E "\[database\] (SetJobStatus|재고|UI |관제 단계)" "$LOG_DIR/database.log" 2>/dev/null | tail -n 5 | sed 's/^/  /'
     echo "[fake_run] 종료"
 }
 trap cleanup EXIT INT TERM
@@ -169,15 +174,12 @@ start_bg() {      # start_bg 이름 실행파일 [인자...]
     echo "[fake_run] $name 시작 (pid $pid, 로그 $LOG_DIR/$name.log)"
 }
 
-if [ "${DB_MAIN:-0}" = 1 ]; then
-    # 실제 DB 노드. Supabase 키가 없으면 파일 모드 → ~/box_logs/fake_db/state.json, state_updates.jsonl
-    echo "[fake_run] DB_MAIN=1 → DB 노드 실제 코드(database_main)${DB_STORE:+, store=$DB_STORE}"
-    # shellcheck disable=SC2086
-    PKG=box_database start_bg database database_main --ros-args -p store:="${DB_STORE:-auto}" $DB_ARGS
-else
-    # shellcheck disable=SC2086
-    start_bg database fake_database --ros-args $DB_ARGS
-fi
+# DB 노드 (실제 코드). 기본 파일 모드 → ~/box_logs/fake_db/state.json, state_updates.jsonl
+#   시험마다 재고 0으로 시작 (DB_ARGS의 start_inventory가 있으면 그게 우선 — 뒤에 온 값이 이김)
+echo "[fake_run] DB 노드 database_main (store=${DB_STORE:-file})"
+# shellcheck disable=SC2086
+PKG=box_database start_bg database database_main --ros-args -p store:="${DB_STORE:-file}" \
+    -p start_inventory:="[0,0,0,0,0]" $DB_ARGS
 if [ "${MOTION:-0}" = 1 ]; then
     echo "[fake_run] MOTION=1 → 로봇이 실제로 움직입니다 (test_*_motion). 작업공간을 비우세요."
     # shellcheck disable=SC2086
@@ -276,13 +278,18 @@ if [ -n "$DUPS" ]; then
     exit 1
 fi
 
-# 관제 (앞에서 실행). 인자를 주면 그 인자만 쓴다.
-if [ "$#" -gt 0 ]; then
-    CONTROL_ARGS=(--ros-args "$@")
-elif [ "${MOTION:-0}" = 1 ] || [ "${PLACE_MAIN:-0}" = 1 ] || [ "${JUDGE_MAIN:-0}" = 1 ] || [ "${SCAN_MAIN:-0}" = 1 ]; then
-    CONTROL_ARGS=(--ros-args -p robot_monitor:=dsr -p start_delay_sec:=5.0)
+# 관제 (앞에서 실행). 인자를 주면 그 인자만 쓴다 (auto_start는 RESIDENT로 정함).
+if [ "${RESIDENT:-0}" = 1 ]; then
+    AUTO_ARGS=(-p auto_start:=false)
 else
-    CONTROL_ARGS=(--ros-args -p robot_monitor:=fake -p start_delay_sec:=3.0)
+    AUTO_ARGS=(-p auto_start:=true)
+fi
+if [ "$#" -gt 0 ]; then
+    CONTROL_ARGS=(--ros-args "${AUTO_ARGS[@]}" "$@")
+elif [ "${MOTION:-0}" = 1 ] || [ "${PLACE_MAIN:-0}" = 1 ] || [ "${JUDGE_MAIN:-0}" = 1 ] || [ "${SCAN_MAIN:-0}" = 1 ]; then
+    CONTROL_ARGS=(--ros-args "${AUTO_ARGS[@]}" -p robot_monitor:=dsr -p start_delay_sec:=5.0)
+else
+    CONTROL_ARGS=(--ros-args "${AUTO_ARGS[@]}" -p robot_monitor:=fake -p start_delay_sec:=3.0)
 fi
 echo "[fake_run] 그리퍼: BOX_GRIPPER=$BOX_GRIPPER"
 echo "[fake_run] 관제 실행: ros2 run box_control control ${CONTROL_ARGS[*]}"

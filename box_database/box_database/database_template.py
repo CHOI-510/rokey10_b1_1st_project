@@ -44,7 +44,7 @@ SPECS = [   # 실제 값은 Supabase product
     {'class_id': 'D', 'width_mm': 50.0, 'depth_mm': 40.0, 'height_mm': 20.0, 'weight_g': 55.3},
 ]
 POSES = {   # 실제 값은 Supabase loc
-    'measure_zone': [300.0, -160.0, 30.0],
+    'measure_zone': [300.0, -160.0, 30.9],
     'place_zones': {'A': [480.0, -160.0], 'B': [650.0, -160.0], 'C': [580.0, 300.0], 'D': [300.0, 300.0]},
 }
 

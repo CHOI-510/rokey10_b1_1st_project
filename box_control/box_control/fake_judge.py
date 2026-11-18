@@ -24,7 +24,7 @@ import time
 
 from rcl_interfaces.msg import ParameterDescriptor
 
-from box_comm.judge_interface import PartError, start
+from box_comm.judge_interface import PartError, start_algorithm
 
 
 ANY_TYPE = ParameterDescriptor(dynamic_typing=True)   # -p x:=2 (정수)와 -p x:="1,2" (문자열) 둘 다 받음
@@ -46,7 +46,7 @@ def fake_grasp_failure(log, report, goal_no, fail_at, delay):
 
 
 class FakeJudge:
-    def __init__(self, node):
+    def __init__(self, node, robot=None):        # robot: 쓰지 않음 (use_robot=False)
         self.log = node.get_logger()
         node.declare_parameter('class_sequence', '')
         node.declare_parameter('fake_delay_sec', 1.0)
@@ -60,7 +60,7 @@ class FakeJudge:
         mode = f'순서 {self.sequence}' if self.sequence else '무작위'
         self.log.info(f'[fake_judge] 판별 모드: {mode}, delay={self.delay}s')
 
-    def run(self, specs, report) -> str:
+    def judge(self, specs, poses, report) -> str:
         for s in specs:
             self.log.info(
                 f'[fake_judge] 기준 {s["class_id"]}: {s["width_mm"]}x{s["depth_mm"]}x'
@@ -86,7 +86,7 @@ class FakeJudge:
 
 
 def main():
-    start(FakeJudge)
+    start_algorithm(FakeJudge, use_robot=False)
 
 
 if __name__ == '__main__':

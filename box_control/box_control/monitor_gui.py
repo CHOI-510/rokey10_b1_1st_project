@@ -9,7 +9,8 @@ monitor_gui.py — 관제 모니터 GUI (관리자·개발 확인용)
   - /event_log                       : 이벤트 로그 (관제 이벤트 + 파트 report.log)
   - /scan|judge|place/_action/status   : 파트 Goal 상태 (실행중/성공/실패/취소)
   - /scan|judge|place/_action/feedback : 파트 진행 stage, 마지막 소식 후 경과 시간
-  - 두산 get_robot_state (1초 주기) + /dsr01/error 알람   (dsr_msgs2가 있을 때만)
+  - 로봇 상태: 관제가 살아 있으면 /control_status의 robot_state를 그대로 씀,
+    관제가 없거나 robot_monitor≠dsr일 때만 직접 get_robot_state (1초 주기) + /dsr01/error 알람 (dsr_msgs2가 있을 때만)
   - 연결 상태: /emergency_stop(관제), /get_job_data(DB), 파트 Action 서버, 로봇 서비스
 
 관제가 /control_status(std_msgs/String, JSON)를 발행하면 추가로 보는 것
@@ -17,7 +18,15 @@ monitor_gui.py — 관제 모니터 GUI (관리자·개발 확인용)
   - 없으면 이벤트 로그와 파트 Goal 상태로 단계를 '추정'해서 보여 준다.
 
 버튼
-  - 비상정지: /emergency_stop 호출 (source='monitor_gui') — 확인창 없이 바로 보냄
+  - 비상정지: 확인창('비상 정지를 하시겠습니까?') [정지]/[취소] → /emergency_stop (source='monitor_gui')
+      → 작업 상태가 빨간 '비상정지'로 바뀜 (웹 UI와 같은 동작, 11/18)
+  - 시작 / 시작 취소 (11/18, 관제 상주 모드): /job_command 호출 (source='monitor_gui')
+      관제 READY → [▶ 시작] (확인창 [시작]/[취소]) → 사전 점검 → 10분 카운트다운 → 작업
+      관제 BEFORE·PREFLIGHT·STANDBY → [✕ 시작 취소] → 작업 안 하고 READY
+      관제 STANDBY → [⏩ 바로 시작] (확인창 [바로 시작]/[대기 후 시작]) → 카운트다운 생략
+        현장 관리자 전용: 관리자 GUI는 관제 PC(로봇 옆)에서만 뜨고 작업공간을 직접 볼 수 있으므로 허용.
+        웹 UI에는 없음 (DB 노드 HTTP 창구가 start_now를 받지 않음). 누가 했는지 이벤트 로그에 남음
+      그 밖(작업 중·관제 없음) → 버튼 비활성. 작업 중에 멈추려면 비상정지
 화면 톤은 사용자 웹 대시보드와 맞춤 (밝은 배경·흰 카드·청록, 규격 A 청록 · B 파랑 · C 주황 · D 보라).
 
 실행
@@ -29,9 +38,12 @@ monitor_gui.py — 관제 모니터 GUI (관리자·개발 확인용)
 """
 
 import json
+import os
 import queue
 import threading
 import time
+import urllib.error
+import urllib.request
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk
@@ -46,7 +58,7 @@ from std_msgs.msg import String
 
 from box_interfaces.action import Judge, Place, Scan
 from box_interfaces.msg import LogEvent
-from box_interfaces.srv import EmergencyStop, GetJobData
+from box_interfaces.srv import EmergencyStop, GetJobData, JobCommand
 
 from box_comm.common import (INVENTORY_KEYS, LOG_TOPIC, ROBOT, ROBOT_STATE, SAFETY, STAGES,
                              log_qos)
@@ -65,6 +77,7 @@ STATUS_TOPIC = '/control_status'
 PARTS = (('scan', '탐지', Scan), ('judge', '판별', Judge), ('place', '적재', Place))
 MAX_LOG_ROWS = 3000
 STALE_WARN_SEC = 30.0          # 파트 Feedback이 이 시간 넘게 없으면 주황색
+CTRL_FRESH_SEC = 5.0           # 관제 /control_status가 이 안에 왔으면 로봇 상태는 관제 값을 씀 (직접 조회 안 함)
 
 # ---- 색 (웹 대시보드와 같은 톤) ----
 C = {
@@ -96,20 +109,20 @@ GOAL_TEXT = {
 }
 
 STATE_LABEL = {
-    'BEFORE': '작업전', 'PREFLIGHT': '사전점검', 'STANDBY': '시작대기', 'RUNNING': '작업중',
+    'READY': '대기 (시작 가능)', 'BEFORE': '작업전', 'PREFLIGHT': '사전점검', 'STANDBY': '시작대기', 'RUNNING': '작업중',
     'SCANNING': '스캔중', 'SCAN_DONE': '스캔완료', 'JUDGING': '판별중', 'JUDGE_DONE': '판별완료',
     'PLACING': '적재중', 'PLACE_DONE': '적재완료', 'CLEARING': '측정존 비우기',
     'DONE': '작업완료', 'ERROR': '오류중단', 'STOPPED': '정지', 'CANCELED': '시작취소',
 }
 STATE_COLOR = {
-    'BEFORE': 'dim', 'PREFLIGHT': 'orange', 'STANDBY': 'orange', 'RUNNING': 'teal',
+    'READY': 'blue', 'BEFORE': 'dim', 'PREFLIGHT': 'orange', 'STANDBY': 'orange', 'RUNNING': 'teal',
     'SCANNING': 'teal', 'SCAN_DONE': 'teal', 'JUDGING': 'teal', 'JUDGE_DONE': 'teal',
     'PLACING': 'teal', 'PLACE_DONE': 'teal', 'CLEARING': 'orange',
-    'DONE': 'green', 'ERROR': 'red', 'STOPPED': 'purple', 'CANCELED': 'orange',
+    'DONE': 'green', 'ERROR': 'red', 'STOPPED': 'red', 'CANCELED': 'orange',
 }
 STATE_PART = {'SCANNING': 'scan', 'SCAN_DONE': 'scan', 'JUDGING': 'judge', 'JUDGE_DONE': 'judge',
               'PLACING': 'place', 'PLACE_DONE': 'place'}
-END_STATES = ('DONE', 'ERROR', 'STOPPED', 'CANCELED')
+END_STATES = ('DONE', 'ERROR', 'STOPPED', 'CANCELED', 'READY')   # READY = 상주 모드 대기 (지난 결과 유지)
 
 # 이벤트 로그 code → 추정 단계 (/control_status가 없을 때만 사용)
 CODE_STATE = {'JOB_START': 'RUNNING', 'JOB_DONE': 'DONE', 'JOB_ERROR': 'ERROR',
@@ -141,9 +154,11 @@ class MonitorNode(Node):
 
         self._cli_estop = self.create_client(EmergencyStop, '/emergency_stop')
         self._cli_db = self.create_client(GetJobData, '/get_job_data')            # 연결 확인용 (호출 안 함)
+        self._cli_job = self.create_client(JobCommand, '/job_command')            # 시작·취소 (관제 상주 모드)
 
         self._dsr = None
         self._state_pending = False
+        self._ctrl_robot = (0.0, None, None)    # (받은 시각, robot_monitor, robot_state) — 관제 /control_status
         if self.robot_poll:
             try:
                 import dsr_msgs2.msg as dsr_msg
@@ -160,7 +175,9 @@ class MonitorNode(Node):
 
     def _on_status(self, msg):
         try:
-            self.q.put(('status', json.loads(msg.data)))
+            st = json.loads(msg.data)
+            self._ctrl_robot = (time.monotonic(), st.get('robot_monitor'), st.get('robot_state'))
+            self.q.put(('status', st))
         except ValueError:
             self.get_logger().warn(f'[monitor] {STATUS_TOPIC} JSON 아님: {msg.data[:80]}')
 
@@ -188,7 +205,11 @@ class MonitorNode(Node):
             conn[label] = self._action_clients[name].server_is_ready()
         if self._dsr is not None:
             conn['로봇'] = self._cli_robot.service_is_ready()
-            if conn['로봇'] and not self._state_pending:
+            seen, monitor, ctrl_state = self._ctrl_robot
+            if conn['로봇'] and monitor == 'dsr' and time.monotonic() - seen < CTRL_FRESH_SEC:
+                # 관제가 살아서 로봇 상태를 0.5초마다 읽고 있음 → 그 값을 그대로 씀 (컨트롤러에 같은 질의를 두 번 안 함, 11/18)
+                self.q.put(('robot', ctrl_state))
+            elif conn['로봇'] and not self._state_pending:
                 self._state_pending = True
                 fut = self._cli_robot.call_async(self._dsr.GetRobotState.Request())
                 fut.add_done_callback(self._on_robot_state)
@@ -208,6 +229,39 @@ class MonitorNode(Node):
         fut = self._cli_estop.call_async(EmergencyStop.Request(source='monitor_gui'))
         fut.add_done_callback(lambda f: self.q.put(
             ('estop', bool(f.result() and f.result().success),
+             f.result().message if f.result() else '응답 없음')))
+
+    def set_inventory_then_start(self, values):
+        """시작 전 재고 설정 (11/19): DB 노드 HTTP 창구(같은 노트북)에 저장 → 성공하면 시작 명령.
+        GUI가 멈추지 않게 별도 스레드에서. 결과는 ('inv', ok, message)로 화면에."""
+        def work():
+            body = json.dumps({**{k.lower(): int(v) for k, v in values.items()}, 'source': 'monitor_gui'}).encode()
+            req = urllib.request.Request(f'http://127.0.0.1:{os.environ.get("BOX_DB_PORT", "8765")}/inventory',
+                                         data=body, method='POST', headers={'Content-Type': 'application/json'})
+            if os.environ.get('BOX_START_TOKEN'):
+                req.add_header('X-Box-Token', os.environ['BOX_START_TOKEN'])
+            try:
+                with urllib.request.urlopen(req, timeout=6.0) as r:
+                    res = json.loads(r.read().decode() or '{}')
+            except urllib.error.HTTPError as e:
+                try:
+                    res = json.loads(e.read().decode() or '{}')
+                except ValueError:
+                    res = {'ok': False, 'message': f'HTTP {e.code}'}
+            except Exception as e:
+                res = {'ok': False, 'message': f'DB 노드 연결 안 됨 ({type(e).__name__}) — 재고 설정 없이 시작하려면 값을 그대로 두세요'}
+            self.q.put(('inv', bool(res.get('ok')), str(res.get('message', ''))))
+            if res.get('ok'):
+                self.job_command('start')
+        threading.Thread(target=work, daemon=True).start()
+
+    def job_command(self, command):
+        if not self._cli_job.service_is_ready():
+            self.q.put(('job', command, False, '/job_command 없음 (관제가 안 떠 있거나 auto_start 모드)'))
+            return
+        fut = self._cli_job.call_async(JobCommand.Request(command=command, source='monitor_gui'))
+        fut.add_done_callback(lambda f: self.q.put(
+            ('job', command, bool(f.result() and f.result().success),
              f.result().message if f.result() else '응답 없음')))
 
 
@@ -304,6 +358,15 @@ class MonitorGui:
                                    activebackground='#ef4444', activeforeground='white', relief='flat',
                                    bd=0, padx=18, pady=10, cursor='hand2', command=self._estop)
         self.estop_btn.pack(side='right', padx=(8, 0))
+        self.job_btn = tk.Button(hb, text='▶  시작', font=self.f['btn'], fg='white', bg=C['dim'],
+                                 activeforeground='white', relief='flat', bd=0, padx=18, pady=10,
+                                 cursor='hand2', state='disabled', command=self._job_btn)
+        self.job_btn.pack(side='right', padx=(8, 0))
+        self._job_mode = None             # 'start' / 'cancel' / None (비활성)
+        self.now_btn = tk.Button(hb, text='⏩  바로 시작', font=self.f['btn'], fg='white', bg=C['teal'],
+                                 activebackground=C['teal'], activeforeground='white', relief='flat', bd=0,
+                                 padx=18, pady=10, cursor='hand2', command=self._start_now)
+        self._now_shown = False           # STANDBY에서만 보임
         chips = tk.Frame(hb, bg=C['card'])
         chips.pack(side='right')
         self.conn_lamps = {}
@@ -569,6 +632,17 @@ class MonitorGui:
     def _on_conn(self, conn):
         self.conn = conn
 
+    def _on_job(self, command, ok, message):
+        what = {'start': '시작', 'cancel': '시작 취소', 'start_now': '바로 시작'}.get(command, command)
+        self._add_row('INFO' if ok else 'WARN', {'time': time.strftime('%H:%M:%S'), 'src': 'monitor',
+                                                'msg': f'{what} 요청 → {"수락" if ok else "거절"}: {message}',
+                                                'meta': 'JOB_COMMAND'})
+
+    def _on_inv(self, ok, message):
+        self._add_row('WARN' if ok else 'ERROR', {'time': time.strftime('%H:%M:%S'), 'src': 'monitor',
+                                                 'msg': (message if ok else f'재고 설정 실패 → 시작 안 함: {message}'),
+                                                 'meta': 'INVENTORY_SET'})
+
     def _on_estop(self, ok, message):
         self._add_row('WARN' if ok else 'ERROR', {'time': time.strftime('%H:%M:%S'), 'src': 'monitor',
                                                  'msg': f'비상정지 요청 → {message}', 'meta': 'ESTOP_SENT'})
@@ -596,9 +670,17 @@ class MonitorGui:
             if live and state == 'STANDBY' and st.get('standby_sec'):
                 remain = st['standby_sec'] - (now - self.status_at)
                 if remain > 0:
-                    sub = f'시작까지 {remain:.0f}초 · 관제 터미널 q/s'
+                    sub = f'시작까지 {remain:.0f}초 · 관제 터미널 q/s · UI 취소'
         self.state_lbl.config(text=text)
+        stop = st.get('stop')
+        if state == 'STOPPED' or (state == 'READY' and stop):    # 비상정지 → 빨간불 '비상정지'
+            emergency = 'EMERGENCY' in (self.reason or '') or (stop and stop[0] == 'EMERGENCY_STOP')
+            text, color = ('비상정지' if emergency else '정지'), 'red'
+            if state == 'READY':
+                text += ' · 대기'
+            self.state_lbl.config(text=text)
         self.state_sub.config(text=sub)
+        self._update_job_btn(state, live)
         self.dot.itemconfig(self.dot_core, fill=C[color])
         self.dot.itemconfig(self.dot_halo, fill=LIGHT.get(color, C['tile']))
 
@@ -727,8 +809,142 @@ class MonitorGui:
         self._refilter()
         self.log_count = {k: 0 for k in self.log_count}
 
+    def _ask(self, title, message, ok_text, cancel_text, ok_color):
+        """확인창: [ok_text] / [cancel_text]. ok면 True. 창을 닫거나 Esc도 취소."""
+        win = tk.Toplevel(self.root)
+        win.title(title)
+        win.configure(bg=C['card'])
+        win.resizable(False, False)
+        win.transient(self.root)
+        result = {'ok': False}
+        tk.Label(win, text=title, font=self.f['h'], fg=C[ok_color], bg=C['card']).pack(
+            anchor='w', padx=24, pady=(20, 6))
+        tk.Label(win, text=message, font=self.f['n'], fg=C['text'], bg=C['card'], justify='left').pack(
+            anchor='w', padx=24, pady=(0, 18))
+        bar = tk.Frame(win, bg=C['card'])
+        bar.pack(fill='x', padx=24, pady=(0, 20))
+
+        def close(ok):
+            result['ok'] = ok
+            win.destroy()
+        tk.Button(bar, text=cancel_text, font=self.f['btn'], fg=C['text'], bg=C['tile'], relief='flat', bd=0,
+                  padx=16, pady=8, cursor='hand2', command=lambda: close(False)).pack(side='right')
+        tk.Button(bar, text=ok_text, font=self.f['btn'], fg='white', bg=C[ok_color],
+                  activebackground=C[ok_color], activeforeground='white', relief='flat', bd=0,
+                  padx=16, pady=8, cursor='hand2', command=lambda: close(True)).pack(side='right', padx=(0, 8))
+        win.bind('<Escape>', lambda _e: close(False))
+        win.protocol('WM_DELETE_WINDOW', lambda: close(False))
+        win.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_width()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - win.winfo_height()) // 3
+        win.geometry(f'+{max(x, 0)}+{max(y, 0)}')
+        win.grab_set()
+        win.focus_set()
+        self.root.wait_window(win)
+        return result['ok']
+
     def _estop(self):
-        self.node.emergency_stop()
+        if self._ask('비상 정지', '비상 정지를 하시겠습니까?\n로봇이 현재 위치에서 정지합니다.',
+                     '정지', '취소', 'red'):
+            self.node.emergency_stop()
+
+    def _start_now(self):
+        if self._ask('바로 시작', '카운트다운을 기다리지 않고 바로 시작하시겠습니까?\n'
+                     '작업공간에 사람이나 파손 위험 물품이 없는지 직접 확인하세요.\n'
+                     '(현장 관리자 전용 · 이벤트 로그에 기록됩니다)',
+                     '바로 시작', '대기 후 시작', 'teal'):
+            self.node.job_command('start_now')
+
+    def _ask_start(self):
+        """시작 확인창 + 지금 재고 설정 (11/19). [시작] → 재고 dict, [취소]/닫기 → None.
+        A~D 0~정원, U 0 이상. [전부 0] 버튼. 적재가 실제로 재면 그 값으로 덮어써짐 (다르면 COUNT_MISMATCH 로그)."""
+        cur = {k: int((self.status or {}).get('inventory', {}).get(k, 0) or 0) for k in INVENTORY_KEYS}
+        win = tk.Toplevel(self.root)
+        win.title('작업 시작')
+        win.configure(bg=C['card'])
+        win.resizable(False, False)
+        win.transient(self.root)
+        result = {'values': None}
+        tk.Label(win, text='작업 시작', font=self.f['h'], fg=C['teal'], bg=C['card']).pack(anchor='w', padx=24, pady=(20, 6))
+        tk.Label(win, text='작업을 시작하시겠습니까?\n사전 점검 후 카운트다운이 끝나면 로봇이 움직입니다.\n\n'
+                           '지금 쌓여 있는 재고 (실제와 다르면 맞춰 주세요 — 적재하면 실제로 잰 값으로 바뀜)',
+                 font=self.f['n'], fg=C['text'], bg=C['card'], justify='left').pack(anchor='w', padx=24, pady=(0, 10))
+        grid = tk.Frame(win, bg=C['card'])
+        grid.pack(anchor='w', padx=24, pady=(0, 6))
+        vars_ = {}
+
+        def bump(k, d):
+            hi = CAPACITY if k != 'U' else 999
+            vars_[k].set(max(0, min(hi, vars_[k].get() + d)))
+        for row, k in enumerate(INVENTORY_KEYS):
+            vars_[k] = tk.IntVar(value=cur[k])
+            name = '미분류' if k == 'U' else f'{k} 구역'
+            tk.Label(grid, text=name, font=self.f['nb'], fg=CLASS_COLOR[k], bg=C['card'], width=8, anchor='w').grid(
+                row=row, column=0, pady=3)
+            tk.Button(grid, text='−', font=self.f['btn'], width=3, relief='flat', bg=C['tile'], cursor='hand2',
+                      command=lambda k=k: bump(k, -1)).grid(row=row, column=1, padx=(0, 6))
+            tk.Label(grid, textvariable=vars_[k], font=self.f['tile'], fg=C['text'], bg=C['card'], width=3).grid(
+                row=row, column=2)
+            tk.Button(grid, text='+', font=self.f['btn'], width=3, relief='flat', bg=C['tile'], cursor='hand2',
+                      command=lambda k=k: bump(k, +1)).grid(row=row, column=3, padx=(6, 10))
+            tk.Label(grid, text=f'/ {CAPACITY}' if k != 'U' else '', font=self.f['s'], fg=C['dim'], bg=C['card']).grid(
+                row=row, column=4, sticky='w')
+        tk.Button(win, text='전부 0', font=self.f['sb'], relief='flat', bg=C['tile'], fg=C['text'], cursor='hand2',
+                  padx=10, pady=4, command=lambda: [v.set(0) for v in vars_.values()]).pack(anchor='w', padx=24, pady=(4, 14))
+        bar = tk.Frame(win, bg=C['card'])
+        bar.pack(fill='x', padx=24, pady=(0, 20))
+
+        def close(ok):
+            result['values'] = {k: v.get() for k, v in vars_.items()} if ok else None
+            win.destroy()
+        tk.Button(bar, text='취소', font=self.f['btn'], fg=C['text'], bg=C['tile'], relief='flat', bd=0,
+                  padx=16, pady=8, cursor='hand2', command=lambda: close(False)).pack(side='right')
+        tk.Button(bar, text='시작', font=self.f['btn'], fg='white', bg=C['teal'], activebackground=C['teal'],
+                  activeforeground='white', relief='flat', bd=0, padx=16, pady=8, cursor='hand2',
+                  command=lambda: close(True)).pack(side='right', padx=(0, 8))
+        win.bind('<Escape>', lambda _e: close(False))
+        win.protocol('WM_DELETE_WINDOW', lambda: close(False))
+        win.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_width()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - win.winfo_height()) // 3
+        win.geometry(f'+{max(x, 0)}+{max(y, 0)}')
+        win.grab_set()
+        win.focus_set()
+        self.root.wait_window(win)
+        return result['values'], cur
+
+    def _job_btn(self):
+        mode = self._job_mode
+        if mode == 'start':
+            values, cur = self._ask_start()
+            if values is None:
+                return
+            if values != cur:                  # 재고를 바꿨으면 DB에 먼저 저장 → 성공하면 시작
+                self.node.set_inventory_then_start(values)
+            else:
+                self.node.job_command('start')
+        elif mode == 'cancel':
+            self.node.job_command('cancel')
+
+    def _update_job_btn(self, state, live):
+        """관제 단계에 맞춰 시작/취소 버튼 모양 (관제가 /control_status를 보내고 있을 때만 활성)"""
+        if live and self.conn.get('관제') and state == 'READY':
+            mode, text, bg = 'start', '▶  시작', C['teal']
+        elif live and self.conn.get('관제') and state in ('BEFORE', 'PREFLIGHT', 'STANDBY'):
+            mode, text, bg = 'cancel', '✕  시작 취소', C['orange']
+        else:
+            mode, text, bg = None, '▶  시작', C['dim']
+        if mode != self._job_mode:
+            self._job_mode = mode
+            self.job_btn.config(text=text, bg=bg, activebackground=bg,
+                                state='normal' if mode else 'disabled')
+        show_now = bool(live and self.conn.get('관제') and state == 'STANDBY')
+        if show_now != self._now_shown:
+            self._now_shown = show_now
+            if show_now:
+                self.now_btn.pack(side='right', padx=(8, 0), before=self.job_btn)
+            else:
+                self.now_btn.pack_forget()
 
 
 def main(args=None):

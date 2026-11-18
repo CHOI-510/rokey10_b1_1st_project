@@ -6,6 +6,8 @@ bool success
 int32 count            # measured count of result_class in its zone after placing (this box included)
                        # tier/level/z stay inside the place part (logged there)
                        # U: always 0 (control counts unclassified itself)
+                       # zone full (11/18): count = that zone's capacity, placed_class = "U"
+string placed_class    # where the box actually went: result_class, or "U" when its zone was full (11/18)
 string error_code
 ---
 string stage           # see box_comm/common.py STAGES

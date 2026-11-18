@@ -14,7 +14,7 @@
   "desired_force_n": 22.0,
   "z_stiffness_n_m": 500.0,
   "slot_dx_mm": -80.0,
-  "layer_tolerance_mm": 5.0,
+  "layer_tolerance_mm": 9.0,
   "classes": {
     "A": {
       "height_mm": 20.0,
@@ -23,7 +23,6 @@
         40.0,
         20.0
       ],
-      "mass_g": 130.0,
       "orientation": [
         120.0,
         180.0,
@@ -40,10 +39,6 @@
         75.0,
         29.0,
         25.0
-      ],
-      "mass_g": [
-        47.0,
-        54.0
       ],
       "orientation": [
         120.0,
@@ -62,7 +57,6 @@
         40.0,
         20.0
       ],
-      "mass_g": 108.0,
       "orientation": [
         120.0,
         -180.0,
@@ -80,7 +74,6 @@
         40.0,
         20.0
       ],
-      "mass_g": 55.3,
       "orientation": [
         120.0,
         -180.0,

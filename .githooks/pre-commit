@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # 관제 전용 파일을 팀원이 실수로 commit하지 않도록 막는다.
-#   보호 대상: box_comm/, box_interfaces/, 각 파트 폴더의 *_template.py
+#   보호 대상: box_comm/, box_interfaces/, box_bringup/(전체 실행 launch), 각 파트 폴더의 *_template.py
 # 켜는 법 (팀원, 처음 한 번): git config core.hooksPath .githooks
 # 관제는 이 훅을 켜지 않는다.
 
 protected=$(git diff --cached --name-only --diff-filter=ACDMR | \
-  grep -E '^(box_comm/|box_interfaces/|box_(scan|judge|place|database)/box_(scan|judge|place|database)/[a-z_]+_template\.py$)')
+  grep -E '^(box_comm/|box_interfaces/|box_bringup/|box_(scan|judge|place|database)/box_(scan|judge|place|database)/[a-z_]+_template\.py$)')
 
 [ -z "$protected" ] && exit 0
 
 echo ""
-echo "  ✋ commit 거부: 아래 파일은 관제 전용입니다 (box_comm, box_interfaces, *_template.py)"
+echo "  ✋ commit 거부: 아래 파일은 관제 전용입니다 (box_comm, box_interfaces, box_bringup, *_template.py)"
 echo ""
 echo "$protected" | sed 's/^/     - /'
 echo ""

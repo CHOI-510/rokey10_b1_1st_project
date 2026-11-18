@@ -27,7 +27,7 @@ import time
 from rcl_interfaces.msg import ParameterDescriptor
 
 from box_comm.common import PartError, position_from_count, stack_capacity
-from box_comm.place_interface import start
+from box_comm.place_interface import start_algorithm
 
 
 ANY_TYPE = ParameterDescriptor(dynamic_typing=True)   # -p x:=2 (정수)와 -p x:="1,2" (문자열) 둘 다 받음
@@ -49,7 +49,7 @@ def fake_grasp_failure(log, report, goal_no, fail_at, delay):
 
 
 class FakePlace:
-    def __init__(self, node):
+    def __init__(self, node, robot=None):        # robot: 쓰지 않음 (use_robot=False)
         self.log = node.get_logger()
         node.declare_parameter('fake_delay_sec', 1.0)
         node.declare_parameter('fake_start', [0, 0, 0, 0])
@@ -64,7 +64,7 @@ class FakePlace:
         self.log.info(f'[fake_place] delay={self.delay}s, 처음 쌓인 개수={self.stack}, '
                       f'miscount_at={self.miscount_at}')
 
-    def run(self, result_class, report) -> int:
+    def place(self, result_class, poses, report) -> int:
         self.goals += 1
         report('picking')
         time.sleep(self.delay * 0.5)
@@ -79,8 +79,10 @@ class FakePlace:
             self.log.info('[fake_place] 미분류 투하 → 0 반환 (수량은 관제가 셈)')
             report.log('미분류 투하 완료 (fake)')
             return 0
-        if self.stack[result_class] >= stack_capacity():
-            raise PartError('NO_SLOT', f'{result_class} 구역 꽉 참 ({stack_capacity()}개)')
+        if self.stack[result_class] >= stack_capacity():     # 실제 적재와 같게: 꽉 차면 미분류로 (11/18)
+            self.count += 1
+            report.log(f'{result_class} 구역 꽉 참 ({stack_capacity()}개) → 미분류로 보냄 (fake)', 'WARN')
+            return 'U', stack_capacity()
         self.stack[result_class] += 1
         self.count += 1
 
@@ -95,7 +97,7 @@ class FakePlace:
 
 
 def main():
-    start(FakePlace)
+    start_algorithm(FakePlace, use_robot=False)
 
 
 if __name__ == '__main__':

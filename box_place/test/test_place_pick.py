@@ -225,6 +225,36 @@ class SyncPick(unittest.TestCase):
         self.assertGreater(self.robot.opened_widths[0], 95.0)
         self.assertEqual(self.robot.close_forces, [40.0])
 
+    def test_pending_cleared_when_gripper_empty(self):
+        """11/18: 이전 Goal이 멈춘 기록이 있어도 그리퍼가 비어 있으면 지우고 진행 (상태 파일 rm 불필요)"""
+        algo = self.make({'h': 20.0, 'raw': 70.6})
+        algo._pending(**{'class': 'A', 'phase': 'moving'})
+        rep = Report()
+        self.assertEqual(algo.place('A', POSES, rep), 1)
+        self.assertTrue(any(lv == 'WARN' and '미완료' in m for lv, m in rep.logs))
+        self.assertIsNone(algo.state['pending'])
+
+    def test_pending_blocks_when_holding(self):
+        """그리퍼가 아직 무언가를 쥐고 있으면 PLACE_FAILED (사람이 빼야 함), 기록은 남김"""
+        algo = self.make({'h': 20.0, 'raw': 70.6})
+        algo._pending(**{'class': 'A', 'phase': 'moving'})
+        self.robot.gripper.raw, self.robot.gripper.grip = 70.6, 1
+        with self.assertRaises(PartError) as ctx:
+            algo.place('A', POSES, Report())
+        self.assertEqual(ctx.exception.code, 'PLACE_FAILED')
+        self.assertIsNotNone(algo.state['pending'])
+
+    def test_zone_full_goes_to_unclassified(self):
+        """11/18: 모든 자리가 차면 쥔 채 끝내지 않고 미분류 투하 위치로 → ('U', 정원)"""
+        algo = self.make({'h': 20.0, 'raw': 70.6})
+        for tier in (1, 2):
+            algo._sim_stack[('A', tier)] = 3
+        rep = Report()
+        self.assertEqual(algo.place('A', POSES, rep), ('U', 6))
+        self.assertTrue(any(lv == 'WARN' and '미분류' in m for lv, m in rep.logs))
+        self.assertIsNone(algo.state['pending'])
+        self.assertEqual(self.robot.p[:2], [float(v) for v in algo.c['unclassified']['release_pose'][:2]])   # 투하 위치 위
+
 
 if __name__ == '__main__':
     unittest.main()

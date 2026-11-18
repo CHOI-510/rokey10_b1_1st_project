@@ -24,9 +24,9 @@ common.py — box_comm 공통 정의
 새 error_code·stage·좌표가 필요하면 관제에게 요청한다.
 
 팀원 코드에서 쓰는 법
-  from box_comm.scan_interface import start, PartError
-  고정 좌표는 run() 안에서 self.poses로 읽는다 (interface가 Goal마다 넣어 줌)
-    self.poses['home_j'], self.poses['measure_zone'], self.poses['place_zones']['A']
+  from box_comm.scan_interface import start_algorithm, PartError
+  고정 좌표는 알고리즘 메서드의 poses 인자로 받는다 (interface가 Goal마다 넣어 줌)
+    poses['home_j'], poses['measure_zone'], poses['place_zones']['A']
 ================================================================
 """
 
@@ -35,7 +35,7 @@ ERROR_CODES = (
     'GRASP_FAILED',         # 집기 실패 (파트가 GRIP_RETRY번 다시 집어 보고 포기) → 관제가 공간 스캔부터 다시
     'OVER_FORCE',           # 과도한 힘 감지
     'MEASURE_FAILED',       # 측정 실패
-    'NO_SLOT',              # 적재할 칸 없음
+    'NO_SLOT',              # 적재할 칸 없음 (11/18부터 구역이 차면 미분류로 보냄 → 미분류 투하가 꺼져 있을 때만)
     'SCAN_FAILED',          # 탐지 실패 (집기 말고 예상 못 한 오류 — 탐지 기본 코드, 11/17)
     'PLACE_FAILED',         # 적재 실패
     'ROBOT_SETUP_FAILED',   # 기본 TCP·툴 적용 실패 (box_comm이 Goal 시작 전에 보냄)
@@ -103,6 +103,8 @@ ERROR_TEXT = {
     'TIMEOUT': 'Timeout',
     'NO_ERROR_CODE': 'Unknown failure',
     'DB_FAILED': 'DB failed',
+    'PART_DIED': 'Part node stopped',   # 작업 중 파트 Action 서버가 사라짐 (노드 종료·충돌, 11/18)
+    'CONTROL_ERROR': 'Control error',    # 관제 코드 자체의 예외 (관제는 죽지 않고 작업만 끝냄, 11/18)
     # STOPPED (STOP_CODES)
     'EMERGENCY_STOP': 'EMERGENCY STOP',
     'ROBOT_SAFETY_STOP': 'Robot safety stop',
@@ -124,7 +126,7 @@ def error_text(code: str, part: str = '', class_id: str = '') -> str:
     if code == 'NO_SLOT' and class_id:
         return f'{text} ({class_id})'
     if code in ('SERVER_DOWN', 'REJECTED', 'TIMEOUT', 'NO_ERROR_CODE', 'NO_PROGRESS',
-                'GRASP_FAILED') and part:
+                'GRASP_FAILED', 'PART_DIED') and part:
         return f'{text} ({part})'
     return text
 
@@ -198,7 +200,8 @@ TOOL = {
 # ----------------------------------------------------------------------
 FIXED_POSES = {
     'home_j': [0.0, 0.0, 90.0, 0.0, 90.0, 0.0],   # HOME 관절 각도 [deg]
-    'measure_zone': [300.0, -160.0, 30.0],         # 측정존 x, y, z [mm, base 기준]  z = 측정존 바닥 Z (11/18 통일, 실측 30.9)
+    'measure_zone': [300.0, -160.0, 30.9],         # 측정존 x, y, z [mm, base 기준]  z = 측정존 바닥 Z (판별 실측 30.9, 11/18 30 → 30.9)
+                                                   #   바닥 z는 이 값(DB) 하나: 판별 높이 측정·sync 집기, 적재 sync 집기, 탐지 내려놓기, 관제 확인 모두 이 값
                                                    #   집는·놓는 높이는 파트가 이 바닥에서 계산: 탐지 = 닿을 때까지 내려놓기,
                                                    #   판별·적재 = sync 집기(핑거 끝 바닥 + SYNC_GRIP tip, 11/18), 관제 확인 = 바닥 + probe_above_floor_mm
     'place_zones': {                               # 적재 구역 1단 x, y [mm, base 기준]  TODO: 실측 후 입력
@@ -251,7 +254,7 @@ def poses_from_msg(msg):
 # ----------------------------------------------------------------------
 STACK = {
     'levels': 3,        # 단(자리) 하나에 쌓는 층 수
-    'max_tiers': 2,     # 구역당 단(자리) 수 (넘으면 NO_SLOT)
+    'max_tiers': 2,     # 구역당 단(자리) 수 (넘으면 미분류로 보냄, 11/18)
 }
 
 
@@ -405,6 +408,14 @@ LOG_CODES = (
     'ZONE_CLEAR',       # 관제가 측정존 비우기 시작·결과 (box_control/recovery.py)
     'STOP_REQUEST',     # 정지 요청 (비상정지 버튼, 로봇 이상 감지, 진행 없음)
     'ROBOT_ALARM',      # 두산 알람 (error 토픽)
+    'PREFLIGHT',        # 사전 점검 WARN·FAIL 항목 (웹 로그 창에 보이게, 11/18)
+    'JOB_COMMAND',      # 시작·취소·바로 시작 명령 수락 (누가 보냈는지 포함)
+    'START_NOW',        # 카운트다운 생략 (현장 즉시 시작)
+    'CONTROL_ERROR',    # 관제 코드 예외 → 작업 종료 후 대기로 (11/18)
+    'CONTROL_WARN',     # 관제 대기·카운트다운 중 예상 못 한 오류 (터미널 키 입력 등) → 로그만 남기고 계속 (11/18)
+    'ZONE_FULL',        # 구역 만재 → 적재가 미분류로 보냄 (재고: 그 구역 = 정원, U +1, 11/18)
+    # DB 노드가 직접 쓰는 줄: 'INVENTORY_SET' (시작 전 재고 설정, 바꾸기 전 → 후, 11/19)
+    # DB 노드가 직접 쓰는 줄: 'UI_COMMAND' (웹 버튼 기록, seq 0)
 )
 LOG_QOS_DEPTH = 100     # reliable + transient_local: DB가 조금 늦게 켜져도 최근 100개는 받음
 
@@ -453,6 +464,7 @@ ROBOT_HINT = {
 }
 ROBOT_HINT_LOST = '로봇 응답 없음 — 로봇 전원·케이블·bringup 확인'
 ROBOT_HINT_OFF = '로봇 감시 꺼짐 (robot_monitor=off, 시험 모드)'
+ROBOT_HINT_WAIT = '로봇 상태 확인 중'          # 관제 시작 직후 첫 응답 전 (1초 안쪽)
 
 
 def robot_hint(state, connected=True, monitor='dsr') -> str:
@@ -467,8 +479,13 @@ def robot_hint(state, connected=True, monitor='dsr') -> str:
 
 
 # 원격 작업 명령 (UI → DB 노드 → 관제 /job_command, box_interfaces/srv/JobCommand) — 11/18
-#   start : READY에서만 받음 → 사전 점검 → 카운트다운 → 작업 (관제 상주 모드에서 구현 예정)
-JOB_COMMANDS = ('start',)
+#   start  : READY에서만 받음 → 사전 점검 → 카운트다운 → 작업 → 끝나면 READY (관제 상주 모드)
+#   cancel : 작업 시작 전(BEFORE·PREFLIGHT·STANDBY)에만 받음 → 시작하지 않고 READY
+#   start_now : 카운트다운(STANDBY) 생략. 현장 관리자 전용 (관리자 GUI·터미널 s).
+#               웹 UI 경로(DB 노드 HTTP)는 받지 않고, 관제도 source='ui'면 거절한다.
+JOB_COMMANDS = ('start', 'cancel', 'start_now', 'inventory_changed')
+#   inventory_changed (11/19): DB 노드가 재고를 바꿨다고 알림 (UI·관리자 GUI 재고 설정) → 관제가 READY면 DB에서 다시 읽음
+REMOTE_JOB_COMMANDS = ('start', 'cancel')     # 웹 UI(DB 노드 HTTP 창구)가 보낼 수 있는 명령
 SRV_JOB_COMMAND = '/job_command'
 
 

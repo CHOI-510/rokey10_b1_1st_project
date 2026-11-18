@@ -69,12 +69,12 @@ from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import String
 
-from box_interfaces.msg import ClassSpec, FixedPoses, Inventory, LogEvent, PlaceZone
+from box_interfaces.msg import LogEvent
 from box_interfaces.srv import EmergencyStop, GetJobData, JobCommand, SetJobStatus, UpdateInventory
 
-from box_comm.common import (FIXED_POSES, INVENTORY_KEYS, JOB_COMMANDS, JOB_STATUS, LOG_TOPIC,
-                             SRV_JOB_COMMAND, STATUS_TOPIC, UNCLASSIFIED, VALID_CLASSES, log_qos,
-                             status_qos)
+from box_comm.convert import dict_to_inv, dict_to_poses, dict_to_spec, inv_to_dict
+from box_comm.common import (JOB_COMMANDS, JOB_STATUS, LOG_TOPIC, SRV_JOB_COMMAND, STATUS_TOPIC,
+                             log_qos, status_qos)
 
 NODE_NAME = 'database'
 SRV_GET_JOB_DATA = '/get_job_data'
@@ -83,54 +83,6 @@ SRV_SET_JOB_STATUS = '/set_job_status'
 SRV_EMERGENCY_STOP = '/emergency_stop'     # 관제가 서버, DB가 클라이언트 (UI 비상정지 버튼)
 
 VALID_STATUS = JOB_STATUS
-
-
-def _inv_to_dict(inv: Inventory) -> dict:
-    return {'A': inv.a, 'B': inv.b, 'C': inv.c, 'D': inv.d, 'U': inv.u}
-
-
-def _dict_to_inv(d: dict) -> Inventory:
-    """A~D는 필수, U(미분류, v0.5)는 없으면 0"""
-    keys = set(d.keys())
-    if not set(VALID_CLASSES) <= keys or not keys <= set(INVENTORY_KEYS):
-        raise ValueError(f'inventory는 {VALID_CLASSES} 키(+ 선택 {UNCLASSIFIED})를 가져야 함 (받은 값: {d!r})')
-    return Inventory(a=int(d['A']), b=int(d['B']), c=int(d['C']), d=int(d['D']),
-                     u=int(d.get(UNCLASSIFIED, 0)))
-
-
-def _dict_to_poses(d) -> FixedPoses:
-    """{'home_j': [6], 'measure_zone': [3], 'place_zones': {'A': [x, y], ...}} → FixedPoses.
-    None이면 available=False. place_zones는 v0.4 (없거나 None인 클래스는 빠짐 → 관제 사전 점검 FAIL)"""
-    msg = FixedPoses()
-    if not d:
-        msg.available = False
-        return msg
-    home = [float(v) for v in (d.get('home_j') or FIXED_POSES['home_j'])]   # 11/18: HOME은 코드가 원본
-    zone = [float(v) for v in d['measure_zone']]
-    if len(home) != 6 or len(zone) != 3:
-        raise ValueError(f'고정 좌표 길이 오류: home_j {len(home)}개(6), measure_zone {len(zone)}개(3)')
-    zones = []
-    for c, xy in (d.get('place_zones') or {}).items():
-        if xy is None:
-            continue
-        if c not in VALID_CLASSES or len(xy) != 2:
-            raise ValueError(f'적재 구역 형식 오류: {c}={xy} (클래스 {VALID_CLASSES}, [x, y] 2개)')
-        zones.append(PlaceZone(class_id=c, x=float(xy[0]), y=float(xy[1])))
-    msg.available = True
-    msg.home_j = home
-    msg.measure_zone = zone
-    msg.place_zones = zones
-    return msg
-
-
-def _dict_to_spec(d: dict) -> ClassSpec:
-    return ClassSpec(
-        class_id=str(d['class_id']),
-        width_mm=float(d['width_mm']),
-        depth_mm=float(d['depth_mm']),
-        height_mm=float(d['height_mm']),
-        weight_g=float(d['weight_g']),
-    )
 
 
 class DatabaseInterface(Node):
@@ -161,9 +113,9 @@ class DatabaseInterface(Node):
             specs, inventory = self.work.get_job_data()
             getter = getattr(self.work, 'get_fixed_poses', None)
             poses = getter() if getter else None
-            response.specs = [_dict_to_spec(s) for s in specs]
-            response.inventory = _dict_to_inv(inventory)
-            response.poses = _dict_to_poses(poses)
+            response.specs = [dict_to_spec(s) for s in specs]
+            response.inventory = dict_to_inv(inventory)
+            response.poses = dict_to_poses(poses)
             response.success = True
             response.message = ''
             self.get_logger().info(
@@ -185,7 +137,7 @@ class DatabaseInterface(Node):
                 self.get_logger().warn(f'[database] UpdateInventory 중복 무시: {box_id}')
                 return response
 
-            inventory = _inv_to_dict(request.inventory)
+            inventory = inv_to_dict(request.inventory)
             self.work.update_inventory(box_id, inventory)
             self._applied_box_ids.add(box_id)
             response.success = True

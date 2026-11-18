@@ -7,7 +7,7 @@ place_algorithm.py — 적재 알고리즘 (담당: 정수현)
     robot.movel / movej / grip / force_z / compliance_on / force_on 안에서 관제 정지 확인과
     진행 알림(keepalive)이 자동으로 된다 → 여기서 report.check()·keepalive를 부를 필요 없음.
   - 실패하면 예외를 그냥 던진다. box_comm이 로봇을 멈추고(힘·순응제어 해제 + move_stop) Result로 바꾼다.
-    적재 칸이 없을 때만 PartError('NO_SLOT')를 직접 쓴다. 나머지는 PLACE_FAILED로 보고된다.
+    구역이 꽉 차면 미분류로 보낸다(11/18). 미분류 투하가 꺼져 있을 때만 PartError('NO_SLOT'). 나머지는 PLACE_FAILED.
   - 집기 확인 (11/17, 적재팀 재시도 로직을 Modbus 그리퍼로): 닫은 뒤 grip_close().grabbed로 잡혔는지,
     들어 올린 뒤 그리퍼 폭으로 계속 쥐고 있는지 확인. 못 잡았으면 같은 자세로 다시 (common.GRIP_RETRY = 3번,
     설정 grip_retry로 바꿀 수 있음). 다 실패하면 그리퍼 열고 이송 높이로 올라간 뒤 PartError('GRASP_FAILED')
@@ -21,11 +21,11 @@ place_algorithm.py — 적재 알고리즘 (담당: 정수현)
     result_class : 'A' ~ 'D' 또는 'U'(미분류)
     poses        : {'home_j': [6], 'measure_zone': [x, y, z], 'place_zones': {'A': [x, y], ...}} (DB 값)
     report       : report('picking' / 'moving' / 'placing'), report.log('메시지')
-    반환         : 놓은 (자리, 층)으로 잰 수량. U는 0
+    반환         : 놓은 (자리, 층)으로 잰 수량. U는 0. 구역 만재로 미분류에 보냈으면 ('U', 그 구역 정원) (11/18)
 
 v0.4 적재
   - 매 Goal마다 1자리부터 박스를 쥔 채 힘 제어로 내려가 닿은 TCP Z로 층 판단
-  - 꽉 찼으면(max_layers 초과 높이) 놓지 않고 올라가 다음 자리, 모든 자리가 차면 NO_SLOT
+  - 꽉 찼으면(max_layers 초과 높이) 놓지 않고 올라가 다음 자리, 모든 자리가 차면 미분류 투하 위치로 (11/18, 예전 NO_SLOT)
   - 놓은 (자리, 층) → 수량 = (자리-1) * max_layers + 층  (common.count_from_position)
   - U(미분류)는 unclassified.release_pose로 이동 후 투하. 힘 제어/층 판단 없음, 0 반환
 
@@ -55,8 +55,9 @@ v0.4 적재
 
 상태 파일 (~/.ros/place_real_v04_state.json, sim이면 place_sim_state.json)
   - 자리별 바닥 첫 접촉 Z 기준과 진행 중 작업(pending)을 저장
-  - 작업 중 멈추면 pending이 남아 다음 Goal을 거부한다 (물건을 쥔 채 멈췄을 수 있으므로).
-    그리퍼·적재 상태를 확인한 뒤 -p clear_pending:=true 로 한 번 실행하면 지워짐
+  - 작업 중 멈추면 pending이 남는다 (물건을 쥔 채 멈췄을 수 있으므로). 11/18부터 다음 Goal에서
+    그리퍼를 읽어 비어 있으면 자동으로 지우고 진행, 쥐고 있으면 PLACE_FAILED (_resolve_pending).
+    상태 파일을 지울 필요 없음 (지우면 자리별 첫 접촉 Z 기준까지 사라짐). -p clear_pending:=true 도 그대로 동작
 
 파라미터
   place_config      설정 파일 경로 (기본: 설치 폴더)
@@ -219,8 +220,8 @@ class PlaceAlgorithm:
                 self.state['pending'] = None
                 save_state(self.state_path, self.state)
             else:
-                self.log.warn(f"[place] 이전 작업 미완료: {self.state['pending']} — 그리퍼·적재 상태 확인 후 "
-                              f"-p clear_pending:=true 로 다시 실행해야 적재를 받습니다")
+                self.log.warn(f"[place] 이전 작업 미완료: {self.state['pending']} — 다음 Goal에서 그리퍼를 확인해 "
+                              f"비어 있으면 자동으로 지우고 진행합니다 (쥐고 있으면 PLACE_FAILED)")
         u = self.c.get('unclassified') or {}
         if u.get('enabled', False):
             if UNCLASSIFIED not in RESULT_CLASSES:
@@ -366,6 +367,28 @@ class PlaceAlgorithm:
     def _pending_done(self):
         self.state['pending'] = None
         save_state(self.state_path, self.state)
+
+    def _resolve_pending(self, report):
+        """이전 Goal이 중간에 멈춘 기록(pending)이 있을 때 (11/18 관제 추가 — 상태 파일을 rm으로 지우지 않아도 되게).
+        적재는 매 Goal마다 1자리부터 실제로 닿아 보고 수량을 재므로(재고 숫자를 믿지 않음),
+        미완료 기록이 막아야 하는 경우는 '그리퍼가 아직 무언가를 쥐고 있을 때'뿐이다.
+          빈 그리퍼 → 기록만 지우고 이번 Goal 진행 (WARN 로그. 자리별 첫 접촉 Z 기준값은 그대로 유지)
+          쥐고 있음 → PLACE_FAILED (사람이 빼야 함). 빼고 나면 다음 Goal에서 다시 확인해 자동으로 풀림
+        -p clear_pending:=true 로 다시 실행하는 방법도 그대로 동작한다."""
+        pending = self.state['pending']
+        if self.robot is None:
+            raise PartError('PLACE_FAILED', f'이전 작업 미완료 {pending} — 로봇 없이 그리퍼를 확인할 수 없음')
+        try:
+            held, _why, width = holding(self.robot.gripper, None, check_range=False)
+        except Exception as e:
+            raise PartError('PLACE_FAILED', f'이전 작업 미완료 {pending} — 그리퍼 상태 읽기 실패: {e}')
+        if held:
+            raise PartError('PLACE_FAILED', f'이전 작업 미완료 {pending} — 그리퍼가 아직 무언가를 쥐고 있음 '
+                                            f'(폭 {width:.1f} mm). 사람이 빼고 다시 시작하세요')
+        message = f'이전 작업 미완료 기록 {pending} → 그리퍼 비어 있음 확인, 기록 지우고 진행'
+        self.log.warn(f'[place] {message}')
+        report.log(message, 'WARN')
+        self._pending_done()
 
     # ------------------------------------------------------------------
     # 힘 제어 접촉 탐색
@@ -531,6 +554,17 @@ class PlaceAlgorithm:
         self.pick_from_measure_zone(zone, report)
         self._pending(phase='moving')
         report('moving')
+        self._drop_unclassified(home, release_pose, approach_z, report)
+        message = (f'U 미분류 경사로 투하 동작 완료: TCP={release_pose}, '
+                   '정상 A/B/C/D 재고 갱신 제외 (경사로 유입은 별도 센서로 확인하지 않음)')
+        self.log.info(message)
+        report.log(message)
+        self._pending_done()
+        return 0
+
+    def _drop_unclassified(self, home, release_pose, approach_z, report):
+        """쥐고 있는 박스를 미분류 투하 위치에 놓고 HOME으로 (지금 위치에서 출발).
+        미분류 Goal과 '구역 만재 → 미분류로 보내기'(11/18)가 같이 쓴다."""
         current = self.robot.pose()                     # 옆으로 가기 전에 접근 높이까지 수직 상승
         if current[2] < approach_z:
             self._move([current[0], current[1], approach_z, *current[3:]])
@@ -546,21 +580,15 @@ class PlaceAlgorithm:
         self._move(above)
         self._pending(phase='released_and_retracted')
         self.go_home(home)
-        message = (f'U 미분류 경사로 투하 동작 완료: TCP={release_pose}, '
-                   '정상 A/B/C/D 재고 갱신 제외 (경사로 유입은 별도 센서로 확인하지 않음)')
-        self.log.info(message)
-        report.log(message)
-        self._pending_done()
-        return 0
 
     # ------------------------------------------------------------------
     # 적재 (Goal 하나)
     # ------------------------------------------------------------------
-    def place(self, result_class, poses, report) -> int:
+    def place(self, result_class, poses, report):
+        """수량(int)을 반환. 구역이 꽉 차서 미분류로 보냈으면 ('U', 그 구역 수량) (11/18)"""
         c = self.c
         if self.state['pending']:
-            raise ValueError('이전 작업 미완료: 파지 물품/실제 적재 상태 확인 후 '
-                             'place_main을 -p clear_pending:=true 로 다시 실행하세요')
+            self._resolve_pending(report)
         if result_class == UNCLASSIFIED:
             return self._place_unclassified(poses, report)
         if result_class not in c['classes']:
@@ -620,4 +648,19 @@ class PlaceAlgorithm:
             report.log(message)
             self._pending_done()
             return count
-        raise PartError('NO_SLOT', f"{result_class} {c['slot_count']}자리 모두 {c['max_layers']}층 만재. 물품 파지 유지")
+        # 모든 자리 만재 (11/18 관제): 쥔 채 끝내지 않고 미분류 투하 위치로 보낸다 → (U, 정원) 반환
+        #   관제: 재고 result_class = 정원(꽉 참을 실제로 확인한 값), U +1, 로그 ZONE_FULL. 작업은 계속.
+        #   미분류 투하가 꺼져 있으면 예전처럼 쥔 채 NO_SLOT (작업 종료, 사람이 빼야 함)
+        full = count_from_position(c['slot_count'], c['max_layers'])
+        if not (c.get('unclassified') or {}).get('enabled', False):
+            raise PartError('NO_SLOT', f"{result_class} {c['slot_count']}자리 모두 {c['max_layers']}층 만재. "
+                                       f"미분류 투하 꺼짐 → 물품 파지 유지")
+        _h, _z, release_pose, approach_z = self._unclassified_poses(poses)
+        message = (f"{result_class} {c['slot_count']}자리 모두 {c['max_layers']}층 만재({full}개) "
+                   f"→ 미분류 투하 위치로 보냄")
+        self.log.warn(f'[place] {message}')
+        report.log(message, 'WARN')
+        self._pending(route='unclassified (zone full)')
+        self._drop_unclassified(home, release_pose, approach_z, report)
+        self._pending_done()
+        return UNCLASSIFIED, full

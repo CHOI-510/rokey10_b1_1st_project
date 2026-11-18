@@ -32,7 +32,7 @@ import math
 import statistics
 import time
 
-from box_comm.common import GRIP_RETRY, SYNC_GRIP, UNCLASSIFIED
+from box_comm.common import GRIP_RETRY, GRIPPER, SYNC_GRIP, TCP, UNCLASSIFIED
 from box_comm.gripper import holding
 from box_comm.judge_interface import PartError
 from box_comm.sync_grip import GripMissed, SyncGripper, grasp_height_for_tip, tip_h_mm
@@ -42,16 +42,16 @@ from box_judge import phase_plan as pp
 # 이름: (기본값, 설명) — rokey1 judge_flow_test · phase_align_test · rg2_stiffness_cycle 실물 값 (11/16 ~ 18)
 PARAMS = {
     # sync 집기 (common.SYNC_GRIP 과 같은 값)
-    'table_z': (30.9, 'sync 집기용 책상 z [mm] (수직 동작 기준)'),
     'grasp_height': (round(grasp_height_for_tip(SYNC_GRIP['tip_above_floor_mm'], SYNC_GRIP['ref_raw_mm']), 2),
                      '기준 폭에서 TCP 를 책상 위 몇 mm 에 (핑거 끝 2.6)'),
     'ref_width': (SYNC_GRIP['ref_raw_mm'], 'grasp_height 를 맞춘 원시 폭 [mm]'),
-    'tcp_z': (208.4, 'TCP GripperDA_v1 z 오프셋'),
+    'tcp_z': (TCP['pos'][2], 'TCP GripperDA_v1 z 오프셋 (common.TCP)'),
     'grip_force': (SYNC_GRIP['close_force_n'], '폭 잴 때 닫는 힘 [N] (닫힘 시간식 8~12 N)'),
-    'cal_gain': (1.0, '폭 보정 기울기 (패드 장착, 실제 = 원시 - 10.30)'),
-    'cal_offset': (0.30, '폭 보정 오프셋 [mm]'),
-    'open_width': (100.0, '열 때 패드 간격 [mm]'),
-    'open_force': (20.0, '여는 힘 [N]'),
+    # 아래 4개는 common.GRIPPER가 원본 (11/18 공용값으로 — 값은 그대로: 1.0 / 0.30 / 100 / 20)
+    'cal_gain': (GRIPPER['cal_gain'], '폭 보정 기울기 (패드 장착, 실제 = 원시 - 10.30)'),
+    'cal_offset': (GRIPPER['cal_offset_mm'], '폭 보정 오프셋 [mm]'),
+    'open_width': (GRIPPER['open_width_mm'], '열 때 패드 간격 [mm]'),
+    'open_force': (GRIPPER['open_force_n'], '여는 힘 [N]'),
     # 측정
     'obj_h_max': (75.0, '최대 물체 높이 [mm]'),
     'approach_clear': (10.0, '열린 핑거로 내려가기 시작할 때 핑거 끝 - 윗면 [mm]'),
@@ -222,13 +222,14 @@ class JudgeAlgorithm:
         self.sg = None
         self._report = None
 
-    def _make_sync_gripper(self):
+    def _make_sync_gripper(self, table_z):
+        """Goal마다 만든다. table_z = Goal의 측정존 바닥 z (DB) — 높이 측정과 같은 값 (11/18 관제: 예전 PARAMS table_z 30.9 삭제)"""
         p, g = self.p, self.io.g
         st = g.status()                               # 닫혀 있으면 반영 폭이 음수 -> 부호 없이 읽으면 패드 합이 -6543 (11/18)
         if not (0.0 <= g.pad_total <= 30.0) or abs(g.pad_total - 2.0 * st['offset_mm']) > 1.0:
             self.log.warn(f'[judge] 패드 두께 합 {g.pad_total:.1f} 이상 -> 오프셋 x2 = {2.0 * st["offset_mm"]:.1f} 로 씀')
             g.pad_total = 2.0 * st['offset_mm']
-        self.sg = SyncGripper(g, self.io, table_z=p['table_z'], grasp_height=p['grasp_height'],
+        self.sg = SyncGripper(g, self.io, table_z=table_z, grasp_height=p['grasp_height'],
                               ref_width=p['ref_width'], tcp_z=p['tcp_z'], force=p['grip_force'],
                               cal_gain=p['cal_gain'], cal_offset=p['cal_offset'], put_vel=p['put_vel'],
                               log=self.log.info)
@@ -242,9 +243,9 @@ class JudgeAlgorithm:
         if self.io is None:
             raise PartError('MEASURE_FAILED', '로봇 객체 없음 (두산 패키지 미설치)')
         self._report = report
-        self._make_sync_gripper()
         zone = self._measure_zone(poses)
-        table_z = float(zone[2])                      # 측정존 바닥 Z (DB, 적재와 같은 값)
+        table_z = float(zone[2])                      # 측정존 바닥 Z (DB 하나 — 높이 측정·sync 집기 공통, 11/18)
+        self._make_sync_gripper(table_z)
         px, py = zone[0], zone[1]
         io, p = self.io, self.p
         H = None

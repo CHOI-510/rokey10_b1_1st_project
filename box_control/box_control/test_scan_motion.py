@@ -4,9 +4,9 @@ test_scan_motion.py — 실제 두산 동작을 넣은 '/scan' 테스트 노드 
 ================================================================
 목적
   팀원이 run() 안에 DSR_ROBOT2 동작(movej, movel)을 넣었을 때의 구조를 그대로 재현한다.
-    - box_comm.scan_interface로 /scan Action 서버를 띄운다 (팀원 템플릿과 같은 구조)
-    - Goal을 받으면 box_comm이 기본 TCP·툴을 확인·적용한 뒤 run()을 호출한다
-    - run() 안에서 gear_test_v2.py와 같은 방식으로 DSR_ROBOT2 함수를 호출한다
+    - box_comm.scan_interface.start_algorithm으로 /scan Action 서버를 띄운다 (실제 파트 코드와 같은 구조)
+    - Goal을 받으면 box_comm이 기본 TCP·툴을 확인·적용한 뒤 scan(poses, report)를 호출한다
+    - 로봇은 관제가 넣어 주는 robot(box_comm.dsr_io.DsrIO)으로만 움직인다 → 정지 확인 자동 (11/18 변경)
   → 확인할 것: 'Executor is already spinning' 없이 로봇이 움직이는지,
                TCP 기준 좌표(get_current_posx)가 그리퍼 끝 기준으로 나오는지
 
@@ -31,70 +31,57 @@ test_scan_motion.py — 실제 두산 동작을 넣은 '/scan' 테스트 노드 
 ================================================================
 """
 
+from box_comm.scan_interface import PartError, start_algorithm
 
-from box_comm.robot import connect_dsr
-from box_comm.scan_interface import PartError, start
-
-DR_MV_MOD_REL = 1        # DRL 상수 (gear_test_v2.py와 같은 매핑)
 LIFT_MM = 50.0           # HOME에서 위로 올렸다 내리는 거리
+
+VEL_J, ACC_J = 30.0, 60.0        # 시험용 느린 속도 [deg/s, deg/s2]
+VEL_L, ACC_L = 100.0, 300.0      # [mm/s, mm/s2]
+
+
+def move_rel(robot, dx=0.0, dy=0.0, dz=0.0):
+    """지금 TCP에서 BASE 기준으로 dx, dy, dz만큼 직선 이동 (DsrIO.movel = 정지 확인 + 도달 확인)"""
+    p = robot.pose()
+    robot.movel([p[0] + dx, p[1] + dy, p[2] + dz, *p[3:]], vel=VEL_L, acc=ACC_L)
 
 
 class ScanMotionTest:
-    def __init__(self, node):
+    def __init__(self, node, robot):
         self.log = node.get_logger()
-
-        # ---- 두산 로봇 연결: 파트 노드와 분리한 전용 노드 (box_comm/robot.py) ----
-        dr, self.dsr_node = connect_dsr('scan_motion_dsr')
-        self.movej, self.movel, self.get_current_posx = dr.movej, dr.movel, dr.get_current_posx
-        self._speed = (dr.set_velj, dr.set_accj, dr.set_velx, dr.set_accx)
+        self.robot = robot                  # box_comm.dsr_io.DsrIO (관제가 만들어 줌)
         self.count = 0
         self.box_count = int(node.declare_parameter('box_count', 0).value)
         self.log.warn('[test_scan_motion] ⚠ Goal을 받으면 로봇이 실제로 움직입니다 '
                       f'(HOME → 위로 {LIFT_MM:.0f}mm → 아래로 → HOME)')
 
-    def run(self, report) -> bool:
+    def scan(self, poses, report) -> bool:
         if self.box_count and self.count >= self.box_count:
             report('space_scan')
             self.log.info(f'[test_scan_motion] box_count={self.box_count} 도달 → 물품 없음 (움직이지 않음)')
             return False
+        if self.robot is None:
+            raise PartError('SCAN_FAILED', '로봇 연결 없음 (두산 패키지·bringup 확인)')
         self.count += 1
-        set_velj, set_accj, set_velx, set_accx = self._speed
-        try:
-            set_velj(30.0)                    # 테스트용 느린 속도
-            set_accj(60.0)
-            set_velx(100.0, 40.0)
-            set_accx(300.0, 120.0)
-
-            report('space_scan')
-            home = self.poses['home_j']          # Goal로 받은 DB 값 (단독 실행이면 common.py 기본값)
-            self.log.info(f'[test_scan_motion] #{self.count} movej HOME {home} | 측정존 {self.poses["measure_zone"]}')
-            self.movej(home)
-            report.check()            # 관제가 정지를 요청했으면 다음 동작 전에 멈춤
-            pos = self.get_current_posx()
-            self.log.info(f'[test_scan_motion] TCP 기준 현재 위치(posx): {pos}')
-
-            report('picking')
-            self.movel([0.0, 0.0, LIFT_MM, 0.0, 0.0, 0.0], mod=DR_MV_MOD_REL)
-            report.check()            # 관제가 정지를 요청했으면 다음 동작 전에 멈춤
-
-            report('moving')
-            self.movel([0.0, 0.0, -LIFT_MM, 0.0, 0.0, 0.0], mod=DR_MV_MOD_REL)
-            report.check()            # 관제가 정지를 요청했으면 다음 동작 전에 멈춤
-
-            report('placing')
-            self.movej(home)
-            report.check()            # 관제가 정지를 요청했으면 다음 동작 전에 멈춤
-        except PartError:
-            raise                 # CANCELED(관제 정지) 등은 바꾸지 않고 그대로 올림
-        except Exception as e:
-            raise PartError('SCAN_FAILED', f'DSR 동작 실패: {type(e).__name__}: {e}')
+        r = self.robot
+        report('space_scan')
+        home = poses['home_j']                   # Goal로 받은 DB 값 (단독 실행이면 common.py 기본값)
+        self.log.info(f'[test_scan_motion] #{self.count} movej HOME {home} | 측정존 {poses["measure_zone"]}')
+        r.movej(home, vel=VEL_J, acc=ACC_J)
+        self.log.info(f'[test_scan_motion] TCP 기준 현재 위치(posx): {r.pose()}')
+        report('picking')
+        move_rel(r, dz=LIFT_MM)
+        report('moving')
+        move_rel(r, dz=-LIFT_MM)
+        report('placing')
+        r.movej(home, vel=VEL_J, acc=ACC_J)
+        # 실패하면 box_comm(algorithm.py)이 로봇을 멈추고 SCAN_FAILED로 보낸다 (CANCELED는 그대로)
 
         self.log.info(f'[test_scan_motion] #{self.count} 동작 완료')
         return True
 
 
 def main():
-    start(ScanMotionTest)
+    start_algorithm(ScanMotionTest)
 
 
 if __name__ == '__main__':

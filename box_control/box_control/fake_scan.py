@@ -26,7 +26,7 @@ import time
 
 from rcl_interfaces.msg import ParameterDescriptor
 
-from box_comm.scan_interface import PartError, start
+from box_comm.scan_interface import PartError, start_algorithm
 
 ANY_TYPE = ParameterDescriptor(dynamic_typing=True)   # -p x:=2 (정수)와 -p x:="1,2" (문자열) 둘 다 받음
 RETURN_FILE = os.environ.get('BOX_FAKE_RETURN_FILE', '/tmp/box_fake_return')
@@ -48,7 +48,7 @@ def parse_at(text) -> set:
 
 
 class FakeScan:
-    def __init__(self, node):
+    def __init__(self, node, robot=None):         # robot: 쓰지 않음 (use_robot=False)
         self.log = node.get_logger()
         node.declare_parameter('box_count', 3)
         node.declare_parameter('fake_delay_sec', 1.0)
@@ -64,7 +64,7 @@ class FakeScan:
         self.log.info(f'[fake_scan] box_count={self.remaining}, delay={self.delay}s, '
                       f'grasp_fail_at={sorted(self.fail_at)}')
 
-    def run(self, report) -> bool:
+    def scan(self, poses, report) -> bool:
         self.goals += 1
         report('space_scan')
         time.sleep(self.delay)
@@ -112,7 +112,7 @@ class FakeScan:
 
 
 def main():
-    start(FakeScan)
+    start_algorithm(FakeScan, use_robot=False)
 
 
 if __name__ == '__main__':

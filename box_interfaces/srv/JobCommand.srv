@@ -1,8 +1,8 @@
 # Remote job command -> control (server: /job_command on control node, 11/18).
 # Caller: DB node (UI start button), or terminal for testing:
 #   ros2 service call /job_command box_interfaces/srv/JobCommand "{command: 'start', source: 'cli'}"
-# Control accepts 'start' only when it is waiting in READY (resident mode, to be implemented).
-string command         # "start"
+# Control (resident mode): 'start' only in READY, 'cancel' only before work starts (BEFORE/PREFLIGHT/STANDBY).
+string command         # "start" / "cancel" / "start_now" (start_now: on-site only — admin GUI / control terminal; refused when source is "ui")
 string source          # who sent it: "ui" / "cli" / ...
 ---
 bool success

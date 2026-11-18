@@ -52,17 +52,19 @@ ros2 pkg list | grep box_       # 7개가 나오면 성공
 
 ### 1-3. 동작 확인 (fake)
 
-터미널 5개를 열고, 각 터미널에서 먼저 `source ~/ws/install/setup.bash`를 합니다.
+터미널 하나로: `./scripts/fake_run.sh` (DB 노드 + fake 파트 3개 + 관제를 한 번에, 끝나면 정리).
+
+터미널을 따로 열 때는 5개를 열고, 각 터미널에서 먼저 `source ~/ws/install/setup.bash`를 합니다.
 
 ```bash
-ros2 run box_control fake_database
+ros2 run box_database database_main --ros-args -p store:=file -p start_inventory:="[0,0,0,0,0]"
 ros2 run box_control fake_scan --ros-args -p box_count:=3 -p fake_delay_sec:=0.3
 ros2 run box_control fake_judge
 ros2 run box_control fake_place
-ros2 run box_control control          # 마지막에 실행 (모니터 GUI 창이 같이 뜸, 끄기 -p gui:=false)
+ros2 run box_control control --ros-args -p auto_start:=true -p robot_monitor:=off -p start_delay_sec:=10.0
 ```
 
-관제는 10초 카운트다운 뒤에 시작합니다. 기다리기 싫으면 `s`를 누르면 바로 시작합니다.
+`auto_start:=true`면 10초 카운트다운 뒤 바로 한 번 돌고 끝납니다 (`s`: 바로 시작). 빼면 상주 모드라 READY에서 `s`를 눌러 시작합니다.
 관제 터미널에 `===== DONE (작업완료) =====`가 나오면 환경 세팅이 끝난 것입니다.
 
 ---
@@ -152,8 +154,8 @@ class PlaceAlgorithm:
         # result_class = 'U' (미분류, v0.5): 미분류 투하 위치에 놓기만 하고 0을 반환 (수량은 관제가 셈)
 ```
 
-> 예전 방식(`class ScanWork: run(self, report)` + `start(ScanWork)`, 좌표는 `self.poses`)도 아직 동작합니다.
-> `box_control`의 fake·`test_*_motion` 노드가 이 방식입니다. 새로 짜는 메인 코드는 위 알고리즘 방식으로 합니다.
+> 11/18부터 실행 방식은 알고리즘 방식 하나입니다 (예전 `run(self, report)` + `start(Work)` 방식은 없어짐).
+> `box_control`의 fake·`test_*_motion` 노드도 같은 방식으로 바꿨습니다. 로봇을 안 쓰는 fake는 `start_algorithm(Cls, use_robot=False)`.
 
 **DB — `database.py`**
 
@@ -195,7 +197,7 @@ report.log('정렬 완료 (90° 회전)')                  # level 기본값 'IN
 | 적재 | `picking` → `moving` → `placing` |
 
 ```python
-def run(self, report) -> bool:
+def scan(self, poses, report) -> bool:
     report('space_scan')
     ...                      # 스캔
     report('picking')
@@ -224,9 +226,9 @@ raise PartError('GRASP_FAILED', '두 번 시도했지만 못 집음')
 | `GRASP_FAILED` | 집기 실패 — **정해진 횟수만큼 다시 집어 보고 포기했을 때만** (아래 2-3-2). 관제가 공간 스캔부터 다시 |
 | `OVER_FORCE` | 과도한 힘 감지 |
 | `MEASURE_FAILED` | 측정 실패 |
-| `NO_SLOT` | 적재할 칸 없음 |
+| `NO_SLOT` | 적재할 칸 없음 — 11/18부터 구역이 차면 미분류로 보내고 `('U', 정원)`을 반환. 미분류 투하가 꺼져 있을 때만 씀 |
 | `SCAN_FAILED` | 탐지 실패 (집기 말고 예상 못 한 오류 — 탐지 기본 코드) |
-| `PLACE_FAILED` | 적재 실패 |
+| `PLACE_FAILED` | 적재 실패 (이송 중 놓침, 이전 작업에서 쥔 채 멈춤 등). 수량만 이상하면 실패가 아님 — `box_comm`이 0(확인 불가)으로 보내고 관제가 재고를 그대로 둠 (11/18) |
 | `ROBOT_SETUP_FAILED` | 기본 TCP·툴 적용 실패 (`box_comm`이 작업 함수 전에 보냄, 파트 코드에서는 쓰지 않음) |
 | `CANCELED` | 관제가 정지를 요청함 (`box_comm`이 robot 명령·`report()`에서 자동으로 냄, 파트 코드에서는 쓰지 않음) |
 
@@ -356,20 +358,9 @@ def scan(self, poses, report):
 - 템플릿의 `_measure_zone()`이 미설정 여부까지 확인해 줍니다.
 - 좌표를 `__init__`에서 변수에 저장해 두지 마세요. Goal마다 DB 값이 바뀔 수 있으므로 작업 함수 안에서 매번 `poses`로 읽습니다.
 
-- 두산 로봇 연결(`connect_dsr()`, 두산 전용 노드 분리, executor)은 **`box_comm`이 대신 합니다.** 알고리즘 방식에서는 신경 쓰지 않아도 됩니다.
-- 예전 방식(`run()` 안에서 `self.dr.movel` 직접 호출)을 쓸 때만 아래가 해당됩니다.
-  ```python
-  from box_comm.robot import connect_dsr
-
-  class ScanWork:
-      def __init__(self, node):
-          self.dr, self.dsr_node = connect_dsr('scan_dsr')   # 판별 'judge_dsr', 적재 'place_dsr'
-  ```
-  ⚠ 클래스 안에서 `DR_init.__dsr__node = ...`를 직접 쓰지 마세요. 파이썬이 `__`로 시작하는 이름을 클래스 이름이 붙은 다른 이름으로 바꿔 버려서, 두산 쪽이 노드를 찾지 못합니다(`'NoneType' object has no attribute 'create_client'`).
-- `box_comm`이 만든 노드(`self.node`)와 **로봇 제어용 노드를 분리**합니다. (`connect_dsr()`가 해 줍니다)
-  `DSR_ROBOT2` 함수는 등록된 노드를 내부에서 spin하므로, 같은 노드를 쓰면 충돌할 수 있습니다.
-- 노드 이름은 파트별로 다르게 합니다. (`scan_dsr`, `judge_dsr`, `place_dsr`)
-- **실제로 움직이는 완성 예시**: 알고리즘 방식은 `box_place/box_place/place_algorithm.py`(실제 로봇에서 적재 검증). 예전 방식 예시는 `box_control/box_control/test_scan_motion.py`입니다.
+- 두산 로봇 연결(`connect_dsr()`, 두산 전용 노드 분리, executor)은 **`box_comm`이 대신 합니다** (`DsrIO`를 만들어 알고리즘에 `robot`으로 넣음). 파트 코드에서 `DSR_ROBOT2`·`connect_dsr`를 직접 쓰지 않습니다.
+  ⚠ 클래스 안에서 `DR_init.__dsr__node = ...`를 직접 쓰지 마세요. 파이썬이 `__`로 시작하는 이름을 바꿔 버려서 두산 쪽이 노드를 찾지 못합니다.
+- **실제로 움직이는 완성 예시**: `box_place/box_place/place_algorithm.py`(실제 로봇에서 적재 검증), 짧은 예시는 `box_control/box_control/test_scan_motion.py`(HOME → 위아래 50mm).
 
 ### 2-5-1. 측정존 인수인계 약속 (탐지 → 판별 → 적재, 11/17)
 
@@ -453,7 +444,8 @@ ros2 service call /update_inventory box_interfaces/srv/UpdateInventory \
 ```
 
 관제와 연결해 보려면 내 노드만 실제로, 나머지는 fake로 띄웁니다.
-예: `box_scan scan_main`(내 노드) + `fake_judge` + `fake_place` + `fake_database` + `control`
+예: `box_scan scan_main`(내 노드) + `fake_judge` + `fake_place` + `database_main -p store:=file` + `control`
+(한 번에: `SCAN_MAIN=1 ./scripts/fake_run.sh`, 판별 `JUDGE_MAIN=1`, 적재 `PLACE_MAIN=1`)
 
 ---
 

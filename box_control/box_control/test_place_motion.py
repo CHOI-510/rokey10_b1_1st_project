@@ -3,7 +3,7 @@
 test_place_motion.py — 실제 두산 동작을 넣은 '/place' 테스트 노드 (관제 테스트 전용)
 ================================================================
 목적
-  탐지·판별·적재 세 파트가 각자 connect_dsr()로 로봇에 '동시에 연결'해 둔 상태에서
+  탐지·판별·적재 세 파트가 각자 DsrIO(box_comm/dsr_io.py)로 로봇에 '동시에 연결'해 둔 상태에서
   관제가 순서대로 Goal을 보낼 때 문제없이 움직이는지 확인한다 (PROGRESS 이슈 #8).
   test_scan_motion(/scan) + test_judge_motion(/judge) + test_place_motion(/place) + control
 
@@ -21,49 +21,45 @@ test_place_motion.py — 실제 두산 동작을 넣은 '/place' 테스트 노�
 ================================================================
 """
 
-from box_comm.robot import connect_dsr
 from box_comm.common import position_from_count
-from box_comm.place_interface import PartError, start
+from box_comm.place_interface import PartError, start_algorithm
 
-DR_MV_MOD_REL = 1
 STEP_MM = 30.0
+
+VEL_J, ACC_J = 30.0, 60.0        # 시험용 느린 속도 [deg/s, deg/s2]
+VEL_L, ACC_L = 100.0, 300.0      # [mm/s, mm/s2]
+
+
+def move_rel(robot, dx=0.0, dy=0.0, dz=0.0):
+    """지금 TCP에서 BASE 기준으로 dx, dy, dz만큼 직선 이동 (DsrIO.movel = 정지 확인 + 도달 확인)"""
+    p = robot.pose()
+    robot.movel([p[0] + dx, p[1] + dy, p[2] + dz, *p[3:]], vel=VEL_L, acc=ACC_L)
 
 
 class PlaceMotionTest:
-    def __init__(self, node):
+    def __init__(self, node, robot):
         self.log = node.get_logger()
-        dr, self.dsr_node = connect_dsr('place_motion_dsr')
-        self.movej, self.movel = dr.movej, dr.movel
-        self._speed = (dr.set_velj, dr.set_accj, dr.set_velx, dr.set_accx)
+        self.robot = robot                  # box_comm.dsr_io.DsrIO (관제가 만들어 줌)
         self.count = 0
         self.stack = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
         self.log.warn('[test_place_motion] ⚠ Goal을 받으면 로봇이 실제로 움직입니다 '
                       f'(HOME → y ±{STEP_MM:.0f}mm → HOME)')
 
-    def run(self, result_class, report) -> int:
+    def place(self, result_class, poses, report) -> int:
+        if self.robot is None:
+            raise PartError('PLACE_FAILED', '로봇 연결 없음 (두산 패키지·bringup 확인)')
         self.count += 1
-        set_velj, set_accj, set_velx, set_accx = self._speed
-        home = self.poses['home_j']
-        try:
-            set_velj(30.0); set_accj(60.0); set_velx(100.0, 40.0); set_accx(300.0, 120.0)
-            self.log.info(f'[test_place_motion] #{self.count} {result_class} 적재 흉내, movej HOME {home}')
-            report('picking')
-            self.movej(home)
-            report.check()            # 관제가 정지를 요청했으면 다음 동작 전에 멈춤
-            self.movel([0.0, STEP_MM, 0.0, 0.0, 0.0, 0.0], mod=DR_MV_MOD_REL)
-            report.check()            # 관제가 정지를 요청했으면 다음 동작 전에 멈춤
-            report('moving')
-            self.movel([0.0, -2 * STEP_MM, 0.0, 0.0, 0.0, 0.0], mod=DR_MV_MOD_REL)
-            report.check()            # 관제가 정지를 요청했으면 다음 동작 전에 멈춤
-            report('placing')
-            self.movel([0.0, STEP_MM, 0.0, 0.0, 0.0, 0.0], mod=DR_MV_MOD_REL)
-            report.check()            # 관제가 정지를 요청했으면 다음 동작 전에 멈춤
-            self.movej(home)
-            report.check()            # 관제가 정지를 요청했으면 다음 동작 전에 멈춤
-        except PartError:
-            raise                 # CANCELED(관제 정지) 등은 바꾸지 않고 그대로 올림
-        except Exception as e:
-            raise PartError('PLACE_FAILED', f'DSR 동작 실패: {type(e).__name__}: {e}')
+        r, home = self.robot, poses['home_j']
+        self.log.info(f'[test_place_motion] #{self.count} {result_class} 적재 흉내, movej HOME {home}')
+        report('picking')
+        r.movej(home, vel=VEL_J, acc=ACC_J)
+        move_rel(r, dy=STEP_MM)
+        report('moving')
+        move_rel(r, dy=-2 * STEP_MM)
+        report('placing')
+        move_rel(r, dy=STEP_MM)
+        r.movej(home, vel=VEL_J, acc=ACC_J)
+        # 실패하면 box_comm(algorithm.py)이 로봇을 멈추고 PLACE_FAILED로 보낸다 (CANCELED는 그대로)
 
         if result_class == 'U':          # 미분류: 놓기만 함, 수량은 관제가 셈 (v0.5)
             self.log.info(f'[test_place_motion] #{self.count} 동작 완료 → 미분류 투하 (0 반환)')
@@ -76,7 +72,7 @@ class PlaceMotionTest:
 
 
 def main():
-    start(PlaceMotionTest)
+    start_algorithm(PlaceMotionTest)
 
 
 if __name__ == '__main__':

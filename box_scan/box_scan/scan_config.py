@@ -49,7 +49,7 @@ GRIP_RETRY_ANGLES = (0.0, 45.0, 90.0)    # 원본 실로봇 시험값 (11/17 팀
 GRIP_RETRY_LIFT_MM = 20.0
 PICK_LIFT_MM = 20.0
 PICK_HOLD_SECONDS = 0.2
-GRIP_FORCE_N = 40.0          # 잡는 힘 [N]. 원본 WebLogic 설정값 40 N (RG2 최대). None이면 common GRIPPER grip_force_n(40 N) (11/18)
+GRIP_FORCE_N = None          # 잡는 힘 [N]. None = common.GRIPPER['grip_force_n'] (40 N, 원본 WebLogic 값과 같음). 탐지만 다르게 하려면 숫자로 (11/18 공용값으로)
 OPEN_WIDTH_MM = None         # None이면 common.GRIPPER['open_width_mm']
 
 # 높이 탐지 실패 반복 (부채꼴 4점 모두 높이 없음)

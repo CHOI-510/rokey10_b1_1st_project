@@ -106,12 +106,18 @@ class FileStore:
             f.write('\n')
         os.replace(tmp, path)          # 쓰는 중에 열어 봐도 반쯤 쓴 파일이 안 보이게
 
+    def _read_table(self, path, default):
+        """매번 읽음 → 파일을 고치면 다음 작업부터 반영. 지워져 있으면 처음 값으로 다시 만듦"""
+        with self._lock:
+            if not os.path.exists(path):
+                self._write(path, default)
+        return self._read(path)
+
     def products(self):
-        rows = self._read(self.p_product)          # 매번 읽음 → 파일을 고치면 다음 작업부터 반영
-        return sorted(rows, key=lambda r: r['class_id'])
+        return sorted(self._read_table(self.p_product, cfg.FILE_PRODUCT), key=lambda r: r['class_id'])
 
     def locs(self):
-        return self._read(self.p_loc)
+        return self._read_table(self.p_loc, cfg.FILE_LOC)
 
     def get_state(self):
         with self._lock:

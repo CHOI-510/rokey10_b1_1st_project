@@ -1,0 +1,20 @@
+# 고정 파라미터 (system.launch.py가 모든 노드에 넘김. 노드는 자기 이름 칸만 읽음)
+# 자주 바꾸는 값은 launch 인자로: start_delay, db_store, sim_boxes, box_count, classes
+# robot_monitor·BOX_GRIPPER·sim_contact는 mode/fake 인자로 launch가 정함
+
+control:
+  ros__parameters:
+    progress_timeout_sec: 0.0     # 파트가 '살아 있는데 멈춤' 감시 [s] (0 = 끔). 실제 로봇 시간 재고 정할 것 (예: 60.0)
+    clear_zone: auto              # 측정존 비우기: auto / robot / fake_ok / fake_fail
+
+scan:
+  ros__parameters:
+    robot_setup: auto             # TCP·툴 확인 (auto / on / off)
+
+judge:
+  ros__parameters:
+    robot_setup: auto
+
+place:
+  ros__parameters:
+    robot_setup: auto

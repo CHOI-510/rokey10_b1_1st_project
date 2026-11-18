@@ -17,8 +17,9 @@ control_interface.py — 관제 통신 계층
 
   scan(poses)                         -> (found: bool, err)
   judge(specs, poses)                 -> (result_class: str, err)
-  place(result_class, poses)          -> (count: int|None, err)
+  place(result_class, poses)          -> (count: int|None, placed_class: str, err)
     count = 적재가 실제로 놓은 위치로 잰 result_class 수량 (v0.4)
+    placed_class = 실제로 놓은 곳. 보통 result_class, 구역이 꽉 차서 미분류로 보냈으면 'U' (11/18)
     poses = {'home_j': [6], 'measure_zone': [3], 'place_zones': {'A': [x, y], ...}} (DB 값).
             모든 Goal에 실어 보낸다.
   get_job_data()                 -> (specs: list, inventory: dict, poses: dict|None, err)
@@ -43,6 +44,7 @@ control_interface.py — 관제 통신 계층
   stop_reason()                  -> (code, detail) 또는 None
     정지가 요청됐는지. 요청되면 진행 중인 Action은 바로 그 code로 끝나고(err),
     이후 Action 호출도 모두 그 code를 돌려준다. (DB Service는 계속 동작 — 상태 기록용)
+  reset_stop()                   새 작업 시작 때 지난 정지 요청을 지움 (상주 모드, 11/18)
   request_stop(code, detail='')  관제 스스로 정지할 때 (첫 요청만 유효)
     → 두산 move_stop(반복) + 진행 중인 파트 Goal cancel
   arm_monitor(on)                작업 중(RUNNING)에만 로봇 상태 이상을 정지로 처리
@@ -53,9 +55,16 @@ control_interface.py — 관제 통신 계층
     로봇 상태가 STANDBY/MOVING이 아님 (robot_monitor=dsr/fake)   → ROBOT_* (작업 중에만)
     로봇 상태 확인 연속 실패 / robot_disconnection 토픽          → ROBOT_DISCONNECTED (작업 중에만)
     파트 Feedback이 progress_timeout_sec 동안 없음               → NO_PROGRESS (작업 중에만)
+    실행 중인 파트 Action 서버가 PART_LOST_SEC 넘게 사라짐       → PART_DIED (작업 중에만, 11/18 — 시간 값 없이 '노드 죽음'만 잡음)
   파라미터: robot_monitor (dsr 기본 / fake / off), fake_robot_state (int), progress_timeout_sec (float)
     robot_monitor=dsr인데 bringup이 없거나 dsr_msgs2가 없으면 사전 점검(로봇 상태)이 FAIL → 작업 시작 안 함.
     로봇 없이 fake 파트로 테스트할 때만 -p robot_monitor:=off (사전 점검 WARN, 정지 감지 없음).
+
+  원격 작업 명령 (상주 모드, 11/18)
+  /job_command 서비스 (box_interfaces/srv/JobCommand): UI → DB 노드 → 관제. command = start / cancel
+    (관리자 GUI·터미널은 start_now도 — 웹 경로는 DB 노드가 막고, 관제도 source='ui'면 거절)
+  set_job_command_handler(fn)    fn(command, source) -> (ok, message). executor 스레드에서 불림 → 짧게
+                                 (관제는 신호만 켜고 바로 응답, 작업은 메인 스레드가 돌림)
 
   진행 추적 (Feedback 기반)
   progress(name)                 -> (last_stage: str, seconds_since: float)
@@ -66,8 +75,8 @@ control_interface.py — 관제 통신 계층
     오래 걸리는 단계는 파트가 report.keepalive()로 시각을 갱신해야 오인 정지가 나지 않는다.
 
   Action 대기 시간
-    scan/judge/place는 timeout=None(무한 대기)으로 호출된다. 파트가 멈추면
-    정지 요청이나 progress_timeout_sec만이 대기를 끝낸다 → 실제 운용에서는 progress_timeout_sec를 켤 것.
+    scan/judge/place는 timeout=None(무한 대기)으로 호출된다. 대기를 끝내는 것은
+    정지 요청, 파트 노드 죽음(PART_DIED, 항상 켜짐), progress_timeout_sec(켰을 때, '살아 있는데 멈춤')이다.
 
   관제 내부 코드 (파트가 보내는 코드가 아님)
     SERVER_DOWN  서버가 떠 있지 않음
@@ -92,55 +101,20 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 from box_interfaces.action import Judge, Place, Scan
-from box_interfaces.msg import ClassSpec, FixedPoses, Inventory, LogEvent, PlaceZone
+from box_interfaces.msg import LogEvent
 
-from box_comm.common import (LOG_LEVELS, LOG_TOPIC, ROBOT, ROBOT_OK_STATES, ROBOT_STATE, SAFETY,
-                             STATUS_PERIOD_SEC, STATUS_TOPIC, log_qos, poses_from_msg,
+from box_comm.common import (LOG_LEVELS, LOG_TOPIC, ROBOT, ROBOT_OK_STATES, ROBOT_STATE, SAFETY, ROBOT_HINT_WAIT,
+                             SRV_JOB_COMMAND, STATUS_PERIOD_SEC, STATUS_TOPIC, log_qos, poses_from_msg,
                              robot_hint, robot_stop_code, status_qos)
-from box_interfaces.srv import EmergencyStop, GetJobData, SetJobStatus, UpdateInventory
+from box_comm.convert import dict_to_inv, dict_to_poses, dict_to_spec, inv_to_dict, spec_to_dict
+from box_interfaces.srv import EmergencyStop, GetJobData, JobCommand, SetJobStatus, UpdateInventory
 from rcl_interfaces.msg import ParameterDescriptor
 
 NODE_NAME = 'control'
 SERVER_WAIT_SEC = 3.0        # 서버가 떠 있는지 기다리는 시간
 SRV_EMERGENCY_STOP = '/emergency_stop'
 WAIT_SLICE = 0.05            # Action 결과를 기다리며 정지 요청을 확인하는 간격
-
-
-# ----------------------------------------------------------------------
-# 변환 헬퍼
-# ----------------------------------------------------------------------
-def _inv_to_dict(inv: Inventory) -> dict:
-    return {'A': inv.a, 'B': inv.b, 'C': inv.c, 'D': inv.d, 'U': inv.u}     # U = 미분류 (v0.5)
-
-
-def _dict_to_inv(d: dict) -> Inventory:
-    return Inventory(a=int(d['A']), b=int(d['B']), c=int(d['C']), d=int(d['D']),
-                     u=int(d.get('U', 0)))
-
-
-def _spec_to_dict(s: ClassSpec) -> dict:
-    return {'class_id': s.class_id, 'width_mm': float(s.width_mm),
-            'depth_mm': float(s.depth_mm), 'height_mm': float(s.height_mm),
-            'weight_g': float(s.weight_g)}
-
-
-def _dict_to_poses(d) -> FixedPoses:
-    msg = FixedPoses()
-    if not d or d.get('measure_zone') is None:
-        msg.available = False
-        return msg
-    msg.available = True
-    msg.home_j = [float(v) for v in d['home_j']]
-    msg.measure_zone = [float(v) for v in d['measure_zone']]
-    msg.place_zones = [PlaceZone(class_id=c, x=float(xy[0]), y=float(xy[1]))
-                       for c, xy in (d.get('place_zones') or {}).items() if xy is not None]
-    return msg
-
-
-def _dict_to_spec(d: dict) -> ClassSpec:
-    return ClassSpec(class_id=str(d['class_id']), width_mm=float(d['width_mm']),
-                     depth_mm=float(d['depth_mm']), height_mm=float(d['height_mm']),
-                     weight_g=float(d['weight_g']))
+PART_LOST_SEC = 3.0          # 실행 중인 파트 Action 서버가 이만큼 안 보이면 PART_DIED (11/18)
 
 
 class ControlInterface(Node):
@@ -160,6 +134,7 @@ class ControlInterface(Node):
         self._log_pub = self.create_publisher(LogEvent, LOG_TOPIC, log_qos())
         self._log_ctx = {'job_id': '', 'box_id': '', 'class_id': ''}
         self._log_seq = 0                  # 작업(job_id)마다 1부터 — DB가 중복 줄을 거르는 데 씀 (11/18)
+        self._log_lock = threading.Lock()  # 번호 매기기: 메인 스레드(관제)와 executor 스레드(파트 Feedback·알람)가 같이 씀
 
         # 관제 상태 (모니터 GUI·DB 노드, 마지막 1개 유지 → 늦게 켜도 받음)
         self._status_pub = self.create_publisher(String, STATUS_TOPIC, status_qos())
@@ -174,7 +149,8 @@ class ControlInterface(Node):
         self._stop_lock = threading.Lock()
         self._stop = None                  # (code, detail) — 첫 요청만 유효
         self._stop_event = threading.Event()
-        self._active = None                # (name, goal_handle) 실행 중인 Action
+        self._active = None                # (name, goal_handle, client) 실행 중인 Action
+        self._server_lost_since = None     # 실행 중인 파트 Action 서버가 안 보이기 시작한 시각 (PART_DIED 판단)
         self._armed = False                # 작업 중(RUNNING)에만 이상 감지를 정지로 처리
         self._robot_state = None           # 마지막으로 읽은 로봇 상태 (int)
         self._robot_lost = 0               # 상태 확인 연속 실패 횟수
@@ -192,20 +168,22 @@ class ControlInterface(Node):
             self._monitor = 'off'
 
         self.create_service(EmergencyStop, SRV_EMERGENCY_STOP, self._on_emergency_stop, callback_group=cb)
+        self._job_cmd_handler = None
+        self.create_service(JobCommand, SRV_JOB_COMMAND, self._on_job_command, callback_group=cb)
         self._setup_dsr(cb)
         self.create_timer(SAFETY['monitor_period_sec'], self._on_monitor_tick, callback_group=cb)
         self.create_timer(STATUS_PERIOD_SEC, self._republish_status, callback_group=cb)
 
         self.get_logger().info(
             f'[control] 클라이언트 준비 (Action 3, Service 3, 로그 토픽 {LOG_TOPIC}) | '
-            f'비상정지 {SRV_EMERGENCY_STOP} | robot_monitor={self._monitor} | '
+            f'비상정지 {SRV_EMERGENCY_STOP} | 작업 명령 {SRV_JOB_COMMAND} | robot_monitor={self._monitor} | '
             f'progress_timeout_sec={self._progress_timeout or "off"}')
 
     # ==================================================================
     # 파트 (Action)
     # ==================================================================
     def scan(self, poses=None, timeout=None):
-        res, err = self._call_action(self._scan, Scan.Goal(poses=_dict_to_poses(poses)), 'scan', timeout)
+        res, err = self._call_action(self._scan, Scan.Goal(poses=dict_to_poses(poses)), 'scan', timeout)
         if err:
             return False, err
         if not res.success:
@@ -213,7 +191,7 @@ class ControlInterface(Node):
         return res.found, None
 
     def judge(self, specs, poses=None, timeout=None):
-        goal = Judge.Goal(specs=[_dict_to_spec(s) for s in specs], poses=_dict_to_poses(poses))
+        goal = Judge.Goal(specs=[dict_to_spec(s) for s in specs], poses=dict_to_poses(poses))
         res, err = self._call_action(self._judge, goal, 'judge', timeout)
         if err:
             return '', err
@@ -222,13 +200,14 @@ class ControlInterface(Node):
         return res.result_class, None
 
     def place(self, result_class, poses=None, timeout=None):
-        goal = Place.Goal(result_class=result_class, poses=_dict_to_poses(poses))
+        """-> (count, placed_class, err). placed_class = 실제로 놓은 곳 (구역 만재면 'U', 11/18)"""
+        goal = Place.Goal(result_class=result_class, poses=dict_to_poses(poses))
         res, err = self._call_action(self._place, goal, 'place', timeout)
         if err:
-            return None, err
+            return None, '', err
         if not res.success:
-            return None, res.error_code or 'NO_ERROR_CODE'
-        return int(res.count), None
+            return None, '', res.error_code or 'NO_ERROR_CODE'
+        return int(res.count), (res.placed_class or result_class), None
 
     # ==================================================================
     # DB (Service)
@@ -241,11 +220,11 @@ class ControlInterface(Node):
             self.get_logger().error(f'[control] GetJobData 실패: {res.message}')
             return [], {}, None, 'DB_FAILED'
         poses = poses_from_msg(res.poses)      # available=False면 None
-        return ([_spec_to_dict(s) for s in res.specs], _inv_to_dict(res.inventory),
+        return ([spec_to_dict(s) for s in res.specs], inv_to_dict(res.inventory),
                 poses, None)
 
     def update_inventory(self, box_id, inventory, timeout=None):
-        req = UpdateInventory.Request(box_id=box_id, inventory=_dict_to_inv(inventory))
+        req = UpdateInventory.Request(box_id=box_id, inventory=dict_to_inv(inventory))
         res, err = self._call_service(self._update_inv, req, 'UpdateInventory', timeout)
         if err:
             return err
@@ -267,25 +246,29 @@ class ControlInterface(Node):
     # 이벤트 로그
     # ==================================================================
     def set_log_context(self, job_id=None, box_id=None, class_id=None):
-        if job_id is not None and str(job_id) != self._log_ctx['job_id']:
-            self._log_seq = 0              # 새 작업 → 로그 번호 다시 1부터
-        for k, v in (('job_id', job_id), ('box_id', box_id), ('class_id', class_id)):
-            if v is not None:
-                self._log_ctx[k] = str(v)
+        with self._log_lock:
+            if job_id is not None and str(job_id) != self._log_ctx['job_id']:
+                self._log_seq = 0          # 새 작업 → 로그 번호 다시 1부터
+            for k, v in (('job_id', job_id), ('box_id', box_id), ('class_id', class_id)):
+                if v is not None:
+                    self._log_ctx[k] = str(v)
 
     def log_event(self, level, code, message, box_id=None, class_id=None,
                   expected=-1, measured=-1, source='control', stage=''):
         """/event_log에 한 줄 발행. 실패해도 예외를 밖으로 내보내지 않는다 (작업을 막지 않음)."""
         try:
             level = level if level in LOG_LEVELS else 'INFO'
-            self._log_seq += 1
+            # 번호 + 문맥을 한 번에 잡는다 (스레드 둘이 같은 번호를 받으면 DB가 중복으로 보고 한 줄을 버림)
+            with self._log_lock:
+                self._log_seq += 1
+                seq, ctx = self._log_seq, dict(self._log_ctx)
             msg = LogEvent(
-                seq=self._log_seq,
+                seq=seq,
                 stamp=time.strftime('%Y-%m-%d %H:%M:%S'),
-                job_id=self._log_ctx['job_id'],
+                job_id=ctx['job_id'],
                 source=str(source), stage=str(stage), level=level, code=str(code),
-                box_id=self._log_ctx['box_id'] if box_id is None else str(box_id),
-                class_id=self._log_ctx['class_id'] if class_id is None else str(class_id),
+                box_id=ctx['box_id'] if box_id is None else str(box_id),
+                class_id=ctx['class_id'] if class_id is None else str(class_id),
                 expected=int(expected), measured=int(measured), message=str(message))
             self._log_pub.publish(msg)
         except Exception as e:      # 로그 때문에 작업이 멈추면 안 됨
@@ -314,7 +297,8 @@ class ControlInterface(Node):
             'robot_state_name': ROBOT_STATE.get(st, '') if st is not None else '',
             'robot_ok': bool(connected and st in ROBOT_OK_STATES),
             'robot_connected': bool(connected),
-            'robot_hint': robot_hint(st, connected, self._monitor),
+            'robot_hint': (ROBOT_HINT_WAIT if self._monitor == 'dsr' and st is None and self._robot_lost == 0
+                           else robot_hint(st, connected, self._monitor)),
             'robot_monitor': self._monitor,
         }
 
@@ -371,10 +355,38 @@ class ControlInterface(Node):
         self._robot_move_stop_hold()
         active = self._active
         if active:
-            name, handle = active
+            name, handle, _client = active
             self.get_logger().warn(f'[control] /{name} Goal cancel 요청')
             handle.cancel_goal_async()
         return True
+
+    def reset_stop(self):
+        """새 작업 시작 전에 지난 정지 요청을 지움 (상주 모드). 로봇이 정말 멈춰 있으면 사전 점검이 FAIL로 막는다."""
+        with self._stop_lock:
+            self._stop = None
+            self._last_alarm = ''
+        self._stop_event.clear()
+
+    def set_job_command_handler(self, fn):
+        self._job_cmd_handler = fn
+
+    def _on_job_command(self, request, response):
+        command = str(request.command).strip().lower()
+        source = request.source or 'unknown'
+        fn = self._job_cmd_handler
+        if fn is None:
+            ok, msg = False, '관제 준비 중'
+        else:
+            try:
+                ok, msg = fn(command, source)
+            except Exception as e:          # 명령 처리 오류가 executor를 죽이지 않게
+                ok, msg = False, f'관제 오류: {type(e).__name__}: {e}'
+        self.get_logger().info(f'[control] 작업 명령 {command} ({source}) → {"수락" if ok else "거절"} {msg}')
+        if ok:
+            self.log_event('INFO', 'JOB_COMMAND', f'{source} {command} → 수락: {msg}', source='control')
+        response.success = bool(ok)
+        response.message = str(msg)
+        return response
 
     def _on_emergency_stop(self, request, response):
         src = request.source or 'unknown'
@@ -487,12 +499,25 @@ class ControlInterface(Node):
 
     def _check_progress(self):
         active = self._active
-        if not (active and self._armed and self._progress_timeout > 0):
+        if not (active and self._armed):
+            self._server_lost_since = None
             return
-        name = active[0]
-        stage, sec = self.progress(name)
-        if sec > self._progress_timeout:
-            self.request_stop('NO_PROGRESS', f'/{name} stage="{stage}" {sec:.0f}초 소식 없음')
+        name, _handle, client = active
+        # 파트 노드가 죽음 (Action 서버가 그래프에서 사라짐) → 결과가 영영 안 오므로 정지 (11/18)
+        #   progress_timeout_sec과 달리 시간 값을 정할 필요가 없다. Ctrl+C·정상 종료는 바로,
+        #   강제 종료(kill -9, 충돌)는 DDS가 알아차리는 데 십수 초 걸릴 수 있다.
+        if client.server_is_ready():
+            self._server_lost_since = None
+        elif self._server_lost_since is None:
+            self._server_lost_since = time.monotonic()
+        elif time.monotonic() - self._server_lost_since > PART_LOST_SEC:
+            stage, _ = self.progress(name)
+            self.request_stop('PART_DIED', f'/{name} Action 서버 없음 (stage="{stage}", 파트 노드 종료?)')
+            return
+        if self._progress_timeout > 0:
+            stage, sec = self.progress(name)
+            if sec > self._progress_timeout:
+                self.request_stop('NO_PROGRESS', f'/{name} stage="{stage}" {sec:.0f}초 소식 없음')
 
     # ==================================================================
     # 진행 추적
@@ -528,7 +553,7 @@ class ControlInterface(Node):
             self.get_logger().error(f'[control] /{name} Goal 거절됨')
             return None, 'REJECTED'
 
-        self._active = (name, handle)
+        self._active = (name, handle, client)
         try:
             if (stop := self.stop_reason()):                 # Goal을 보내는 사이에 정지 요청이 들어온 경우
                 handle.cancel_goal_async()

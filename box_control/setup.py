@@ -23,7 +23,6 @@ setup(
             'fake_scan = box_control.fake_scan:main',
             'fake_judge = box_control.fake_judge:main',
             'fake_place = box_control.fake_place:main',
-            'fake_database = box_control.fake_database:main',
             'test_scan_motion = box_control.test_scan_motion:main',
             'test_judge_motion = box_control.test_judge_motion:main',
             'test_place_motion = box_control.test_place_motion:main',

@@ -46,9 +46,9 @@
 
 | 묶음 | 열 | 타입 | 언제 바뀌나 |
 |---|---|---|---|
-| 재고 | `a` `b` `c` `d` `u` | int | 박스 하나 적재 끝날 때 (적재가 잰 실제 수량). `u` = 미분류 |
+| 재고 | `a` `b` `c` `d` `u` | int | 박스 하나 적재 끝날 때 (적재가 잰 실제 수량). `u` = 미분류 (구역이 꽉 차서 미분류로 보낸 것 포함) |
 | 작업 결과 | `status` | text | `BEFORE` / `RUNNING` / `DONE` / `ERROR` / `STOPPED`. **다음 작업이 시작될 때까지 그대로 남음** |
-| | `reason` | text | ERROR·STOPPED 이유 (`'Fail to pick'`, `'EMERGENCY STOP'`) |
+| | `reason` | text | ERROR·STOPPED 이유 (`'Fail to pick'`, `'EMERGENCY STOP'`, `'Part node stopped (place)'`, `'Control error — …'`). `BEFORE`면 시작을 안 한 이유 (`'시작 안 함: 사전 점검 실패 …'`, `'시작 안 함: ui에서 취소'`) |
 | | `started_at`, `finished_at` | timestamptz | RUNNING 될 때 / DONE·ERROR·STOPPED 될 때 |
 | 지금 단계 | `stage` | text | 관제 단계 (아래 표). 수시로 바뀜 |
 | | `job_id`, `box_id` | text | 지금 작업·박스 |
@@ -66,15 +66,15 @@
 
 | 값 | 뜻 | 화면 |
 |---|---|---|
-| `READY` | 시작 버튼 기다림 (관제 상주 모드, 구현 예정) | 시작 버튼 활성 |
+| `READY` | 시작 버튼 기다림 (관제 상주 모드). 작업이 끝나면 여기로 돌아옴 | 시작 버튼 활성. 지난 결과는 `status`·`reason`으로 계속 표시 |
 | `BEFORE`, `PREFLIGHT` | 데이터 받기·사전 점검 | "점검 중" |
-| `STANDBY` | 카운트다운 | 남은 시간 = `start_at − 지금` |
+| `STANDBY` | 카운트다운 | 남은 시간 = `start_at − 지금`. 취소 버튼 활성 |
 | `RUNNING` | 작업 시작 | |
 | `SCANNING`, `SCAN_DONE` | 탐지 | 단계 표시 "스캔" |
 | `JUDGING`, `JUDGE_DONE` | 판별 | "판별" |
 | `PLACING`, `PLACE_DONE` | 적재 | "적재" |
 | `CLEARING` | 집기 실패 뒤 관제가 측정존을 비우는 중 | "복구 중" |
-| `DONE`, `ERROR`, `STOPPED` | 끝남 | `status`·`reason`으로 결과 표시 |
+| `DONE`, `ERROR`, `STOPPED` | 끝남 (잠깐 보였다가 곧 `READY`) | `status`·`reason`으로 결과 표시 |
 
 ### 테이블 만들기 (SQL Editor에 그대로)
 
@@ -108,7 +108,7 @@ insert into loc values
   ('B', 650, -160, null),
   ('C', 580,  300, null),
   ('D', 300,  300, null),          -- 11/18 입력
-  ('measure_zone', 300, -160, 30);
+  ('measure_zone', 300, -160, 30.9);   -- z = 측정존 바닥 (판별 실측, 11/18 30 → 30.9)
 
 drop table if exists state;
 create table state (
@@ -149,7 +149,8 @@ alter publication supabase_realtime add table state;
 - `service_role` 키는 DB 노드 환경변수(`SUPABASE_SERVICE_KEY`)에만 넣어요. 웹 코드·git에는 **절대 넣지 마세요.** 저장소가 public이고 터널 주소는 누구나 들어올 수 있어요.
 - 웹은 `anon` 키만 써요 (`NEXT_PUBLIC_SUPABASE_ANON_KEY`).
 
-**판별 주의**: C와 D(지우개)의 치수가 같아서, 물성 측정이 들어가기 전까지는 판별이 D를 C로 판정해요. DB 노드는 항상 A→D 순서로 넘겨요.
+**판별 참고**: C와 D(지우개)는 치수가 같고, 판별이 물성(눌렀을 때 폭 변화)으로 가려요 (11/18 실물 확인). DB 노드는 항상 A→D 순서로 넘겨요.
+**좌표 참고 (11/18)**: A~D 구역 위치는 다시 정할 예정이에요. 정하면 `loc` 행만 바꾸면 되고(적재 파트의 자리별 첫 접촉 Z는 적재 담당이 다시 잼). 측정존 z는 **30.9**(판별이 잰 실제 바닥)로 정했어요 (11/18, 이전 30). 판별 높이 측정·집기, 적재 집기, 탐지 내려놓기가 모두 이 값 하나를 써요.
 
 ## 3. 화면이 판단하는 순서
 
@@ -180,6 +181,9 @@ DB 노드가 노트북 안에서만 받는 창구를 열어요: `http://127.0.0.
 |---|---|---|
 | `POST /api/estop` | `POST /estop` | `{ok, message}`. `ok=false`면 message(예: "관제 연결 안 됨 — 펜던트 비상정지 버튼을 쓰세요")를 그대로 띄움 |
 | `POST /api/start` | `POST /start` | `{ok, message}`. 거절 이유 예: "준비 안 됨 (지금 관제 단계: RUNNING)" |
+| `POST /api/cancel` | `POST /cancel` | `{ok, message}`. 카운트다운 취소. 작업이 시작된 뒤에는 거절 ("취소할 카운트다운 없음") → 그때는 비상정지 |
+| `POST /api/inventory` | `POST /inventory` + 본문 `{a, b, c, d, u, source: 'ui'}` | `{ok, message, inventory}`. 시작 전 재고 설정 (11/19). 관제가 `READY`일 때만. 범위: A~D 0~6, U 0 이상. 틀리면 `400` + `{ok: false, message}` |
+| (팝업 처음 값) | `GET /inventory` | `{a, b, c, d, u, capacity}` — `state` 테이블 값과 같음 (Supabase에서 읽어도 됨) |
 | (상태 확인용) | `GET /health` | `{ok, stage, store}` |
 
 ```ts
@@ -190,6 +194,22 @@ export async function POST() {
     return Response.json(await r.json());
   } catch {
     return Response.json({ ok: false, message: 'DB 노드 꺼짐 — 펜던트 비상정지 버튼을 쓰세요' });
+  }
+}
+
+// app/api/inventory/route.ts — 시작 전 재고 설정 (11/19). start와 같은 PIN 확인, 본문은 그대로 넘김
+export async function POST(req: Request) {
+  const body = await req.json().catch(() => ({}));
+  if (process.env.START_PIN && body.pin !== process.env.START_PIN)
+    return Response.json({ ok: false, message: 'PIN이 틀림' }, { status: 403 });
+  const { a, b, c, d, u } = body;
+  try {
+    const r = await fetch('http://127.0.0.1:8765/inventory', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ a, b, c, d, u, source: 'ui' }) });
+    return Response.json(await r.json(), { status: r.status });
+  } catch {
+    return Response.json({ ok: false, message: 'DB 노드 꺼짐' });
   }
 }
 
@@ -209,20 +229,38 @@ export async function POST(req: Request) {
 
 버튼 동작
 
-- **비상정지**: 확인 창 없이 바로 보내요. 언제든 눌림.
-- **시작**: 팝업 [확인] → `/api/start` → 관제가 사전 점검 후 10분 카운트다운 → 작업. [취소] → 팝업만 닫고 아무것도 안 보냄.
-  - 카운트다운 중에는 `start_at`으로 남은 시간을 보여 줘요. 카운트다운 중 멈추려면 비상정지예요 (관제가 시작을 취소함).
+- **비상정지**: 팝업 "비상 정지를 하시겠습니까? 로봇이 현재 위치에서 정지합니다." [정지] → `/api/estop`, [취소] → 아무것도 안 보냄. 언제든 눌림.
+  - 작업 중이면 관제가 작업을 멈추고 `status = STOPPED`, `reason = 'EMERGENCY STOP — by ui'`.
+  - 카운트다운 중이면 시작하지 않고 `status = STOPPED`, reason 끝에 `(시작 전)`.
+  - 대기(READY) 중이어도 `status = STOPPED`, reason 끝에 `(대기 중)`. 다음 시작 때 풀려요.
+  - 화면은 **`status = STOPPED`면 작업 상태를 빨간불 "비상정지"**로 보여 주면 돼요 (버튼을 누른 화면뿐 아니라 다른 화면·관리자 GUI에도 똑같이 보임).
+- **시작**: 팝업 [확인] → `/api/start` → 관제가 사전 점검 후 10분 카운트다운 → 작업. [취소] → 팝업만 닫고 아무것도 안 보냄. (10분은 관제 기본값, 시험할 때는 `-p start_delay_sec:=10.0`)
+  - **시작 팝업에서 재고 설정 (11/19)**: 팝업에 지금 재고 A·B·C·D·미분류를 보여 주고, 칸마다 `−`/`+`(A~D는 0~6, 미분류는 0 이상) + **[전부 0]** 버튼.
+    [확인] 때 값을 바꿨으면 **먼저** `/api/inventory`를 보내고 `ok: true`일 때만 `/api/start`. `ok: false`면 message를 띄우고 시작하지 않음. 안 바꿨으면 `/api/start`만.
+  - 왜 필요한가: 적재가 놓을 때마다 그 구역 수량을 실제로 재서 덮어쓰지만, 이번 작업에 안 들어온 클래스와 미분류(센서 없음)는 사람이 맞춰 줘야 해요. 잘못 넣어도 그 클래스를 적재하면 실제 값으로 바뀌고 `COUNT_MISMATCH`가 남아요.
+  - 재고 설정은 로그에 `code: 'INVENTORY_SET'`(바꾼 값이 있으면 WARN, 예: "재고 설정 (ui): A 0→3, U 5→0")으로 남아요.
+  - 카운트다운 중에는 `start_at`으로 남은 시간을 보여 줘요.
+  - **카운트다운 취소** 버튼 → `/api/cancel` → 관제가 작업을 시작하지 않고 `READY`로 돌아감. `status = BEFORE`, `reason = '시작 안 함: ui에서 취소'`.
+  - 사전 점검에서 막히면 카운트다운 없이 `READY`로 돌아오고 `status = BEFORE`, `reason`에 이유가 남아요 (로그 창에도 FAIL 항목).
+- `/api/cancel`은 `/api/start`와 같은 모양으로 만들면 돼요 (주소만 `/cancel`).
+- **바로 시작(카운트다운 생략)은 웹에 없어요.** 현장 관리자 전용(관리자 GUI·관제 터미널)이에요. 현장에서는 작업공간을 직접 볼 수 있지만 원격 웹은 못 보기 때문이에요. DB 노드 창구도 이 명령(`start_now`)을 받지 않아요(404). 현장에서 바로 시작하면 로그에 `code: 'START_NOW'`(WARN)가 남으니, 웹 로그 창에 그대로 보여 주면 돼요.
 - 버튼 기록은 로그 파일에 `code: 'UI_COMMAND'`로 남아요.
 
-**아직 안 된 것**: 관제 상주 모드(READY에서 시작 기다리기)와 관제 쪽 `/job_command`는 관제가 구현 중이에요. 그 전에는 시작 버튼을 눌러도 "준비 안 됨"이 와요. 화면·라우트는 미리 만들어 두면 돼요.
+**관제 상주 모드 (11/18 구현)**: 관제를 켜 두면 `READY`에서 시작 명령을 기다려요. 작업이 끝나면(DONE·ERROR·STOPPED) 결과는 `status`에 남기고 다시 `READY`가 돼요. 대기 중에도 로봇 상태가 2초마다 올라가요.
+관제가 작업 중에 죽었다가 다시 켜지면 DB 노드가 `RUNNING`으로 남은 작업을 `ERROR`로 정리해요.
 
 ## 5. 로그 (파일 → 화면)
 
 - DB 노드가 `~/box_logs/{job_id}.jsonl`에 한 줄씩 붙여 써요 (한 줄 = JSON 하나, 시간순).
 - 줄 형식: `{seq, stamp, job_id, source, stage, level, code, box_id, class_id, expected, measured, message, received_at}`
-  - `source`: `control` / `scan` / `judge` / `place` / `ui` → 화면 태그 관제·탐지·판별·적재·UI
+  - `source`: `control` / `scan` / `judge` / `place` / `ui` / `db` → 화면 태그 관제·탐지·판별·적재·UI·DB
   - `level`: `INFO` / `WARN` / `ERROR` → 색
   - `message`: 화면에 그대로 표시 (문구를 UI에서 만들지 않음)
+  - `code` (11/18 기준): 관제 `JOB_START`·`JOB_DONE`·`JOB_CANCELED`·`JOB_ERROR`·`JOB_STOPPED`·`BOX_DONE`·`BOX_RETRY`·`COUNT_MISMATCH`·`ZONE_CLEAR`·`STOP_REQUEST`·`ROBOT_ALARM`·`PREFLIGHT`·`JOB_COMMAND`·`START_NOW`·`CONTROL_ERROR`·`CONTROL_WARN`·`ZONE_FULL`, 파트 `PART_LOG`, DB 노드 `UI_COMMAND`·`DB_RETRY`·`INVENTORY_SET`
+  - **사전 점검**: WARN·FAIL 항목이 한 줄씩 `code = 'PREFLIGHT'`(FAIL은 `level = ERROR`)로 오고, 마지막에 '사전 점검 통과/실패' 한 줄이 와요 → 시작이 안 된 이유를 로그 창에서 바로 볼 수 있어요
+  - **재고 확인 불가**: 적재가 수량을 못 재면 재고는 그대로 두고 `COUNT_MISMATCH` WARN '… 적재 현황 확인 불가 …'가 와요
+  - **구역 꽉 참** (`ZONE_FULL`, WARN): 6개가 찬 구역의 박스는 미분류로 가요. 재고는 그 구역 6, `u` +1. "A 구역을 비우세요" 안내로 보여 주면 돼요
+  - **DB 저장 실패** (`DB_RETRY`, source `db`): Supabase에 못 쓰면 DB 노드가 모아 뒀다가 다시 보내요. 작업은 멈추지 않아요. 다시 연결되면 INFO 한 줄
 
 ```ts
 // app/api/logs/route.ts — 가장 최근 작업 파일의 마지막 N줄 (최신순)
@@ -287,7 +325,8 @@ cloudflared tunnel --url http://localhost:3000 # 켤 때마다 주소가 바뀜 
 | 무엇을 | 어떻게 | 기대 결과 |
 |---|---|---|
 | DB 노드만 (관제·로봇 없이) | 터미널 1: `database_main -p store:=file` / 터미널 2: `./scripts/db_check.sh` | 통과 N / 실패 0. 재고는 시험 전 값으로 되돌아감. 끝에 `state_updates.jsonl` 마지막 줄을 보여 줌 |
-| 관제 + fake 파트 + 실제 DB 노드 | `DB_MAIN=1 ./scripts/fake_run.sh` (Supabase 키가 있어도 파일로: `DB_STORE=file`) | 다른 터미널 `tail -f ~/box_logs/fake_db/state_updates.jsonl` 에 단계·재고·결과가 차례로 찍힘, `~/box_logs/{job_id}.jsonl`에 로그 |
+| 관제 + fake 파트 + 실제 DB 노드 | `./scripts/fake_run.sh` (11/18: DB는 항상 `database_main`, 기본 파일 모드 + 재고 0으로 시작. Supabase로 보려면 `DB_STORE=auto`) | 다른 터미널 `tail -f ~/box_logs/fake_db/state_updates.jsonl` 에 단계·재고·결과가 차례로 찍힘, `~/box_logs/{job_id}.jsonl`에 로그 |
 | 비상정지 버튼 경로 | 위 상태에서 `curl -s -X POST localhost:8765/estop` | 관제가 `STOPPED : EMERGENCY STOP — by ui` |
 | 화면만 (DB 노드 없이) | Supabase 대시보드에서 `state` 값을 손으로 바꿈 | 화면이 바로 바뀜. 로그는 `~/box_logs/test.jsonl`에 샘플 줄 |
-| 시작 버튼 | `/start` | 관제 상주 모드 전까지는 "준비 안 됨" 또는 "/job_command 없음"이 정상 |
+| 재고 설정 | 위 상태(READY)에서 `curl -s -X POST localhost:8765/inventory -d '{"a":3,"b":0,"c":0,"d":0,"u":0}'` | `{ok: true, message: "재고 설정 (ui): A 0→3"}`, 관리자 GUI 재고가 바로 바뀜. 작업 중이면 `ok: false` |
+| 시작·취소 버튼 | `RESIDENT=1 ./scripts/fake_run.sh` → 다른 터미널에서 `curl -s -X POST localhost:8765/start`, `.../cancel` | start: `{ok: true}` → STANDBY. cancel: READY로 돌아오고 `status=BEFORE`. 다시 start → 끝까지 → READY, `status=DONE` |

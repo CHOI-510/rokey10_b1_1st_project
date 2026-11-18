@@ -50,7 +50,7 @@
 - 관제 ↔ DB: 응답이 필요하면 **Service** (작업 데이터, 재고 반영, 상태 기록), 알리기만 하면 **Topic** (이벤트 로그 `/event_log`)
 - 파트끼리는 직접 통신하지 않고, 파트는 DB와 UI를 모릅니다. 파트 로그도 Feedback으로 관제에 보내면 관제가 `/event_log`로 넘깁니다.
 - 비상정지만 방향이 반대입니다(DB → 관제 `/emergency_stop`). 로봇 정지와 상태 감시는 관제가 두산 서비스를 직접 씁니다.
-- 실행되는 노드는 5개입니다: `/control`, `/scan`, `/judge`, `/place`, `/database`
+- 실행되는 노드는 5개입니다: `/control`, `/scan`, `/judge`, `/place`, `/database` (+ 관리자 화면 `/control_monitor`)
 
 <!-- TODO: 노드 구조도, 통신 시퀀스 그림 -->
 
@@ -59,7 +59,8 @@
 각 노드는 **통신 계층**(`box_comm`)과 **작업 코드**(각 파트 패키지)로 나뉩니다.
 
 - `box_comm`: Action/Service 서버·클라이언트, ROS 메시지 ↔ 파이썬 값 변환, 계약 규칙(Result 보장, 등록된 `error_code`만 허용, `box_id` 중복 무시 등)을 코드로 강제
-- 각 파트: 약속된 함수 `run()` 하나만 구현. ROS 메시지 타입을 몰라도 됨
+- 각 파트: 약속된 알고리즘 메서드 하나만 구현 (`scan(poses, report)` / `judge(specs, poses, report)` / `place(result_class, poses, report)`). 로봇은 관제가 넣어 주는 `robot`(`box_comm/dsr_io.py`)으로만 움직이고, ROS 메시지 타입을 몰라도 됨
+- 세 파트 Action 서버 흐름(Goal 하나만, 좌표 넣기, TCP·툴 확인, 실패 마무리)은 `box_comm/part_server.py` 한 곳에 있음 (11/18 통합)
 
 인터페이스가 바뀌어도 `box_comm`만 수정하면 되고, 파트 코드는 로봇 동작에만 집중합니다.
 
@@ -73,22 +74,26 @@ box_project/
 ├─ .github/          GitHub Actions: 관제 전용 파일 변경 감시
 ├─ box_interfaces/   메시지 정의 (.msg .srv .action)
 ├─ box_comm/         공용 통신 라이브러리 (노드 아님)
-│  ├─ common.py       공통 값: 에러 코드, stage, TCP·툴, 고정 좌표, PartError
+│  ├─ common.py       공통 값: 에러 코드, stage, TCP·툴, 고정 좌표, 그리퍼·sync 집기 설정, PartError
+│  ├─ convert.py      메시지 ↔ 파이썬 값 변환 (관제·판별·DB 공용, 11/18)
 │  ├─ robot.py        기본 TCP·툴 확인·적용 (파트 Goal 시작 전 자동 실행)
 │  ├─ dsr_io.py       파트·관제가 쓰는 로봇 명령 (명령 전 정지 확인, 진행 알림)
-│  ├─ gripper.py      RG2 그리퍼 Modbus (세 파트 공용, 11/17)
+│  ├─ gripper.py      RG2 그리퍼 Modbus (세 파트 공용, 11/17) + 잡힘 판정
+│  ├─ sync_grip.py    닫으면서 핑거 끝 높이 유지 집기 (판별·적재·탐지 공용, 11/18)
 │  ├─ algorithm.py    파트 알고리즘 실행 어댑터 (로봇 주입, 실패 시 정지)
-│  └─ control_interface.py, scan_interface.py, judge_interface.py,
-│     place_interface.py, database_interface.py
+│  ├─ part_server.py  세 파트 Action 서버 공통 틀 (11/18)
+│  └─ control_interface.py, database_interface.py,
+│     scan_interface.py, judge_interface.py, place_interface.py (파트별 입력·결과 검사만)
 ├─ box_control/      관제: control.py (순서) + preflight.py (시작 전 점검)
 │                    + recovery.py (관제 복구 동작: 측정존 비우기 등, 관제가 직접 로봇을 움직임)
 │                    + monitor_gui.py (관리자 모니터 화면, 11/18 — 관제 실행 시 같이 뜸)
-│                    + 테스트용 fake_*.py 4개, test_scan_motion.py, robot_test.py
+│                    + 테스트용 fake_scan/judge/place.py, test_scan/judge/place_motion.py, robot_test.py
 ├─ box_scan/         탐지: scan_template.py + scan_algorithm.py·scan_config.py·scan_main.py (담당)
-│                    + scan_original.py (담당 원본 단독 실행본, 비교용) + test/test_scan_flow.py
+│                    + scan_original.py (담당 원본, 보관만 — 실행 노드 아님) + test/test_scan_flow.py
 ├─ box_judge/        판별: judge_template.py + judge_algorithm.py·judge_main.py·rg2_sync_grip.py (담당) + test/test_judge_grip.py
 ├─ box_place/        적재: place_template.py + place_algorithm.py·place_main.py (담당) + test/test_place_pick.py
 ├─ box_database/     DB 노드: database_main.py (+ database_work/store/config), 약속 예시 database_template.py
+├─ box_bringup/      전체 실행 launch: system.launch.py (전체), robot.launch.py (두산 bringup, 그리퍼 드라이버 끔), config/params.yaml
 └─ docs/             CONTRIBUTING.md, PROGRESS.md
 ```
 
@@ -101,10 +106,11 @@ box_project/
 | `box_judge` | 판별 | `/judge` | `ros2 run box_judge judge_main` (참고용 `judge_template`) |
 | `box_place` | 적재 | `/place` | `ros2 run box_place place_main` (참고용 `place_template`) |
 | `box_database` | DB·UI | `/database` | `ros2 run box_database database_main` (Supabase 키 없으면 파일 모드) |
+| `box_bringup` | 전체 실행 | (위 전부 + 두산 bringup) | `ros2 launch box_bringup system.launch.py mode:=real` |
 
 ---
 
-## 4. 인터페이스 (`box_interfaces` v0.5)
+## 4. 인터페이스 (`box_interfaces` v0.6)
 
 ### Action (관제 → 파트)
 
@@ -112,7 +118,7 @@ box_project/
 | --- | --- | --- | --- |
 | `/scan` | `poses` (시작명령) | `success`, `found`, `error_code` | `stage`, `log_level`, `log_msg` |
 | `/judge` | `specs: ClassSpec[]`, `poses` | `success`, `result_class`, `error_code` | `stage`, `log_level`, `log_msg` |
-| `/place` | `result_class`, `poses` | `success`, `count`(측정 수량), `error_code` | `stage`, `log_level`, `log_msg` |
+| `/place` | `result_class`, `poses` | `success`, `count`(측정 수량), `placed_class`(실제로 놓은 곳, 구역 만재면 `U` — v0.6), `error_code` | `stage`, `log_level`, `log_msg` |
 
 모든 Goal의 `poses`(`FixedPoses`)는 관제가 DB에서 받은 고정 좌표(HOME, 측정존, 적재 구역 1단 x·y)입니다. 파트는 이 값으로 움직입니다.
 
@@ -183,7 +189,7 @@ Feedback의 `log_level`·`log_msg`는 파트가 `report.log('메시지', 'WARN')
 ### 적재 규칙 (v0.4, `box_comm/common.py` `STACK`)
 
 - 구역 하나에 같은 클래스만 쌓습니다(A 물품 → A 구역).
-- **1단(첫 자리)** 에 1층부터 **3층**까지 쌓고, 다 차면 **다음 자리(2단)** 에 다시 1층부터 쌓습니다. 구역당 **2자리** (`STACK` = 3층 × 2자리, 최대 6개), 넘으면 `NO_SLOT`.
+- **1단(첫 자리)** 에 1층부터 **3층**까지 쌓고, 다 차면 **다음 자리(2단)** 에 다시 1층부터 쌓습니다. 구역당 **2자리** (`STACK` = 3층 × 2자리, 최대 6개). 꽉 차면 그 박스는 **미분류 투하 위치로** 보내고 작업은 계속합니다 (11/18: 재고 그 구역 = 6, U +1, 로그 `ZONE_FULL`. 미분류 투하가 꺼져 있을 때만 예전처럼 쥔 채 `NO_SLOT`).
 - 다음 자리 위치는 적재 설정 `box_place/config/place_config.json`의 `slot_dx_mm`(현재 **−x 방향 80mm**, y는 같음)로 정합니다.
 - 적재 규칙(층·자리 수)은 `STACK` 하나가 기준입니다. 적재 설정(`place_config.json`)에는 적지 않고 `place_algorithm`이 `STACK`을 그대로 씁니다. 바꿀 때는 관제와 합의하고, 자리별 첫 접촉 Z를 다시 재야 합니다.
 - 적재는 **매번 1단부터** 박스를 쥔 채 위에서 내려가, 더 내려가지 않는 높이(z)로 층을 판단합니다. 4층 높이(3층 위)에서 닿으면 그 단은 꽉 찬 것이므로 놓지 않고 다음 단으로 갑니다.
@@ -196,9 +202,11 @@ Feedback의 `log_level`·`log_msg`는 파트가 `report.log('메시지', 'WARN')
 ## 5. 관제 흐름
 
 ```
+READY         (상주 모드, 기본) 시작 명령 대기 — UI 시작 버튼(DB 노드 → /job_command) / 관리자 GUI / 터미널 s
+              대기 중에도 로봇 상태를 0.5초마다 읽어 /control_status로 발행. 작업이 끝나면 여기로 돌아옴
 BEFORE        GetJobData로 분류 기준(specs), 재고, 고정 좌표(poses, DB 기준) 수신
-PREFLIGHT     시작 전 점검 (분류 기준, DB 고정 좌표 유무·형식, 적재 구역 A~D) → FAIL이면 시작 안 함
-STANDBY       시작 대기 카운트다운 (작업공간 안전 확인, q: 취소 / s: 바로 시작)
+PREFLIGHT     시작 전 점검 (분류 기준, 좌표, 적재 구역, 로봇 상태, 그리퍼, 측정존 비우기) → FAIL이면 시작 안 함
+STANDBY       시작 대기 카운트다운 (기본 10분. UI 취소·q: 취소 / 관리자 GUI·s: 바로 시작)
 RUNNING       SetJobStatus(RUNNING)
   ┌─ SCANNING    /scan Goal ──▶ found=False(물품 없음)면 관제가 작업완료로 판단
   │  SCAN_DONE
@@ -207,15 +215,17 @@ RUNNING       SetJobStatus(RUNNING)
   │  PLACING     /place Goal(result_class, poses)
   │  PLACE_DONE  측정 수량(count) 수신 → 기대값(+1)과 비교·기록 → UpdateInventory(box_id, 측정값 반영 재고)
   └─ 반복
-DONE          SetJobStatus(DONE)
+DONE          SetJobStatus(DONE) → READY
 
 집기 실패     → GRASP_FAILED면 (판별·적재는 CLEARING: 관제가 측정존 비움) 공간 스캔부터 다시, 연속 3번 넘으면 ERROR
 작업 중 오류  → ERROR   SetJobStatus(ERROR, "Fail to pick")       공정 오류 — 로그 확인 후 재시작
 로봇 정지     → STOPPED SetJobStatus(STOPPED, "EMERGENCY STOP")  로봇이 멈춤 — 현장 확인 후 복구
+관제 코드 오류 → ERROR  "Control error — …" (로봇 정지 + 파트 cancel, 관제는 죽지 않고 READY로, 11/18)
 ```
 
 | 상태 | 한글 | DB 기록 |
 | --- | --- | :-: |
+| `READY` | 대기 (상주 모드, 시작 명령 기다림) | |
 | `BEFORE` | 작업전 | ✓ |
 | `PREFLIGHT` | 사전점검 | |
 | `STANDBY` | 시작대기 | |
@@ -229,15 +239,15 @@ DONE          SetJobStatus(DONE)
 | `STOPPED` | 정지 (로봇이 물리적으로 멈춤 — 비상정지, 안전 정지) | ✓ |
 
 - **중단은 두 가지로 통일합니다.**
-  - **시작 전 중단** (`RUNNING` 전): 작업 데이터 수신 실패, 사전 점검 FAIL, 카운트다운 중 `q` → 모두 같은 메시지 `작업을 시작하지 않습니다 [단계]: 이유`로 끝나고, 로봇은 움직이지 않으며 DB는 `BEFORE` 그대로입니다.
-  - **작업 중 중단** (`RUNNING` 이후, `abort_job()`): 에러 코드로 `ERROR`/`STOPPED`를 정하고 DB에 `status`와 `reason`을 기록합니다(예: `ERROR : Fail to pick`). 로그에는 `단계에서 중단: error_code | 마지막 stage`가 남습니다. **로봇에 정지 명령을 보내지는 않습니다** (정지 기능은 이슈 #1·#3·#12에서 추가).
-  - `STOPPED`가 되는 코드(`common.STOP_CODES`: `EMERGENCY_STOP`, `ROBOT_SAFETY_STOP`, `ROBOT_EMERGENCY_STOP`, `ROBOT_DISCONNECTED`)는 정의만 되어 있고, 감지 경로는 정지 기능 단계에서 연결합니다.
+  - **시작 전 중단** (`RUNNING` 전, `cancel_start()`): 작업 데이터 수신 실패, 사전 점검 FAIL, 카운트다운 중 UI 취소·`q` → `작업을 시작하지 않습니다 [단계]: 이유`. 로봇은 움직이지 않고 DB는 `status = BEFORE`, `reason = '시작 안 함: …'`(시작 전 비상정지면 `STOPPED … (시작 전)`). 상주 모드면 READY로 돌아갑니다.
+  - **작업 중 중단** (`RUNNING` 이후, `abort_job()`): 에러 코드로 `ERROR`/`STOPPED`를 정하고 DB에 `status`와 `reason`을 기록합니다(예: `ERROR : Fail to pick`). 로그에는 `단계에서 중단: error_code | 마지막 stage`가 남습니다. `abort_job()` 자체는 로봇을 멈추지 않고, 로봇 정지(`move_stop`)·파트 cancel은 아래 '정지 기능'의 `request_stop()`이 합니다.
+  - `STOPPED`가 되는 코드는 `common.STOP_CODES`(`EMERGENCY_STOP`, `ROBOT_SAFETY_STOP`, `ROBOT_EMERGENCY_STOP`, `ROBOT_DISCONNECTED`, `ROBOT_NOT_READY`), 나머지는 모두 `ERROR`.
 - `-ING` 상태는 Goal을 보내기 직전, `_DONE` 상태는 Result를 받은 직후에 바뀝니다.
 - 단계 상태는 관제 내부에만 있고, DB에는 `BEFORE` / `RUNNING` / `DONE` / `ERROR` / `STOPPED`와 재고만 기록합니다.
 - 상태 값은 영어(`State` Enum)이고, 로그에는 `===== SCANNING (스캔중) =====`처럼 한글을 함께 표시합니다.
 - 스캔은 물품 유무(`found`)만 알리고, 작업완료 여부는 관제가 판단합니다.
 - **재고 검증 (v0.4)**: 관제는 적재가 잰 수량(`count`)을 기대값(적재 전 재고의 `result_class` 수량 + 1)과 비교합니다. DB에는 **항상 측정값**을 반영하고(실제 적재 상태가 기준), 다르면 `재고 불일치` 경고 로그(기대·측정·차이)를 남긴 뒤 작업을 계속하며, 작업이 끝나면 불일치 건수를 요약해서 출력합니다. 다른 클래스 수량은 그대로 둡니다.
-  - 예외: A~D 적재가 성공했는데 `count`가 1보다 작으면(적재가 수량을 안 채움) **반영하지 않고** 이전 값을 유지합니다(에러 로그 + `COUNT_MISMATCH`). 같은 클래스를 다음에 적재할 때 측정값으로 바로잡힙니다.
+  - 예외 (11/18): 적재가 잰 수량이 1 ~ 구역 정원(6) 밖이면 `place_interface`가 **작업을 실패시키지 않고** `count = 0`(수량 확인 불가)으로 보냅니다(박스는 이미 놓였으므로). 관제는 0을 받으면 **반영하지 않고** 이전 값을 유지하며 `COUNT_MISMATCH`에 '적재 현황 확인 불가'를 남깁니다. 같은 클래스를 다음에 적재할 때 측정값으로 바로잡힙니다.
 - `DONE` 상태 기록이 실패하면 에러 로그를 남깁니다 (UI에는 `RUNNING`으로 남아 있을 수 있음).
 - **미분류 (v0.5)**: `result_class`가 `U`면 비교하지 않고 재고 `U`만 +1 해서 DB에 반영합니다 (적재는 `count = 0`).
 - **집기 실패 (11/17)**: 파트가 `GRIP_RETRY`(3)번 다시 집어 보고 포기하면 `GRASP_FAILED`로 Goal을 끝냅니다(그리퍼 열고 안전 높이). 관제는 작업을 끝내지 않고, 판별·적재였으면 **`CLEARING`(측정존비우기)** 상태에서 관제가 직접 로봇을 움직여 측정존 박스를 스캔 공간으로 밀어내고 비었는지 확인합니다(`box_control/recovery.py`, 관제 복구 동작 모음 — 나중에 예외 처리 동작도 여기에). 그 뒤 `BOX_RETRY` 경고를 남기고 **공간 스캔부터 다시** 합니다(재고·박스 번호 그대로). 연속 `RECOVER_LIMIT`(3)번을 넘으면 `ERROR : Too many pick failures`, 측정존을 못 비우면 `ERROR : Measure zone not cleared`. 박스 하나를 적재까지 끝내면 연속 횟수는 0. 밀어내기 경로(`common.RECOVERY push_path`)는 아직 미정 → **11/18부터 비우기를 fake로 넘기고(WARN 로그 `ZONE_CLEAR`, 대기 없음) 바로 재스캔**합니다. 스캔하는 동안 사람이 측정존 박스를 치웁니다. 관제 파라미터 `clear_zone`: `auto`(기본: `robot_monitor=dsr`면 실제 로봇, 아니면 `fake_ok`) / `robot` / `fake_ok` / `fake_fail`.
@@ -253,10 +263,11 @@ DONE          SetJobStatus(DONE)
 | 고정 좌표 | DB에 좌표 없음 → "DB에 고정 좌표가 없습니다. DB에 HOME·측정존 좌표를 설정한 뒤 실행해 주세요.", 형식 오류 | 측정존이 (0, 0, 0) |
 | 적재 구역 | A~D 중 1단 x·y가 없는 구역 | 구역 좌표가 (0, 0) |
 | 로봇 상태 | bringup 없음, STANDBY·MOVING이 아님 | `robot_monitor=off` |
-| 그리퍼 (11/17) | RG2 Modbus 접속 실패(OnRobot 드라이버가 잡고 있음 등), 안전 비트 켜짐 | `robot_monitor`≠dsr (확인 안 함). `BOX_GRIPPER=fake`면 OK |
+| 그리퍼 (11/17) | RG2 Modbus 접속 실패(OnRobot 드라이버가 잡고 있음 등), 안전 비트 켜짐, **무언가를 쥐고 있음**(11/18, 지난 작업이 쥔 채 멈춤) | `robot_monitor`≠dsr (확인 안 함). `BOX_GRIPPER=fake`면 OK |
 | 측정존 비우기 (11/17) | | 밀어내기 경로 미정 |
 
 고정 좌표(HOME, 측정존, 적재 구역 1단 x·y)는 **DB가 기준**입니다(v0.3, 적재 구역은 v0.4). 관제는 `GetJobData`로 받은 DB 값으로 자기 좌표를 **무조건 덮어쓰고**(비교·중단 없음, 로그만 남김), 그 값을 `/scan`, `/judge`, `/place` Goal에 매번 실어 보내고, 각 파트는 그 값(작업 함수의 `poses` 인자, 예전 방식은 `self.poses`)으로 움직입니다. `box_comm/common.py`의 `FIXED_POSES`는 **기본값**으로, Goal에 좌표가 없을 때(팀원이 혼자 `send_goal`로 테스트할 때)만 쓰입니다.
+WARN·FAIL 항목과 통과/실패 요약은 이벤트 로그(`code = PREFLIGHT`)로도 보내서 웹·관리자 GUI 로그 창에 보입니다 (11/18).
 점검을 추가할 때는 `preflight.py`에 함수를 만들고 `CHECKS`에 넣습니다.
 
 ---
@@ -313,19 +324,42 @@ colcon build --symlink-install --packages-up-to box_control box_scan box_judge b
 source install/setup.bash
 ```
 
-### 실행
+### 실행 — 한 번에 (launch, 11/19)
+
+```bash
+ros2 launch box_bringup system.launch.py mode:=real        # 실제 로봇 (예전 sodreal + 노드 5개 + GUI)
+ros2 launch box_bringup system.launch.py mode:=virtual     # 에뮬레이터 (예전 sodvir). 판별은 fake, 탐지·적재는 가상 박스·가상 접촉
+ros2 launch box_bringup system.launch.py fake:=true db_store:=file start_delay:=10.0   # 로봇 없이 전부 fake
+ros2 launch box_bringup system.launch.py mode:=real bringup:=false   # bringup은 따로 띄운 경우 (sodreal 터미널)
+```
+
+| mode | 로봇 bringup | 탐지 | 판별 | 적재 | 그리퍼 |
+| --- | --- | --- | --- | --- | --- |
+| `real` | 실제 (192.168.1.100) | `scan_main` | `judge_main` | `place_main` | Modbus |
+| `virtual` | 에뮬레이터 (127.0.0.1) | `scan_main` 가상 박스 | `fake_judge` | `place_main` 가상 접촉 | 가짜 |
+| `fake:=true` | 없음 | `fake_scan` | `fake_judge` | `fake_place` | 가짜 |
+
+- 로봇 bringup은 `box_bringup/launch/robot.launch.py`가 띄웁니다. 수업 패키지 `m0609_rg2_bringup`과 같은 노드인데 **OnRobot 그리퍼 드라이버를 끄고**(`gripper_driver:=false` 기본 — 파트가 Modbus로 직접 쓰므로, 이제 `pkill` 필요 없음) **RViz를 끔**(`rviz:=true`로 켬). 원본 패키지는 고치지 않았습니다.
+- 그 밖의 인자: `start_delay`(기본 600), `db_store`(auto/file/supabase), `gui`, `sim_boxes`, `box_count`·`classes`(fake). 고정 파라미터는 `box_bringup/config/params.yaml`.
+- launch로 띄우면 **터미널 키(s/q)는 안 들어갑니다.** 관제는 READY에서 기다리고, 시작·취소·바로 시작은 관리자 GUI(또는 웹 UI) 버튼으로. 전체 종료는 launch 터미널에서 Ctrl+C 한 번.
+- launch의 순서는 '켜는 순서'일 뿐 준비 완료를 기다리지 않습니다. 파트는 첫 로봇 명령 때 두산 서비스를 기다리고, 관제는 시작 명령을 받으면 사전 점검에서 로봇·그리퍼를 확인하므로 따로 기다릴 필요가 없습니다.
+- 로봇 없는 흐름 시험은 지금처럼 `./scripts/fake_run.sh`도 그대로 씁니다 (재고 0으로 시작, 시험 옵션이 더 많음).
+
+### 실행 — 노드를 하나씩 (개발·단독 시험)
 
 서버 4개를 먼저 띄우고 관제를 마지막에 실행합니다.
 
 ```bash
 ros2 run box_database database_main --ros-args -p store:=file   # Supabase 대신 ~/box_logs/fake_db/*.json
-ros2 run box_scan scan_template
-ros2 run box_judge judge_template
-ros2 run box_place place_template
-ros2 run box_control control
+ros2 run box_scan scan_main
+ros2 run box_judge judge_main
+ros2 run box_place place_main
+ros2 run box_control control                                     # 상주 모드: READY에서 시작 명령 대기
 ```
 
-관제는 실행되면 **시작 대기(STANDBY)** 카운트다운을 띄웁니다. 로봇이 움직이기 전에 작업공간에 사람이나 파손 위험이 있는 물품이 없는지 확인하는 시간입니다.
+관제는 **상주 모드**(기본)로 READY에서 시작 명령(UI 시작 버튼 / 관리자 GUI / 터미널 `s`)을 기다리고, 작업이 끝나면 다시 READY로 돌아옵니다. READY에서 `q`는 관제 종료. 예전처럼 바로 한 번 실행하고 끝내려면 `-p auto_start:=true`.
+
+시작 명령을 받으면 사전 점검 뒤 **시작 대기(STANDBY)** 카운트다운을 띄웁니다. 로봇이 움직이기 전에 작업공간에 사람이나 파손 위험이 있는 물품이 없는지 확인하는 시간입니다.
 
 ```
   ⚠ 10초 후에 작업을 시작합니다.
@@ -336,12 +370,12 @@ ros2 run box_control control
 
 | 키 | 동작 |
 | --- | --- |
-| `q` | 작업 시작 취소 (DB 상태는 `BEFORE` 유지, 관제 종료) |
-| `s` | 바로 시작 |
+| `q` (또는 UI·GUI 시작 취소) | 작업 시작 취소 (DB `status = BEFORE`, `reason = '시작 안 함: …'`, 상주 모드면 READY로) |
+| `s` (또는 관리자 GUI 바로 시작) | 바로 시작 (현장 전용, 웹 UI에는 없음. 로그 `START_NOW`) |
 | 입력 없음 | 시간이 지나면 자동 시작 |
 
-- 대기 시간은 `start_delay_sec` 파라미터로 바꿉니다. 기본 10초(테스트용), 실제 운용은 10분을 상정합니다.
-  `ros2 run box_control control --ros-args -p start_delay_sec:=600.0`
+- 대기 시간은 `start_delay_sec` 파라미터로 바꿉니다. 기본: 상주 모드 600초(10분), `auto_start` 10초.
+  `ros2 run box_control control --ros-args -p start_delay_sec:=10.0`   # 시험할 때 짧게
 - `0`으로 주면 대기 없이 바로 시작합니다.
 - 관제가 터미널 입력을 받을 수 없는 환경(launch 등)에서는 `q` 없이 대기 후 시작합니다. 비상정지 서비스는 대기 중에도 동작합니다(시작 안 함).
 
@@ -354,18 +388,19 @@ ros2 run box_control control
 | 관제 단계, job_id, 처리 박스 수, 재고 A~D·U, 불일치·재스캔 횟수, 중단 이유, 시작 대기 남은 시간 | `/control_status` (관제가 발행, `std_msgs/String` JSON, 마지막 1개 유지 → GUI를 늦게 켜도 받음). 없으면 로그·Goal 상태로 단계를 추정 |
 | 이벤트 로그 (관제 이벤트 + 파트 `report.log`) | `/event_log` |
 | 파트별 Goal 상태(실행중·성공·실패·취소), 진행 stage, 마지막 소식 후 경과(30초 넘으면 주황) | `/scan`·`/judge`·`/place` Action status·feedback |
-| 로봇 상태 (1초 주기) + 알람 | 두산 `get_robot_state`, `/dsr01/error` (`dsr_msgs2`가 있을 때) |
+| 로봇 상태 + 알람 | 관제가 살아 있으면 `/control_status`의 로봇 상태(관제가 0.5초마다 읽은 값), 관제가 없을 때만 직접 `get_robot_state` 1초 주기 (11/18). 알람은 `/dsr01/error` |
 | 연결 상태 | `/emergency_stop`(관제), `/get_job_data`(DB), 파트 Action 서버, 로봇 서비스 |
 
-- **비상정지 버튼**: `/emergency_stop`(source=`monitor_gui`)를 확인창 없이 바로 보냅니다.
+- **비상정지 버튼**: 확인창 [정지]/[취소] → `/emergency_stop`(source=`monitor_gui`).
+- **시작 / 시작 취소 / 바로 시작**: `/job_command`(source=`monitor_gui`). 시작 확인창에서 **지금 재고를 −/+ · [전부 0]으로 맞출 수 있음** (11/19, 바꿨으면 DB 노드에 먼저 저장 → 성공하면 시작. 이번 작업에 안 들어오는 클래스·미분류용 — 적재하면 실제로 잰 값으로 바뀜). 바로 시작(카운트다운 생략)은 현장 전용이라 관리자 GUI·터미널에만 있습니다.
 - 끄기: `ros2 run box_control control --ros-args -p gui:=false`. 화면(`DISPLAY`)이 없으면 자동으로 안 띄웁니다. 관제를 `robot_monitor:=off`/`fake`로 실행하면 GUI도 로봇 상태 조회를 끕니다.
 - GUI만 따로: `ros2 run box_control monitor_gui` (`-p robot_poll:=false`로 로봇 조회 끔).
 - 필요: `sudo apt install python3-tk`
-- `/control_status`는 모니터 GUI용 임시 토픽입니다. DB·웹 UI는 지금처럼 `/event_log`와 Service를 씁니다.
+- `/control_status`는 모니터 GUI와 DB 노드가 같이 받습니다 (DB 노드 → Supabase `state` → 웹 UI, `docs/DB_UI_CONTRACT.md`).
 
 ### 탐지 실제 코드 (`scan_main`, 11/17)
 
-탐지 담당 원본(`m0609_scan_final.py`, 실로봇에서 스캔·인식·픽업·이동 확인)을 팀 구조로 옮긴 것입니다. 알고리즘 `box_scan/box_scan/scan_algorithm.py`(`ScanAlgorithm`), 설정·보정표 `scan_config.py`, 진입점 `scan_main.py`. 원본은 `scan_original.py`로 그대로 두었습니다(`ros2 run box_scan scan_original`, 그리퍼 DO 방식이라 비교용·관제와 동시 실행 금지).
+탐지 담당 원본(`m0609_scan_final.py`, 실로봇에서 스캔·인식·픽업·이동 확인)을 팀 구조로 옮긴 것입니다. 알고리즘 `box_scan/box_scan/scan_algorithm.py`(`ScanAlgorithm`), 설정·보정표 `scan_config.py`, 진입점 `scan_main.py`. 원본은 `scan_original.py`로 보관만 합니다 (11/18 실행 노드에서 뺌. 그리퍼 DO 방식이라 비교용, 필요하면 `python3 box_scan/box_scan/scan_original.py`).
 
 ```bash
 ros2 run box_scan scan_main
@@ -391,20 +426,20 @@ python3 box_scan/test/test_scan_flow.py                                         
 ```bash
 ros2 run box_place place_main                                        # 기본 설정 파일
 ros2 run box_place place_main --ros-args -p show_force:=true         # 하강 중 힘·Z 출력
-ros2 run box_place place_main --ros-args -p clear_pending:=true      # 멈춘 뒤 확인 완료 (아래)
+ros2 run box_place place_main --ros-args -p clear_pending:=true      # 미완료 기록을 시작할 때 지움 (보통은 필요 없음, 아래)
 ros2 run box_place place_main --ros-args -p sim_contact:=true        # 에뮬레이터 전용 (아래)
 ```
 
-- 지원 클래스는 설정에 있는 것만입니다 (현재 **A/B/C**). D가 오면 `PLACE_FAILED` (`D: place_config.json에 설정이 없습니다`).
+- 지원 클래스는 설정에 있는 것만입니다 (현재 **A/B/C/D**, D는 11/18 실물 확인. 구역 위치는 다시 정할 예정). 설정에 없는 클래스가 오면 `PLACE_FAILED`.
 - **미분류 `U`**: `place_config.json`의 `unclassified`(`enabled`, `release_pose` [x, y, z, rx, ry, rz], `approach_z`) 위치로 가서 힘 제어 없이 놓고 0을 돌려줍니다. 현재 `[670, -43, 144, 160, 180, 162]`, 접근 높이 160.
 - Goal의 측정존이 `(0,0,0)`이면 움직이지 않고 실패합니다 → DB에 실제 측정존·구역 좌표가 있어야 합니다.
 - 정지: `dsr_io`가 모든 로봇 명령 전과 힘 제어 하강 중(`force_z`)에 관제 정지 요청을 확인합니다 → `CANCELED`로 빠져나오고 `place_interface`가 힘·순응제어 해제 + `move_stop`. 하강 중에는 1초마다 keepalive를 보내 진행 감시가 오인하지 않습니다.
-- **측정존 z = 측정존 바닥 Z** (11/18 세 파트 통일, 현재 `[300, -160, 30]`, 판별 실측 30.9).
+- **측정존 z = 측정존 바닥 Z** (11/18 세 파트 통일, **`[300, -160, 30.9]`** — 판별이 잰 실제 바닥, 이전 30). 판별 높이 측정·sync 집기, 적재 sync 집기, 탐지 내려놓기, 관제 확인이 모두 이 값 하나를 씁니다.
 - **측정존 집기 = sync 집기** (11/18 실물 시험 후 변경, `box_comm/sync_grip.py` = 판별 `rg2_sync_grip` 그대로, **판별과 같은 설정** `common.SYNC_GRIP`): RG2는 벌릴수록 핑거 끝이 올라갑니다(완전 열림 ↔ 닫힘 약 39mm, TCP 208.4는 닫힌 핑거 끝). 예전처럼 TCP를 바닥 + 5에 두고 닫으면 A 박스 60mm 면에서 핑거 끝이 바닥 위 약 17mm → 20mm 박스의 위 3mm만 물어 들다가 놓쳤습니다. 이제는 **100mm로 열고** 핑거 끝이 **바닥 + 2.6mm**에 오게 내려가서, 닫는 동안 핑거 끝이 내려가는 만큼 TCP를 올립니다. 10N으로 닫고 40N으로 다시 조입니다. 판별이 측정존 중심에 정해진 위상으로 놓아 주므로 하강 중 얹힘 감시는 하지 않습니다. 못 잡으면 같은 자리에서 3번.
 - 집은 TCP 높이가 폭마다 달라서(TCP − 박스 바닥, A 60mm 면 약 −8mm) 집을 때마다 재고, 층 판단·첫 접촉 Z 학습은 **TCP Z − 그 값(= 박스 바닥)** 으로 계산합니다 → 기존 `first_contact_z_mm`(30.19 등)과 상태 파일을 그대로 씁니다. 로그: `집기 성공 (1/3번째, 폭 60.2 mm, TCP−바닥 -15.2 mm)`.
 - 시험(ROS 없이): `python3 box_place/test/test_place_pick.py`. 가짜 그리퍼는 일정 속도로 닫힌다고 가정해 핑거 끝이 목표보다 2~3mm 낮게 계산됩니다(판별이 실물에서 같은 방식으로 문제없었으므로 모델이 보수적이라고 봄). **실물에서 바닥을 긁으면 `common.SYNC_GRIP` `tip_above_floor_mm` 하나만 올리면** 판별·적재가 같이 바뀝니다.
 - **`sim_contact` (에뮬레이터 전용)**: 에뮬레이터는 힘 센서 값이 없어 '닿을 때까지 하강'이 끝나지 않습니다. `true`면 힘 제어 대신 가상으로 쌓인 높이까지 `movel`로 내려가 닿았다고 칩니다(층 판단·만재 시 다음 자리·수량 계산은 원래 코드). 가상 적재 수는 노드가 켜질 때 0, 상태 파일은 `~/.ros/place_sim_state.json`으로 분리. **실제 로봇에서는 켜지 않습니다.**
-- **멈춘 뒤 복구**: 작업 중 멈추면 상태 파일(`~/.ros/place_real_v04_state.json`)에 미완료 작업이 남아 다음 적재를 거부합니다. 그리퍼(물건을 쥐고 있는지)와 적재 상태를 확인하고 `-p clear_pending:=true`로 한 번 실행하세요.
+- **멈춘 뒤 복구 (11/18 자동)**: 작업 중 멈추면 상태 파일(`~/.ros/place_real_v04_state.json`, 에뮬레이터 `place_sim_state.json`)에 미완료 기록이 남습니다. 다음 Goal에서 **그리퍼를 읽어 비어 있으면 기록을 지우고 진행**(WARN 로그), 무언가를 쥐고 있으면 `PLACE_FAILED`(사람이 빼면 다음 Goal에서 풀림). 적재는 매번 1자리부터 실제로 닿아 보고 수량을 재므로 재고가 틀어지지 않습니다. **상태 파일을 지우지 마세요** — 자리별 첫 접촉 Z 기준까지 사라집니다. 관제 사전 점검도 그리퍼가 무언가를 쥐고 있으면 시작하지 않습니다.
 
 ### 그리퍼 (RG2 Modbus, 11/17)
 
@@ -430,17 +465,21 @@ ros2 run box_place place_main --ros-args -p sim_contact:=true        # 에뮬레
 | `/emergency_stop` (UI 버튼, 터미널) | 언제든 (시작 전이면 시작 안 함) | 두산 `move_stop` 반복 + 진행 중인 파트 Goal cancel | `STOPPED : EMERGENCY STOP — by ui` |
 | 로봇 상태가 STANDBY·MOVING이 아님 (안전 정지, 펜던트 비상정지 등) | 작업 중 (`robot_monitor`) | 같음 | `STOPPED : Robot safety stop — robot_state=SAFE_STOP` 등 |
 | 로봇 상태 확인 3초 연속 실패, `robot_disconnection` | 작업 중 (`robot_monitor=dsr`) | 같음 | `STOPPED : Robot disconnected` |
-| 파트 Feedback이 `progress_timeout_sec` 동안 없음 | 작업 중 | 같음 | `ERROR : No progress (judge) — …` |
+| 실행 중인 파트 Action 서버가 3초 넘게 사라짐 (노드 종료·충돌, 11/18) | 작업 중 (항상) | 같음 | `ERROR : Part node stopped (place) — …` |
+| 파트 Feedback이 `progress_timeout_sec` 동안 없음 (살아 있는데 멈춤) | 작업 중 (켰을 때) | 같음 | `ERROR : No progress (judge) — …` |
+| 관제 코드 자체의 예외 (11/18) | 언제든 | 같음 + 관제는 READY로 | `ERROR : Control error — KeyError: …` |
 
 - 파트는 cancel을 받으면 다음 `report(stage)`·`report.check()`에서 `CANCELED`로 빠져나옵니다. `move_stop` 뒤에도 파트가 다음 동작을 보낼 수 있어 관제가 3초 동안 `move_stop`을 반복합니다(`common.SAFETY`).
 - 두산 알람(`error` 토픽)은 이벤트 로그(`ROBOT_ALARM`)로 남고, 로봇 정지 이유에 덧붙습니다.
-- 복구(로봇 안전 정지 해제)는 아직 수동입니다(펜던트). 해제 후 관제를 다시 실행합니다.
+- 대기·카운트다운 중 터미널 키 입력에서 예상 못 한 오류가 나면 관제를 멈추지 않고 `주의!` 로그(`CONTROL_WARN`)만 남긴 뒤 키 입력 없이 계속합니다 (11/18). 멈추려면 UI·관리자 GUI 비상정지나 펜던트.
+- 복구(로봇 안전 정지 해제)는 아직 수동입니다(펜던트). 해제 후 다시 시작합니다(상주 모드면 관제를 다시 켤 필요 없음 — 사전 점검이 로봇 상태·그리퍼를 확인).
+- 파트 노드가 정상 종료(Ctrl+C)되면 바로, 강제 종료(`kill -9`, 충돌)되면 DDS가 알아차리는 데 십수 초 걸릴 수 있습니다.
 
 | 관제 파라미터 | 값 | 설명 |
 | --- | --- | --- |
 | `robot_monitor` | `dsr`(기본) / `fake` / `off` | `dsr`: 실제 로봇·에뮬레이터에서 `get_robot_state`를 0.5초마다 확인. bringup이 없거나 `dsr_msgs2`가 없으면 사전 점검 FAIL(시작 안 함). `off`는 로봇 없이 테스트할 때만 (사전 점검 WARN, 정지 감지 없음) |
 | `fake_robot_state` | int (기본 1 = STANDBY) | `robot_monitor:=fake`일 때 로봇 상태 흉내. 실행 중에 `ros2 param set`으로 바꿈 |
-| `progress_timeout_sec` | float (기본 0 = 끔) | 파트 Feedback 감시 시간. 파트 동작 중 가장 긴 구간보다 넉넉하게 (예: 60) |
+| `progress_timeout_sec` | float (기본 0 = 끔) | 파트 Feedback 감시 시간 ('살아 있는데 멈춤'). 파트 동작 중 가장 긴 구간보다 넉넉하게 (예: 60). 노드가 죽는 경우는 이 값 없이도 `PART_DIED`로 잡힘 |
 
 ```bash
 # 실제 로봇·에뮬레이터 (robot_monitor는 기본값 dsr)
@@ -459,7 +498,7 @@ ros2 param set /control fake_robot_state 5      # 5 = SAFE_STOP, 6 = EMERGENCY_S
 
 | 환경 | 시험할 수 있는 것 |
 | --- | --- |
-| 로봇 없이 (fake 노드) | 비상정지 서비스·`fake_database estop_at`, `robot_monitor:=fake` 상태 변경, 진행 감시 |
+| 로봇 없이 (fake 노드) | 비상정지 서비스·DB 노드 `estop_at`, `robot_monitor:=fake` 상태 변경, 진행 감시, fake 파트를 Ctrl+C로 끄기 → `PART_DIED` |
 | 에뮬레이터 (`mode:=virtual`) | 위 + `robot_monitor:=dsr`로 실제 상태 읽기, `move_stop` 동작. 충돌·토크 안전 정지는 거의 안 생김 |
 | 실제 로봇 | 위 + 펜던트 비상정지 버튼 → `STOPPED : Pendant emergency stop`, 충돌 감지 안전 정지 |
 
@@ -467,13 +506,15 @@ ros2 param set /control fake_robot_state 5      # 5 = SAFE_STOP, 6 = EMERGENCY_S
 
 `box_control`의 fake 노드로 전체 흐름을 로봇 없이 확인할 수 있습니다.
 
-**터미널 하나로 (추천)** — fake 노드 4개는 백그라운드, 관제는 앞에서 실행. 관제가 끝나거나 Ctrl+C면 모두 정리됩니다.
+**터미널 하나로 (추천)** — DB 노드(`database_main` 파일 모드, 매번 재고 0으로 시작)와 fake 파트 3개는 백그라운드, 관제는 앞에서 실행. 관제가 끝나거나 Ctrl+C면 모두 정리됩니다. (11/18: `fake_database`는 없어지고 DB는 항상 실제 코드)
 
 ```bash
 cd ~/ws_cobot_pjt/ws_dsr/src/box_project
 ./scripts/fake_run.sh                                        # 기본: robot_monitor=fake, 대기 3초
 BOX_COUNT=6 CLASSES="A,A,B,C,D,D" ./scripts/fake_run.sh
 DB_ARGS="-p estop_at:=2" ./scripts/fake_run.sh               # 2번째 박스 뒤 UI 비상정지 흉내
+DB_ARGS="-p start_inventory:=[0,5,0,0,0]" ./scripts/fake_run.sh   # 재고 B=5로 시작
+RESIDENT=1 ./scripts/fake_run.sh                             # 상주 모드 (curl -s -X POST localhost:8765/start)
 PLACE_ARGS="-p miscount_at:=2" ./scripts/fake_run.sh         # 재고 불일치
 ./scripts/fake_run.sh -p robot_monitor:=fake -p progress_timeout_sec:=5.0   # 관제 파라미터 직접 지정
 MOTION=1 BOX_COUNT=2 ./scripts/fake_run.sh                   # 탐지·판별·적재를 test_*_motion으로 (로봇이 위아래로 움직임)
@@ -492,12 +533,12 @@ fake 노드 출력은 `/tmp/box_fake_logs/*.log`에 남습니다 (`tail -f /tmp/
 - `MOTION=1`, `PLACE_MAIN=1`, `SCAN_MAIN=1`, `JUDGE_MAIN=1`은 bringup(에뮬레이터 또는 실제 로봇)이 필요하고, 관제 기본값이 `robot_monitor=dsr`, 대기 5초로 바뀝니다.
 - `SCAN_MAIN=1`: 탐지를 `box_scan scan_main`으로. `SIM=1`이면 `-p sim_boxes:="$SIM_BOXES"`(기본 `420,100,50;510,-20,60`). 탐지 Goal은 박스가 없을 때 11선을 다 훑어 1~2분 걸립니다. 판별 실제 코드(`judge_main`)는 시뮬 모드가 없어 에뮬레이터에서는 fake로 둡니다.
 - `PLACE_MAIN=1`: 탐지·판별은 fake(움직이지 않음), 적재만 `box_place place_main`. `CLASSES` 기본값 `A,B,C`(D 미지원). `SIM=1`이면 `-p sim_contact:=true`.
-- `PLACE_MAIN=1`로 멈췄다가 다시 돌릴 때는 미완료 기록부터 지웁니다: 에뮬레이터 `rm -f ~/.ros/place_sim_state.json`, 실제 로봇은 그리퍼·적재 상태 확인 후 `PLACE_ARGS="-p clear_pending:=true"`.
+- `PLACE_MAIN=1`로 멈췄다가 다시 돌릴 때 상태 파일을 지울 필요 없습니다 (11/18: 그리퍼가 비어 있으면 미완료 기록을 자동으로 지움).
 
 **터미널을 따로 띄울 때**
 
 ```bash
-ros2 run box_control fake_database
+ros2 run box_database database_main --ros-args -p store:=file -p start_inventory:="[0,0,0,0,0]"
 ros2 run box_control fake_scan --ros-args -p box_count:=4 -p fake_delay_sec:=0.3
 ros2 run box_control fake_judge --ros-args -p class_sequence:="A,B,B,D"
 ros2 run box_control fake_place
@@ -509,7 +550,7 @@ ros2 run box_control control --ros-args -p start_delay_sec:=3.0     # 테스트�
 | `fake_scan` | `box_count` (박스 개수, 기본 3), `fake_delay_sec` |
 | `fake_judge` | `class_sequence` (`"A,B,B,D"`처럼 주면 그 순서로 판별, 비우면 무작위), `fake_delay_sec` |
 | `fake_place` | `U`는 0 반환, `fake_delay_sec`, `fake_start` (A~D 구역에 처음부터 쌓인 개수, 기본 `[0,0,0,0]`), `miscount_at` (N번째 적재에서 수량을 일부러 +1 틀리게 측정 — 관제 불일치 처리 테스트용, 기본 0=끔) |
-| `fake_database` | `pose_offset` (고정 좌표에 값을 더해서 반환 → DB 값이 Goal로 전달되는지 확인), `poses_available` (False면 좌표 없음 → 사전 점검 FAIL), `start_inventory` (A~D, U 순서, 4개만 주면 U=0), `estop_at` (N번째 박스 반영 직후 UI 비상정지 버튼을 누른 것처럼 동작, 기본 0=끔) |
+| `database_main` (파일 모드 시험용) | `start_inventory` (A~D, U 순서로 재고를 덮어쓰고 시작, 기본 `[-1]` = 안 건드림), `estop_at` (N번째 재고 반영 직후 UI 비상정지 흉내, 기본 0). Supabase에서는 둘 다 무시. 좌표 시험은 `~/box_logs/fake_db/loc.json`을 직접 고침(측정존 행을 지우면 사전 점검 FAIL) |
 
 fake와 실제 노드는 같은 Action/Service 이름을 쓰므로 **동시에 띄우지 않습니다.**
 파트 하나만 실제로 붙여 보려면 그 파트만 실제 노드로, 나머지는 fake로 띄웁니다.
@@ -520,7 +561,7 @@ fake와 실제 노드는 같은 Action/Service 이름을 쓰므로 **동시에 �
 
 | 도구 | 내용 |
 | --- | --- |
-| `test_scan_motion` | `scan_interface` + 실제 두산 동작(`connect_dsr`, `movej`/`movel`)이 들어간 `/scan` 노드. Goal마다 HOME → 위로 50mm → 아래로 → HOME. **팀원이 실제 동작을 넣을 때 참고할 예시 코드** |
+| `test_scan_motion` | 실제 파트 코드와 같은 알고리즘 방식(`start_algorithm`, `robot` = `DsrIO`)의 `/scan` 노드. Goal마다 HOME → 위로 50mm → 아래로 → HOME (11/18: DSR_ROBOT2 직접 호출 → `robot` 명령으로 바꿈, 정지 확인 자동) |
 | `test_judge_motion` · `test_place_motion` | 같은 구조의 `/judge`·`/place` 노드. 판별은 x ±30mm, 적재는 y ±30mm로 움직여 눈으로 구분. 판별 결과는 A→B→C→D 순서, 적재는 클래스별 카운터 +1로 단·층 반환 |
 | `robot_test` | `/scan` Goal을 반복해서 보내며 TCP·툴 적용을 점검하고 PASS/FAIL 표 출력. `-p reapply_test:=false`면 컨트롤러 설정을 바꾸는 3번 항목을 건너뜀 |
 
@@ -537,12 +578,12 @@ sleep 3; ros2 run box_control robot_test --ros-args -p reapply_test:=false; pkil
 **세 파트 동시 연결 시험** — 탐지·판별·적재가 각자 두산에 연결해 둔 채 관제가 순서대로 움직이게 합니다 (실제 통합과 같은 구조).
 
 ```bash
-ros2 run box_database database_template &
+ros2 run box_database database_main --ros-args -p store:=file &
 ros2 run box_control test_scan_motion  --ros-args -p robot_setup:=on -p box_count:=2 &
 ros2 run box_control test_judge_motion --ros-args -p robot_setup:=on &
 ros2 run box_control test_place_motion --ros-args -p robot_setup:=on &
-sleep 5; ros2 run box_control control --ros-args -p start_delay_sec:=5.0
-pkill -f database_template; pkill -f _motion
+sleep 5; ros2 run box_control control --ros-args -p auto_start:=true -p start_delay_sec:=5.0
+pkill -f database_main; pkill -f _motion
 ```
 
 `test_scan_motion`은 `box_count`를 꼭 지정합니다 (0이면 계속 “물품 있음”이라 관제가 끝나지 않음). 박스 2개 → `DONE`이면 통과.
