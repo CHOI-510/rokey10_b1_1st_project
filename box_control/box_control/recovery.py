@@ -11,7 +11,8 @@ recovery.py — 관제 복구 동작 모음 (관제 전용)
       2. push_path 첫 점 위로 이동 → 그리퍼 닫고 push_path를 차례로 movel (박스를 스캔 공간으로 밀어냄)
       3. 안전 높이로 → 측정존이 비었는지 확인
          (측정존 위에서 그리퍼를 열고 바닥 + probe_above_floor_mm까지 내려가 닫아 봄 → 잡히면 아직 박스가 있음, 가운데 근처만 확인)
-      설정: common.RECOVERY. push_path가 None(미정)이면 움직이지 않고 실패 → 사람이 비움
+      설정: common.RECOVERY. push_path가 None(미정)이면 (11/18) 움직이지 않고 '사람이 비움'으로 보고 성공 처리
+      → 관제가 바로 재스캔. 스캔하는 동안 사람이 측정존의 박스를 치운다 (로그 WARN만, 대기 없음)
 나중에 붙일 것 (예): 안전 높이 복귀, 그리퍼 열기, 측정존 상태 확인만 하기 ...
 
 로봇 연결
@@ -62,6 +63,7 @@ class Recovery:
         self.mode = mode
         self._robot = None
         self.last_error = ''               # 마지막 실패 이유 (로그용)
+        self.skipped = False               # 밀어내기 경로가 없어 움직이지 않고 넘어갔는지 (11/18 임시)
 
     # ------------------------------------------------------------------
     # 로봇 연결 (처음 쓸 때 한 번)
@@ -107,6 +109,7 @@ class Recovery:
     # ------------------------------------------------------------------
     def clear_measure_zone(self, poses):
         self.last_error = ''
+        self.skipped = False
         if self.mode == 'fake_ok':
             time.sleep(0.5)
             try:                                       # fake_scan이 밀려온 박스를 다시 세게
@@ -121,9 +124,16 @@ class Recovery:
             self.last_error = '(fake) 측정존 비우기 실패'
             return 'RECOVERY_FAILED'
         if not RECOVERY['push_path']:
-            self.last_error = ('측정존 밀어내기 경로 미정 (common.RECOVERY push_path) '
-                               '→ 측정존을 사람이 비운 뒤 다시 시작')
-            return 'RECOVERY_FAILED'
+            # 11/18 임시 (팀 결정): 밀어내기 미구현 → 움직이지 않고 넘어감. 사람이 스캔 중에 측정존을 비움
+            self.skipped = True
+            try:                                       # fake_scan을 쓰는 시험이면 치운 박스를 다시 세게 (fake_ok와 같음)
+                with open(os.environ.get('BOX_FAKE_RETURN_FILE', '/tmp/box_fake_return'), 'a') as f:
+                    f.write('1\n')
+            except OSError:
+                pass
+            self.log.warn('[recovery] (fake) 측정존 비우기 — 밀어내기 경로 미정(common.RECOVERY push_path). '
+                          '스캔하는 동안 측정존의 박스를 사람이 치워 주세요')
+            return None
         zone = (poses or {}).get('measure_zone')
         return self._run('측정존 비우기', lambda robot: self._push_and_check(robot, zone))
 

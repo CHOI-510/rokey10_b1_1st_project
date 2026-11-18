@@ -1,7 +1,6 @@
 {
   "travel_z": 160.0,
   "min_search_z": 20.0,
-  "pick_above_floor_mm": 5.0,
   "search_timeout_s": 160.0,
   "contact_force_n": 6.0,
   "abort_force_n": 25.0,

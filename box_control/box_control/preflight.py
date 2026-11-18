@@ -141,7 +141,7 @@ def check_recovery(ctrl):
         return [(OK, f'측정존 비우기 {mode} (로봇 안 움직임, 시험용)')]
     if not RECOVERY['push_path']:
         return [(WARN, '측정존 밀어내기 경로 미정 (common.RECOVERY push_path) — 판별·적재에서 못 집으면 '
-                       '측정존을 비우지 못해 작업이 종료됩니다 (탐지 집기 실패는 재스캔)')]
+                       '비우기를 건너뛰고(fake) 바로 재스캔합니다. 스캔하는 동안 사람이 측정존을 치워 주세요')]
     return [(OK, f'측정존 밀어내기 경로 {len(RECOVERY["push_path"])}점')]
 
 

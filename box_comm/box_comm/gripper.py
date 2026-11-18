@@ -41,29 +41,29 @@ SETTLE_TIMEOUT = 1.5
 SETTLE_TOL_MM = 0.1
 
 
-def check_grip(width_mm, grip_bit, ref_width_mm=None):
+def check_grip(width_mm, grip_bit, ref_width_mm=None, check_range=True):
     """잡았는지 판정 (탐지·적재 공용, 11/18). 반환 (ok, 이유)
     - 잡힘 비트가 꺼져 있거나 패드 사이 간격이 빈손 기준 이하 → 못 잡음
     - 간격이 GRIPPER['box_width_range_mm'] 밖 → 한쪽 핑거만 걸렸거나 엉뚱한 것을 문 것
-      (DO 시절 탐지는 WebLogic의 폭 조건으로 같은 것을 걸렀다)
+      (DO 시절 탐지는 WebLogic의 폭 조건으로 같은 것을 걸렀다). 판별은 check_range=False (범위 밖은 U로 판정)
     - ref_width_mm(닫았을 때 폭)를 주면, 지금 폭이 그보다 hold_width_tol_mm 넘게 변했으면 놓친 것"""
     lo, hi = GRIPPER['box_width_range_mm']
     if not grip_bit:
         return False, f'잡힘 신호 없음 (폭 {width_mm:.1f} mm)'
     if width_mm <= GRIPPER['empty_width_mm']:
         return False, f'빈손으로 닫힘 (폭 {width_mm:.1f} mm)'
-    if not lo <= width_mm <= hi:
+    if check_range and not lo <= width_mm <= hi:
         return False, f'폭 {width_mm:.1f} mm가 박스 범위 {lo:g}~{hi:g} mm 밖 (한쪽 핑거만 걸렸을 수 있음)'
     if ref_width_mm is not None and abs(width_mm - ref_width_mm) > GRIPPER['hold_width_tol_mm']:
         return False, f'폭이 {ref_width_mm:.1f} → {width_mm:.1f} mm로 변함 (놓쳤거나 미끄러짐)'
     return True, ''
 
 
-def holding(g, ref_width_mm=None):
+def holding(g, ref_width_mm=None, check_range=True):
     """지금 쥐고 있는지 그리퍼 상태로 판정 → (ok, 이유, 폭). g = robot.gripper (RG2 / FakeRG2)"""
     st = g.status()
     w = g.calibrated(st['width_raw_mm'])
-    ok, why = check_grip(w, st['grip'], ref_width_mm)
+    ok, why = check_grip(w, st['grip'], ref_width_mm, check_range)
     return ok, why, w
 
 

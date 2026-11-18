@@ -12,7 +12,7 @@ place_algorithm.py — 적재 알고리즘 (담당: 정수현)
     들어 올린 뒤 그리퍼 폭으로 계속 쥐고 있는지 확인. 못 잡았으면 같은 자세로 다시 (common.GRIP_RETRY = 3번,
     설정 grip_retry로 바꿀 수 있음). 다 실패하면 그리퍼 열고 이송 높이로 올라간 뒤 PartError('GRASP_FAILED')
     → 관제가 측정존을 비우고 공간 스캔부터 다시. 이송 중 놓쳤으면(적재 직전 빈손) PLACE_FAILED → 작업 종료
-    잡는 힘은 설정 grip_force_n (없으면 common.GRIPPER 20 N)
+    쥐는 힘은 설정 grip_force_n (없으면 common.GRIPPER 40 N). 닫기는 sync(10 N) 뒤 이 힘으로 다시 조임
   - TCP·툴은 box_comm이 Goal마다 run 전에 맞춰 준다.
 
 약속 (box_comm/place_interface.py start_algorithm)
@@ -30,10 +30,17 @@ v0.4 적재
   - U(미분류)는 unclassified.release_pose로 이동 후 투하. 힘 제어/층 판단 없음, 0 반환
 
 설정: box_place/config/place_config.json (설치 후 share/box_place/config/place_config.json)
-  - pick_above_floor_mm (11/18): 측정존에서 집는 TCP 높이 = 측정존 z(바닥) + 이 값. 핑거 끝이 바닥에 닿지 않게(기본 5).
-    판별이 항상 눕혀서 주므로 박스 높이는 20/25뿐 → 고정값 하나로 충분. 이만큼 높게 집으면 적재 구역에서 닿는
-    TCP Z도 그만큼 올라가므로, 층 판단·첫 접촉 Z 기준은 이 값을 뺀 Z(바닥에서 집었을 때와 같은 기준)로 계산한다
-    → 기존 first_contact_z_mm(바닥 높이에서 집어 잰 값)과 상태 파일 기준을 그대로 쓸 수 있다.
+  - 측정존 집기 = sync 집기 (11/18 실물 시험 후, box_comm/sync_grip.py = 판별 rg2_sync_grip 그대로, 판별과 같은 설정)
+    RG2는 벌릴수록 핑거 끝이 올라간다(완전 열림 ↔ 닫힘 약 39mm). TCP(208.4)는 '닫힌 핑거 끝'이라, 예전처럼
+    TCP를 바닥 + 5에 두고 닫으면 A 박스 60mm 면에서 핑거 끝이 바닥 위 약 17mm → 20mm 박스의 위 3mm만 물었다
+    (11/18 실물: 들다가 2번 놓침). 이제는 100mm로 열고 핑거 끝이 바닥 + common.SYNC_GRIP tip(2.6)에 오게
+    내려가서, 닫는 동안 핑거 끝이 내려가는 만큼 TCP를 올려 그 높이를 유지한다 → 폭과 상관없이 박스 아래쪽을 잡음.
+    판별이 측정존 중심에 정해진 위상으로 놓아 주므로 하강 중 얹힘 감시는 하지 않는다.
+    닫는 힘은 SYNC_GRIP close_force_n(10 N)으로 닫고 grip_force_n(기본 common 40 N)으로 다시 조인다.
+  - 집은 높이가 폭마다 달라서(TCP − 박스 바닥 = hold_off, A 60mm 면 약 −9mm) 집을 때마다 재서 쓴다.
+    층 판단·첫 접촉 Z 기준은 TCP Z − hold_off(= 박스 바닥, 바닥 높이에서 집었을 때와 같은 기준)
+    → 기존 first_contact_z_mm(30.19 등)과 상태 파일 기준을 그대로 쓸 수 있다.
+  - 잡힘 판정: box_comm.gripper.check_grip/holding — 잡힘 비트 + 폭이 박스 범위 안 + 들어 올린 뒤 폭이 안 변함
   - 층 수·자리 수는 설정에 적지 않는다. box_comm/common.py STACK(levels / max_tiers)을 그대로 쓴다
     (관제·DB·UI가 같은 규칙으로 수량을 해석하는 공용 규칙. 바꿀 때는 관제와 합의 + 자리별 첫 접촉 Z 재측정)
   - slot_dx_mm: 다음 자리 위치 = 1자리 x + (자리-1) * slot_dx_mm, y는 같음
@@ -58,8 +65,14 @@ import math
 import time
 from pathlib import Path
 
-from box_comm.common import (GRIP_RETRY, GRIPPER, PartError, RESULT_CLASSES, STACK, TCP, UNCLASSIFIED,
-                             VALID_CLASSES, count_from_position)
+from box_comm.common import (GRIP_RETRY, GRIPPER, SYNC_GRIP, PartError, RESULT_CLASSES, STACK, TCP,
+                             UNCLASSIFIED, VALID_CLASSES, count_from_position)
+from box_comm.gripper import check_grip, holding
+from box_comm.sync_grip import GripMissed, make_sync_gripper
+
+TIP_MM = SYNC_GRIP['tip_above_floor_mm']   # 집는 동안 핑거 끝 높이 (판별과 같은 공용 값). 집은 TCP − 박스 바닥은 항상 이 이하
+PICK_SLOW_FROM_MM = 15.0    # 집는 높이 이 위부터 천천히
+PICK_SLOW_VEL = 30.0
 
 
 def default_config_path() -> str:
@@ -96,11 +109,13 @@ def validate_config(c):
         raise ValueError('contact_force_n < desired_force_n < abort_force_n 필요')
     if c['contact_sign'] not in (-1, 1):
         raise ValueError('contact_sign은 +1 또는 -1이어야 합니다')
-    off = c.setdefault('pick_above_floor_mm', 0.0)
-    if type(off) not in (int, float) or not math.isfinite(off) or off < 0:
-        raise ValueError('pick_above_floor_mm는 0 이상이어야 합니다')
-    if c['classes'] and off >= min(spec['height_mm'] for spec in c['classes'].values()):
-        raise ValueError('pick_above_floor_mm가 가장 낮은 박스 높이 이상입니다 (박스를 못 잡음)')
+    for old in ('pick_above_floor_mm', 'pick_tip_above_floor_mm', 'sync_grip_force_n'):
+        if old in c:
+            raise ValueError(f'{old}는 11/18부터 공용 설정(common.SYNC_GRIP, 판별과 같은 sync 집기)으로 옮겼습니다 '
+                             f'→ place_config.json에서 지우세요')
+    off = TIP_MM                       # 집은 TCP − 박스 바닥은 항상 핑거 끝 높이 이하 → 높이 여유 검사에 씀
+    if c['classes'] and off >= min(spec['height_mm'] for spec in c['classes'].values()) - 5.0:
+        raise ValueError('SYNC_GRIP tip_above_floor_mm가 가장 낮은 박스 높이 − 5 이상입니다')
     for k in ('min_search_z', 'slot_dx_mm'):
         if type(c[k]) not in (int, float) or not math.isfinite(c[k]):
             raise ValueError(f'잘못된 {k}')
@@ -173,6 +188,9 @@ class PlaceAlgorithm:
         self.show_force = bool(node.get_parameter('show_force').value)
         self.sim_contact = bool(node.get_parameter('sim_contact').value)
         self._sim_stack = {}                # (클래스, 자리) → 가상으로 쌓인 수 (sim_contact 전용)
+        self._grip_width = None             # 집었을 때 폭 (놓침 판정 기준)
+        self._hold_off = 0.0                # 집은 TCP Z − 박스 바닥 Z (sync 집기, 집을 때마다 잼)
+        self._hold_why = ''
         self._home_initialized = False      # 첫 Goal에서 한 번만 HOME 자세로
         state_name = 'place_sim_state.json' if self.sim_contact else 'place_real_v04_state.json'
         state_param = node.get_parameter('place_state').value
@@ -226,15 +244,14 @@ class PlaceAlgorithm:
         return self.robot.grip_close(self.c.get('grip_force_n') or GRIPPER['grip_force_n'])
 
     def _holding(self) -> bool:
-        """지금 박스를 쥐고 있는지 (잡힘 비트 + 패드 사이 간격이 빈손 기준보다 큼)"""
-        g = self.robot.gripper
-        st = g.status()
-        return bool(st['grip']) and g.calibrated(st['width_raw_mm']) > GRIPPER['empty_width_mm']
+        """지금 박스를 쥐고 있는지: 잡힘 비트 + 폭이 박스 범위 안 + 집었을 때 폭에서 안 변함 (11/18)"""
+        ok, self._hold_why, _w = holding(self.robot.gripper, self._grip_width)
+        return ok
 
     def _ensure_holding(self, where):
         """이송 중 놓쳤는지 확인. 놓쳤으면 박스가 어디 떨어졌는지 모르므로 작업 종료(PLACE_FAILED)"""
         if not self._holding():
-            raise PartError('PLACE_FAILED', f'{where}: 이송 중 박스를 놓침 (그리퍼 빈손) → 떨어진 위치 확인 필요')
+            raise PartError('PLACE_FAILED', f'{where}: 이송 중 박스를 놓침 ({self._hold_why}) → 떨어진 위치 확인 필요')
 
     def go_home(self, home):
         self.robot.movej(home, vel=self.c['home_speed_deg_s'], acc=self.c['home_acc_deg_s2'])
@@ -246,36 +263,52 @@ class PlaceAlgorithm:
             self._home_initialized = True
 
     def pick_from_measure_zone(self, zone, report):
-        """측정존에서 집기. 못 잡거나 들다가 놓치면 같은 자세로 다시 (최대 grip_retry번).
-        다 실패하면 그리퍼 열고 이송 높이에서 GRASP_FAILED (관제가 측정존을 비우고 재스캔)."""
-        # 측정존 z = 바닥. 핑거 끝이 바닥에 닿지 않게 pick_above_floor_mm만큼 위에서 집는다 (11/18)
-        pick = [zone[0], zone[1], zone[2] + self.c['pick_above_floor_mm'], *self.c['pick_orientation']]
-        above = [pick[0], pick[1], self.c['travel_z'], *pick[3:]]
-        tries = int(self.c.get('grip_retry') or GRIP_RETRY)
+        """측정존에서 sync 집기 (11/18, 판별과 같은 공용 설정). 못 잡거나 들다가 놓치면 같은 자리·자세로 다시
+        (최대 grip_retry번). 다 실패하면 그리퍼 열고 이송 높이에서 GRASP_FAILED (관제가 측정존을 비우고 재스캔)."""
+        c = self.c
+        orient = list(c['pick_orientation'])
+        above = [zone[0], zone[1], c['travel_z'], *orient]
+        grip_force = c.get('grip_force_n') or GRIPPER['grip_force_n']
+        sg = make_sync_gripper(self.robot, zone[2], log=lambda m: self.log.info(f'[place] {m}'))
+        tries = int(c.get('grip_retry') or GRIP_RETRY)
         self._raise()
         self._move(above)
         why = ''
-        at_pick = False
+        gz = None
         for attempt in range(1, tries + 1):
             self._pending(grasp_attempt=attempt)
-            self._grip(True)                       # 같은 파지 위치에서 다시 열기 (적재팀 원래 방식)
-            if not at_pick:
-                self._move(pick)
-                at_pick = True
-            res = self._grip(False)
-            if not res.grabbed:
-                why = f'빈손으로 닫힘 (폭 {res.width_mm:.1f} mm)'
+            raw_open = self.robot.grip_open()                 # 100mm로 열고 실제 열린 원시 폭
+            self._grip_width = None
+            gz = sg.grasp_z_for_open(raw_open)                # 이 폭에서 핑거 끝이 바닥 + tip이 되는 TCP Z
+            self._move([zone[0], zone[1], gz + PICK_SLOW_FROM_MM, *orient])
+            self.robot.movel([zone[0], zone[1], gz, *orient], vel=PICK_SLOW_VEL, acc=PICK_SLOW_VEL * 3)
+            try:
+                res = sg.close_with_lift(SYNC_GRIP['est_raw_mm'])
+            except GripMissed as e:
+                why = str(e)
             else:
-                self._move(above)
-                at_pick = False
-                if self._holding():
-                    if attempt > 1:
-                        report.log(f'집기 성공 ({attempt}/{tries}번째 시도, 폭 {res.width_mm:.1f} mm)')
-                    return res
-                why = '들어 올리는 중 놓침'
+                width = res['width_mm']
+                ok, why = check_grip(width, 1)
+                if ok and grip_force > SYNC_GRIP['close_force_n']:
+                    tight = self.robot.grip_close(grip_force)  # 같은 자리에서 더 센 힘으로 다시 조임
+                    ok, why = check_grip(tight.width_mm, 1, width) if tight.grabbed else (False, '다시 조이다 놓침')
+                    width = tight.width_mm if tight.grabbed else width
+                if ok:
+                    self._grip_width = width
+                    self._hold_off = self.robot.pose()[2] - zone[2]   # TCP − 박스 바닥 (층 판단 보정)
+                    self._move(above)
+                    if self._holding():
+                        report.log(f'집기 성공 ({attempt}/{tries}번째, 폭 {width:.1f} mm, '
+                                   f'TCP−바닥 {self._hold_off:+.1f} mm)')
+                        return res
+                    why = f'들어 올리는 중 놓침: {self._hold_why}'
             nxt = f'재시도 {attempt + 1}/{tries}' if attempt < tries else '포기'
             report.log(f'집기 실패 {attempt}/{tries}: {why} → {nxt}', 'WARN')
-        self._grip(True)                           # 최종 실패: 열고 이송 높이로 올라간 뒤 중단
+            if attempt < tries:
+                self.robot.grip_open()
+                self._move([zone[0], zone[1], gz + PICK_SLOW_FROM_MM, *orient])
+        self.robot.grip_open()                     # 최종 실패: 열고 이송 높이로 올라간 뒤 중단
+        self._grip_width = None
         self._raise()
         self._pending_done()          # 아무것도 안 쥐고 끝남 → 다음 Goal(재스캔 뒤)을 막지 않게 미완료 기록 지움
         raise PartError('GRASP_FAILED', f'{tries}회 시도 모두 실패 ({why}). 그리퍼 열고 이송 높이에서 중단')
@@ -289,6 +322,7 @@ class PlaceAlgorithm:
 
     def release(self):
         self._grip(True)
+        self._grip_width = None
 
     # ------------------------------------------------------------------
     # 진행 중 작업 기록 (멈췄을 때 다음 Goal을 막기 위함)
@@ -309,6 +343,7 @@ class PlaceAlgorithm:
     def _descend(self, approach):
         c = self.c
         robot = self.robot
+        lo = c['min_search_z'] + self._hold_off      # 하한은 박스 바닥 기준 (sync 집기는 TCP가 박스 바닥보다 아래일 수 있음)
         time.sleep(0.5)
         samples = []
         deadline = time.monotonic() + c['baseline_duration_s']
@@ -338,7 +373,7 @@ class PlaceAlgorithm:
                 print(f'[COMPLIANCE ONLY] Z={z:.2f} mm | dZ={z-start_z:+.2f} mm | '
                       f'Fz={fz:.2f} N', flush=True)
                 next_display = now + 0.5
-            if abs(z-start_z) >= 2.0 or z <= c['min_search_z']:
+            if abs(z-start_z) >= 2.0 or z <= lo:
                 raise RuntimeError(f'순응제어 중 위치 변동 초과: Z={z:.2f}, dZ={z-start_z:+.2f}')
             time.sleep(0.05)
         if not robot.ok():
@@ -362,11 +397,11 @@ class PlaceAlgorithm:
                     raise RuntimeError('정지 후 외력 상한 초과')
                 if c['contact_sign'] * (fz - baseline) < c['contact_force_n']:
                     raise RuntimeError('정지 후 접촉이 유지되지 않음')
-                if not c['min_search_z'] < z <= approach[2] + 2.0:
+                if not lo < z <= approach[2] + 2.0:
                     raise RuntimeError('접촉 Z 범위 오류')
                 return z
             z = robot.pose()[2]
-            if z <= c['min_search_z'] or z > start_z + 2.0:
+            if z <= lo or z > start_z + 2.0:
                 raise RuntimeError('하강 Z 범위 초과')
             now = time.monotonic()
             if self.show_force and now >= next_display:
@@ -383,7 +418,7 @@ class PlaceAlgorithm:
         c = self.c
         base = reference if reference is not None else c['min_search_z'] + 10.0
         stacked = min(self._sim_stack.get((category, tier), 0), c['max_layers'])
-        z = base + stacked * c['classes'][category]['height_mm'] + c['pick_above_floor_mm']   # 실제처럼 높게 집은 만큼 위
+        z = base + stacked * c['classes'][category]['height_mm'] + self._hold_off   # 박스 바닥 기준 → TCP Z
         self._move([approach[0], approach[1], z, *approach[3:]])
         self.log.info(f'[place] (sim) {category}/{tier} 가상 접촉 Z={z:.2f} (이미 {stacked}개)')
         return z
@@ -399,8 +434,8 @@ class PlaceAlgorithm:
             raise ValueError('Goal의 HOME/측정존/해당 분류 적재 구역 좌표가 없습니다')
         if all(abs(v) < 1e-6 for v in zone):
             raise ValueError('측정존 (0,0,0)은 사용할 수 없습니다')
-        if not self.c['min_search_z'] < zone[2] + self.c['pick_above_floor_mm'] < self.c['travel_z']:
-            raise ValueError('측정존 집기 TCP Z(바닥 z + pick_above_floor_mm) 범위 오류')
+        if not self.c['min_search_z'] < zone[2] + TIP_MM < self.c['travel_z']:
+            raise ValueError('측정존 바닥 z 범위 오류 (최저 Z ~ 이송 높이 사이여야 함)')
         return list(home), list(zone), list(xy)
 
     def _unclassified_poses(self, poses):
@@ -412,7 +447,7 @@ class PlaceAlgorithm:
         zone = poses.get('measure_zone')
         if not finite_vector(home, 6) or not finite_vector(zone, 3):
             raise ValueError('U 작업의 HOME/측정존 좌표가 없습니다')
-        if all(abs(v) < 1e-6 for v in zone) or not self.c['min_search_z'] < zone[2] + self.c['pick_above_floor_mm'] < self.c['travel_z']:
+        if all(abs(v) < 1e-6 for v in zone) or not self.c['min_search_z'] < zone[2] + TIP_MM < self.c['travel_z']:
             raise ValueError('U 작업의 측정존 TCP 파지 좌표가 잘못되었습니다')
         return list(home), list(zone), list(u['release_pose']), u['approach_z']
 
@@ -426,7 +461,7 @@ class PlaceAlgorithm:
             h = self.c['classes'][category]['height_mm']
             if type(z) not in (int, float) or not math.isfinite(z) or not self.c['min_search_z'] < z:
                 raise ValueError('잘못된 저장 접촉 기준 Z')
-            if z + self.c['pick_above_floor_mm'] + self.c['max_layers'] * h + 10.0 >= self.c['travel_z']:
+            if z + TIP_MM + self.c['max_layers'] * h + 10.0 >= self.c['travel_z']:
                 raise ValueError(f"{self.c['max_layers']}층 위 접촉 높이에 비해 이송 Z 여유가 부족합니다")
             return z
         record = self.state['references'][category][tier-1]
@@ -447,7 +482,7 @@ class PlaceAlgorithm:
 
     def _remember_reference(self, category, tier, x, y, z):
         height = self.c['classes'][category]['height_mm']
-        if z + self.c['pick_above_floor_mm'] + self.c['max_layers'] * height + 10.0 >= self.c['travel_z']:
+        if z + TIP_MM + self.c['max_layers'] * height + 10.0 >= self.c['travel_z']:
             raise ValueError('학습한 접촉 Z 기준으로 최상층 위 탐색 시 상부 Z 여유가 부족합니다')
         self.state['references'][category][tier-1] = {
             'signature': self._reference_signature(category, x, y), 'first_contact_z_mm': z}
@@ -524,7 +559,7 @@ class PlaceAlgorithm:
                 z_tcp = self._sim_descend(result_class, tier, approach, reference)
             else:
                 z_tcp = self._descend(approach)
-            z = z_tcp - c['pick_above_floor_mm']        # 바닥에서 집었을 때 기준 Z (첫 접촉 Z 기준과 같은 기준)
+            z = z_tcp - self._hold_off                  # 박스 바닥 Z (바닥에서 집었을 때와 같은 기준 = 첫 접촉 Z 기준)
             if reference is None:
                 # learn_empty_slots: 기준이 없는 자리는 비어 있다고 보고 이 Z를 기준으로 학습
                 reference = z

@@ -82,11 +82,12 @@ box_project/
 │     place_interface.py, database_interface.py
 ├─ box_control/      관제: control.py (순서) + preflight.py (시작 전 점검)
 │                    + recovery.py (관제 복구 동작: 측정존 비우기 등, 관제가 직접 로봇을 움직임)
+│                    + monitor_gui.py (관리자 모니터 화면, 11/18 — 관제 실행 시 같이 뜸)
 │                    + 테스트용 fake_*.py 4개, test_scan_motion.py, robot_test.py
 ├─ box_scan/         탐지: scan_template.py + scan_algorithm.py·scan_config.py·scan_main.py (담당)
 │                    + scan_original.py (담당 원본 단독 실행본, 비교용) + test/test_scan_flow.py
-├─ box_judge/        판별: judge_template.py + judge_algorithm.py·judge_main.py·rg2_sync_grip.py (담당)
-├─ box_place/        적재: place_template.py + place_algorithm.py·place_main.py (담당)
+├─ box_judge/        판별: judge_template.py + judge_algorithm.py·judge_main.py·rg2_sync_grip.py (담당) + test/test_judge_grip.py
+├─ box_place/        적재: place_template.py + place_algorithm.py·place_main.py (담당) + test/test_place_pick.py
 ├─ box_database/     DB·UI: database_template.py + 담당 메인 코드
 └─ docs/             CONTRIBUTING.md, PROGRESS.md
 ```
@@ -95,7 +96,7 @@ box_project/
 | --- | --- | --- | --- |
 | `box_interfaces` | 메시지 정의 | - | - |
 | `box_comm` | 공용 통신 코드 | - | import 전용 |
-| `box_control` | 관제 | `/control` | `ros2 run box_control control` |
+| `box_control` | 관제 | `/control` (+ `/monitor_gui`) | `ros2 run box_control control` (모니터 GUI 창이 같이 뜸, 끄기 `-p gui:=false`) |
 | `box_scan` | 탐지 | `/scan` | `ros2 run box_scan scan_main` (참고용 `scan_template`) |
 | `box_judge` | 판별 | `/judge` | `ros2 run box_judge judge_main` (참고용 `judge_template`) |
 | `box_place` | 적재 | `/place` | `ros2 run box_place place_main` (참고용 `place_template`) |
@@ -239,7 +240,7 @@ DONE          SetJobStatus(DONE)
   - 예외: A~D 적재가 성공했는데 `count`가 1보다 작으면(적재가 수량을 안 채움) **반영하지 않고** 이전 값을 유지합니다(에러 로그 + `COUNT_MISMATCH`). 같은 클래스를 다음에 적재할 때 측정값으로 바로잡힙니다.
 - `DONE` 상태 기록이 실패하면 에러 로그를 남깁니다 (UI에는 `RUNNING`으로 남아 있을 수 있음).
 - **미분류 (v0.5)**: `result_class`가 `U`면 비교하지 않고 재고 `U`만 +1 해서 DB에 반영합니다 (적재는 `count = 0`).
-- **집기 실패 (11/17)**: 파트가 `GRIP_RETRY`(3)번 다시 집어 보고 포기하면 `GRASP_FAILED`로 Goal을 끝냅니다(그리퍼 열고 안전 높이). 관제는 작업을 끝내지 않고, 판별·적재였으면 **`CLEARING`(측정존비우기)** 상태에서 관제가 직접 로봇을 움직여 측정존 박스를 스캔 공간으로 밀어내고 비었는지 확인합니다(`box_control/recovery.py`, 관제 복구 동작 모음 — 나중에 예외 처리 동작도 여기에). 그 뒤 `BOX_RETRY` 경고를 남기고 **공간 스캔부터 다시** 합니다(재고·박스 번호 그대로). 연속 `RECOVER_LIMIT`(3)번을 넘으면 `ERROR : Too many pick failures`, 측정존을 못 비우면 `ERROR : Measure zone not cleared`. 박스 하나를 적재까지 끝내면 연속 횟수는 0. 밀어내기 경로(`common.RECOVERY`)는 아직 미정 → 지금은 판별·적재 집기 실패 시 작업 종료. 관제 파라미터 `clear_zone`: `auto`(기본: `robot_monitor=dsr`면 실제 로봇, 아니면 `fake_ok`) / `robot` / `fake_ok` / `fake_fail`.
+- **집기 실패 (11/17)**: 파트가 `GRIP_RETRY`(3)번 다시 집어 보고 포기하면 `GRASP_FAILED`로 Goal을 끝냅니다(그리퍼 열고 안전 높이). 관제는 작업을 끝내지 않고, 판별·적재였으면 **`CLEARING`(측정존비우기)** 상태에서 관제가 직접 로봇을 움직여 측정존 박스를 스캔 공간으로 밀어내고 비었는지 확인합니다(`box_control/recovery.py`, 관제 복구 동작 모음 — 나중에 예외 처리 동작도 여기에). 그 뒤 `BOX_RETRY` 경고를 남기고 **공간 스캔부터 다시** 합니다(재고·박스 번호 그대로). 연속 `RECOVER_LIMIT`(3)번을 넘으면 `ERROR : Too many pick failures`, 측정존을 못 비우면 `ERROR : Measure zone not cleared`. 박스 하나를 적재까지 끝내면 연속 횟수는 0. 밀어내기 경로(`common.RECOVERY push_path`)는 아직 미정 → **11/18부터 비우기를 fake로 넘기고(WARN 로그 `ZONE_CLEAR`, 대기 없음) 바로 재스캔**합니다. 스캔하는 동안 사람이 측정존 박스를 치웁니다. 관제 파라미터 `clear_zone`: `auto`(기본: `robot_monitor=dsr`면 실제 로봇, 아니면 `fake_ok`) / `robot` / `fake_ok` / `fake_fail`.
 - **중단 기록**: 오류로 중단되면 해당 파트의 마지막 Feedback stage와 경과 시간을 함께 로그로 남깁니다. (예: `SCANNING (스캔중) 단계에서 중단: GRASP_FAILED | /scan 마지막 stage="picking" (4.2초 전)`)
 - `box_id`는 관제가 `<작업 시작 시각>_<순번>` 형식으로 붙입니다. (예: `20261114_130512_001`)
   관제를 다시 실행해도 이전 작업과 겹치지 않으므로, DB 노드를 켜 둔 채 관제만 재실행해도 됩니다.
@@ -344,6 +345,24 @@ ros2 run box_control control
 - `0`으로 주면 대기 없이 바로 시작합니다.
 - 관제가 터미널 입력을 받을 수 없는 환경(launch 등)에서는 `q` 없이 대기 후 시작합니다. 비상정지 서비스는 대기 중에도 동작합니다(시작 안 함).
 
+### 모니터 GUI (관리자 화면, 11/18) — `box_control/monitor_gui.py`
+
+관제를 실행하면 **모니터 GUI 창이 별도 프로세스로 같이 뜹니다**(GUI가 죽어도 관제는 계속). 관제가 끝나도 창은 결과 확인용으로 남고, 직접 닫습니다. DB·웹 UI 연동 전까지 관제 PC에서 상황을 한눈에 보는 관리자·개발 확인용이며, 작업 흐름에는 끼어들지 않습니다(보기 + 비상정지 버튼).
+
+| 보는 것 | 출처 |
+| --- | --- |
+| 관제 단계, job_id, 처리 박스 수, 재고 A~D·U, 불일치·재스캔 횟수, 중단 이유, 시작 대기 남은 시간 | `/control_status` (관제가 발행, `std_msgs/String` JSON, 마지막 1개 유지 → GUI를 늦게 켜도 받음). 없으면 로그·Goal 상태로 단계를 추정 |
+| 이벤트 로그 (관제 이벤트 + 파트 `report.log`) | `/event_log` |
+| 파트별 Goal 상태(실행중·성공·실패·취소), 진행 stage, 마지막 소식 후 경과(30초 넘으면 주황) | `/scan`·`/judge`·`/place` Action status·feedback |
+| 로봇 상태 (1초 주기) + 알람 | 두산 `get_robot_state`, `/dsr01/error` (`dsr_msgs2`가 있을 때) |
+| 연결 상태 | `/emergency_stop`(관제), `/get_job_data`(DB), 파트 Action 서버, 로봇 서비스 |
+
+- **비상정지 버튼**: `/emergency_stop`(source=`monitor_gui`)를 확인창 없이 바로 보냅니다.
+- 끄기: `ros2 run box_control control --ros-args -p gui:=false`. 화면(`DISPLAY`)이 없으면 자동으로 안 띄웁니다. 관제를 `robot_monitor:=off`/`fake`로 실행하면 GUI도 로봇 상태 조회를 끕니다.
+- GUI만 따로: `ros2 run box_control monitor_gui` (`-p robot_poll:=false`로 로봇 조회 끔).
+- 필요: `sudo apt install python3-tk`
+- `/control_status`는 모니터 GUI용 임시 토픽입니다. DB·웹 UI는 지금처럼 `/event_log`와 Service를 씁니다.
+
 ### 탐지 실제 코드 (`scan_main`, 11/17)
 
 탐지 담당 원본(`m0609_scan_final.py`, 실로봇에서 스캔·인식·픽업·이동 확인)을 팀 구조로 옮긴 것입니다. 알고리즘 `box_scan/box_scan/scan_algorithm.py`(`ScanAlgorithm`), 설정·보정표 `scan_config.py`, 진입점 `scan_main.py`. 원본은 `scan_original.py`로 그대로 두었습니다(`ros2 run box_scan scan_original`, 그리퍼 DO 방식이라 비교용·관제와 동시 실행 금지).
@@ -380,8 +399,10 @@ ros2 run box_place place_main --ros-args -p sim_contact:=true        # 에뮬레
 - **미분류 `U`**: `place_config.json`의 `unclassified`(`enabled`, `release_pose` [x, y, z, rx, ry, rz], `approach_z`) 위치로 가서 힘 제어 없이 놓고 0을 돌려줍니다. 현재 `[670, -43, 144, 160, 180, 162]`, 접근 높이 160.
 - Goal의 측정존이 `(0,0,0)`이면 움직이지 않고 실패합니다 → DB에 실제 측정존·구역 좌표가 있어야 합니다.
 - 정지: `dsr_io`가 모든 로봇 명령 전과 힘 제어 하강 중(`force_z`)에 관제 정지 요청을 확인합니다 → `CANCELED`로 빠져나오고 `place_interface`가 힘·순응제어 해제 + `move_stop`. 하강 중에는 1초마다 keepalive를 보내 진행 감시가 오인하지 않습니다.
-- **측정존 z = 측정존 바닥 Z** (11/18 세 파트 통일, 현재 `[300, -160, 30]`, 판별 실측 30.9). 적재는 **바닥 + `pick_above_floor_mm`(5mm)** 높이에서 집습니다(핑거 끝이 바닥에 닿아 안전 정지가 나지 않게). 판별이 항상 눕혀서 주므로 박스 높이는 20/25mm뿐이라 고정값 하나로 충분합니다.
-- 그만큼 높게 집으면 적재 구역에서 닿는 TCP Z도 5mm 올라가므로, 층 판단·첫 접촉 Z 학습은 **TCP Z − `pick_above_floor_mm`** 로 계산합니다 → 기존 `first_contact_z_mm`(30.19 등)과 상태 파일을 그대로 씁니다. 로그: `A 1번 자리 1층 적재 → 수량 1 (TCP Z=35.19, 기준 Z=30.19)`.
+- **측정존 z = 측정존 바닥 Z** (11/18 세 파트 통일, 현재 `[300, -160, 30]`, 판별 실측 30.9).
+- **측정존 집기 = sync 집기** (11/18 실물 시험 후 변경, `box_comm/sync_grip.py` = 판별 `rg2_sync_grip` 그대로, **판별과 같은 설정** `common.SYNC_GRIP`): RG2는 벌릴수록 핑거 끝이 올라갑니다(완전 열림 ↔ 닫힘 약 39mm, TCP 208.4는 닫힌 핑거 끝). 예전처럼 TCP를 바닥 + 5에 두고 닫으면 A 박스 60mm 면에서 핑거 끝이 바닥 위 약 17mm → 20mm 박스의 위 3mm만 물어 들다가 놓쳤습니다. 이제는 **100mm로 열고** 핑거 끝이 **바닥 + 2.6mm**에 오게 내려가서, 닫는 동안 핑거 끝이 내려가는 만큼 TCP를 올립니다. 10N으로 닫고 40N으로 다시 조입니다. 판별이 측정존 중심에 정해진 위상으로 놓아 주므로 하강 중 얹힘 감시는 하지 않습니다. 못 잡으면 같은 자리에서 3번.
+- 집은 TCP 높이가 폭마다 달라서(TCP − 박스 바닥, A 60mm 면 약 −8mm) 집을 때마다 재고, 층 판단·첫 접촉 Z 학습은 **TCP Z − 그 값(= 박스 바닥)** 으로 계산합니다 → 기존 `first_contact_z_mm`(30.19 등)과 상태 파일을 그대로 씁니다. 로그: `집기 성공 (1/3번째, 폭 60.2 mm, TCP−바닥 -15.2 mm)`.
+- 시험(ROS 없이): `python3 box_place/test/test_place_pick.py`. 가짜 그리퍼는 일정 속도로 닫힌다고 가정해 핑거 끝이 목표보다 2~3mm 낮게 계산됩니다(판별이 실물에서 같은 방식으로 문제없었으므로 모델이 보수적이라고 봄). **실물에서 바닥을 긁으면 `common.SYNC_GRIP` `tip_above_floor_mm` 하나만 올리면** 판별·적재가 같이 바뀝니다.
 - **`sim_contact` (에뮬레이터 전용)**: 에뮬레이터는 힘 센서 값이 없어 '닿을 때까지 하강'이 끝나지 않습니다. `true`면 힘 제어 대신 가상으로 쌓인 높이까지 `movel`로 내려가 닿았다고 칩니다(층 판단·만재 시 다음 자리·수량 계산은 원래 코드). 가상 적재 수는 노드가 켜질 때 0, 상태 파일은 `~/.ros/place_sim_state.json`으로 분리. **실제 로봇에서는 켜지 않습니다.**
 - **멈춘 뒤 복구**: 작업 중 멈추면 상태 파일(`~/.ros/place_real_v04_state.json`)에 미완료 작업이 남아 다음 적재를 거부합니다. 그리퍼(물건을 쥐고 있는지)와 적재 상태를 확인하고 `-p clear_pending:=true`로 한 번 실행하세요.
 
@@ -389,6 +410,10 @@ ros2 run box_place place_main --ros-args -p sim_contact:=true        # 에뮬레
 
 세 파트 모두 그리퍼를 **Modbus TCP**(`box_comm/gripper.py`, Compute Box `192.168.1.1:502`)로 씁니다. 예전 디지털 출력(DO 1·2) 방식은 쓰지 않습니다(`robot`이 준비할 때 DO 1·2를 끔).
 - 폭과 잡힘 여부를 읽을 수 있어 **집기 실패 감지**와 판별 폭 측정에 씁니다. 설정은 `common.GRIPPER`(열 폭 100mm, 여는 힘 20N, 잡는 힘 20N, 빈손 기준 패드 사이 간격 5mm, 폭 보정 = 판별 실측값).
+- **잡힘 판정 (11/18, `gripper.check_grip`/`holding`, 세 파트 공용)**: 잡힘 비트만 믿지 않습니다. ① 패드 사이 간격이 **박스 범위 17~80mm** 안(`box_width_range_mm`) — 밖이면 한쪽 핑거만 걸려 멈춘 것 등 (**탐지·적재만**. 판별은 범위 밖 물체도 재서 U로 판정해야 하므로 안 봄) ② 들어 올린 뒤·이송 중 폭이 닫았을 때보다 **3mm 넘게 변하면** 놓친 것(`hold_width_tol_mm`) — 한쪽 핑거가 걸려 멈췄던 경우 들어 올리면 풀려서 계속 닫힘. DO 시절 탐지는 WebLogic 폭 조건(닫기 목표 20mm, `Width ≤ 20 AND Grip` → DI)으로 비슷한 확인을 했습니다.
+- **쥐는 힘 40N** (`GRIPPER grip_force_n`, 11/18 20 → 40): 탐지는 바로 40N, 적재는 sync(10N)로 닫은 뒤 40N으로 조임. 판별은 폭 측정 보정이 10N 기준이라 10N.
+- **'닫으면서 핑거 끝 높이 유지'(sync 집기)** 는 `box_comm/sync_grip.py` + `common.SYNC_GRIP`(판별 폭 측정·적재 측정존 집기 공용). 탐지는 고정 높이(윗면 − 15mm)로 닫음 — 넓은 면을 잡으면 실제 무는 깊이가 얕아짐(이슈 25).
+- **다시 집기** (`GRIP_RETRY` 3): 탐지는 각도 0/45/90°, 판별·적재는 같은 자리·같은 자세로. 판별 가로 하강에서 핑거가 박스에 얹히면 같은 자리로는 다시 해도 같으므로 바로 `GRASP_FAILED`. 최종 실패: 탐지 → 관제가 바로 재스캔, 판별·적재 → 관제가 측정존 비우기 → 재스캔. **밀어내기 경로(`RECOVERY push_path`)가 아직 없어서 비우기는 fake**(WARN 로그만, 대기 없음) — 스캔하는 동안 사람이 측정존을 치웁니다.
 - Compute Box는 **동시 접속 1개**입니다. `robot`(DsrIO)이 그리퍼 명령을 처음 쓸 때 접속하고 Goal이 끝나면 끊어서, 탐지·판별·적재가 번갈아 씁니다.
 - **실제 로봇**: `m0609_rg2_bringup mode:=real`로 띄우면 OnRobot 드라이버(`OnRobotRGControllerServer`)가 먼저 접속을 잡습니다 → `ros2 node list | grep -i onrobot`으로 확인하고 `pkill -f OnRobotRGControllerServer`로 끕니다(RViz 손가락 표시만 멈춤). 사전 점검이 접속을 확인해 막혀 있으면 FAIL.
 - **에뮬레이터·fake**: 환경변수 `BOX_GRIPPER=fake` → 가짜 그리퍼(닫으면 잡힌 것으로). `BOX_FAKE_GRIP_FAILS=N`이면 처음 N번 닫기가 빈손. `fake_run.sh`는 기본 fake(`PLACE_MAIN=1`·`SCAN_MAIN=1`을 SIM 없이 돌리거나 `JUDGE_MAIN=1`일 때만 modbus).

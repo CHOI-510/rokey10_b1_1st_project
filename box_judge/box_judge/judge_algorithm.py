@@ -25,8 +25,13 @@ judge_algorithm.py — 판별 파트 메인 로직 (judge_template.py 약속에 
     4) 힘 제어: robot.compliance_on(stx) / robot.force_on(fd, dir, time_s) / 해제는 robot.stop()
     5) 관절각: robot.joints()
     -> 모두 관제 정지 확인·진행 알림(1초마다)이 들어 있다. 이전처럼 DSR_ROBOT2 를 직접 부르지 않는다.
-  집기 실패 (11/17 약속): 못 잡으면 GRIP_RETRY(3)번까지 다시 시도하고, 그래도 안 되면
-    raise PartError('GRASP_FAILED') → 관제가 측정존을 비우고 공간 스캔부터 다시 (재시도는 아직 미구현)
+  집기 실패 (11/18 관제 구현, 측정 로직은 그대로):
+    - 가로·세로 sync 닫기가 빈손이면 같은 자리·같은 자세로 다시 열고 내려가 GRIP_RETRY(3)번까지 (_close_retry)
+    - 가로 하강에서 핑거가 박스 위에 얹힘 → 같은 자리로 다시 내려가도 같으므로 바로 GRASP_FAILED
+    - 쥔 채 3 mm 들어 돌리거나 옮길 때 놓치면(box_comm.gripper.holding, 폭 범위는 안 봄) GRASP_FAILED
+    → 관제가 측정존을 비우고(지금은 fake: 로그만) 공간 스캔부터 다시
+    - 폭 범위(17~80mm) 검사는 하지 않는다: 범위 밖 물체도 재서 U로 판정해야 하므로
+  sync 집기 설정(핑거 끝 높이 2.6, 기준 폭 25, 닫는 힘 10 N)은 11/18부터 common.SYNC_GRIP(적재와 공용)이 기본값
 
   파라미터 (node.declare_parameter): table_z, grasp_height, ref_width, table_ref_file 등 — 아래 PARAMS 참고
   테이블 기준(측정존 바닥 Z): 기본은 Goal로 받은 DB 측정존 좌표의 z (poses['measure_zone'][2], 11/17 관제).
@@ -49,6 +54,9 @@ except ImportError:
     UNCLASSIFIED = 'U'
 
 from box_judge.rg2_sync_grip import SyncGripper, tip_h_mm
+from box_comm.common import GRIP_RETRY, SYNC_GRIP
+from box_comm.gripper import holding
+from box_comm.sync_grip import GripMissed, grasp_height_for_tip
 
 DR_BASE = 0
 DR_MV_MOD_REL = 1
@@ -56,8 +64,9 @@ DR_MV_MOD_REL = 1
 # 이름: (기본값, 설명) — 2026-11-16 ~ 17 rokey1 judge_flow_test 시험값
 PARAMS = {
     'table_z': (30.9, 'base 기준 책상 표면 z [mm]'),
-    'grasp_height': (0.5, '기준 폭에서 TCP 를 책상 위 몇 mm 에'),
-    'ref_width': (25.0, 'grasp_height 를 맞춘 원시 폭 [mm]'),
+    'grasp_height': (round(grasp_height_for_tip(SYNC_GRIP['tip_above_floor_mm'], SYNC_GRIP['ref_raw_mm']), 2),
+                     '기준 폭에서 TCP 를 책상 위 몇 mm 에 (11/18 common.SYNC_GRIP 핑거 끝 2.6 → 0.5)'),
+    'ref_width': (SYNC_GRIP['ref_raw_mm'], 'grasp_height 를 맞춘 원시 폭 [mm] (common.SYNC_GRIP)'),
     'tcp_z': (208.4, 'TCP GripperDA_v1 z 오프셋'),
     'obj_h_max': (75.0, '최대 물체 높이 [mm]'),
     'approach_clear': (10.0, '열린 핑거로 내려가기 시작할 때 핑거 끝 - 윗면 [mm]'),
@@ -66,7 +75,7 @@ PARAMS = {
     'close_clear': (10.0, '빈 그리퍼 닫기 전 닫힌 핑거 끝 - 최대 물체 [mm]'),
     'open_width': (100.0, '열 때 패드 간격 [mm]'),
     'open_force': (20.0, '여는 힘 [N]'),
-    'grip_force': (10.0, '폭 잴 때 닫는 힘 [N] (닫힘 시간식 8~12 N)'),
+    'grip_force': (SYNC_GRIP['close_force_n'], '폭 잴 때 닫는 힘 [N] (닫힘 시간식 8~12 N, common.SYNC_GRIP)'),
     'cal_gain': (1.0, '폭 보정 기울기 (패드 장착, 실제 = 원시 - 10.30)'),
     'cal_offset': (0.30, '폭 보정 오프셋 [mm]'),
     'h_start': (78.0, '높이: 닫힌 핑거 끝 테이블 위 출발 높이 [mm]'),
@@ -238,6 +247,7 @@ class JudgeAlgorithm:
         table_z = self._table_ref(zone)
         px, py = zone[0], zone[1]
         io, p = self.io, self.p
+        self._report = report
         H = None
         try:
             io.move_z_to(max(io.cur_z(), self._safe_closed_z(table_z)), p['speed'])
@@ -249,7 +259,7 @@ class JudgeAlgorithm:
 
             report('measuring_length2')
             W, tip = self._measure_width(H)
-            self._turn_and_place(px, py, H)
+            self._turn_and_place(px, py, H, W)
             report.log(f'가로 {W:.1f} mm (핑거 끝 {tip:.1f} mm 에서 잡음), J5 일직선으로 돌려 내려놓음')
 
             report('measuring_length3')
@@ -302,22 +312,53 @@ class JudgeAlgorithm:
 
     def _measure_width(self, H):
         io, p = self.io, self.p
-        raw_open = io.g.open(p['open_force'], p['open_width'])
         tip = max(self.tip_clearance, H - p['body_clear'])
-        z_above = self._tcp_open_tip(raw_open, H + p['approach_clear'])
-        if io.cur_z() < z_above:
-            io.move_z_to(z_above, 30.0)
-        s, z = self._pos_descent(self._tcp_open_tip(raw_open, tip), p['p1_vel'], p['p1_thr'], 0.4, 1.0)
-        if s != 'clear':
-            io.move_z_to(z_above, 30.0)
-            raise _Fail(f'가로 하강 중 {s} (핑거가 물체 위에 얹힘)')
-        r = self.sg.close_with_lift(28.0)
+
+        def descend():
+            raw_open = io.g.open(p['open_force'], p['open_width'])
+            z_above = self._tcp_open_tip(raw_open, H + p['approach_clear'])
+            if io.cur_z() < z_above:
+                io.move_z_to(z_above, 30.0)
+            s, z = self._pos_descent(self._tcp_open_tip(raw_open, tip), p['p1_vel'], p['p1_thr'], 0.4, 1.0)
+            if s != 'clear':
+                io.move_z_to(z_above, 30.0)
+                if s in ('contact', 'safety'):        # 같은 자리로 다시 내려가도 같음 → 측정존 비우고 재스캔 (11/18)
+                    raise PartError('GRASP_FAILED', f'가로 하강 중 {s} (핑거가 물체 위에 얹힘)')
+                raise _Fail(f'가로 하강 중 {s}')
+
+        descend()
+        r = self._close_retry('가로', descend)
         return r['width_mm'], tip
 
-    def _turn_and_place(self, px, py, H):
+    def _close_retry(self, what, redescend):
+        """sync 닫기. 빈손이면 같은 자리·자세로 다시 열고 내려가(redescend) GRIP_RETRY번까지 (11/18).
+        다 실패하면 GRASP_FAILED → 관제가 측정존을 비우고 재스캔"""
+        why = ''
+        for n in range(1, GRIP_RETRY + 1):
+            try:
+                r = self.sg.close_with_lift(SYNC_GRIP['est_raw_mm'])
+                if n > 1:
+                    self._report.log(f'{what} 집기 성공 ({n}/{GRIP_RETRY}번째)')
+                return r
+            except GripMissed as e:
+                why = str(e)
+            nxt = f'재시도 {n + 1}/{GRIP_RETRY}' if n < GRIP_RETRY else '포기'
+            self._report.log(f'{what} 집기 실패 {n}/{GRIP_RETRY}: {why} → {nxt}', 'WARN')
+            if n < GRIP_RETRY:
+                redescend()
+        raise PartError('GRASP_FAILED', f'{what}: {GRIP_RETRY}회 모두 못 잡음 ({why})')
+
+    def _check_holding(self, width, where):
+        """쥔 채 들어 올린 뒤 놓쳤는지 (잡힘 비트 + 빈손 아님 + 폭 변화 3mm 이내, 폭 범위는 안 봄)"""
+        ok, why, _w = holding(self.io.g, width, check_range=False)
+        if not ok:
+            raise PartError('GRASP_FAILED', f'{where} 놓침: {why}')
+
+    def _turn_and_place(self, px, py, H, W):
         io, p = self.io, self.p
         z_hold = io.cur_z()
         io.move_z_to(z_hold + p['carry_lift'], p['put_vel'])
+        self._check_holding(W, '가로 잰 뒤 들어 올리다')
         e = self._finger_err(px, py)
         sgn = 1.0
         for _ in range(4):                                         # 핑거 축(툴 x)을 팔 방향에 수직 = J5 축과 일직선
@@ -368,10 +409,19 @@ class JudgeAlgorithm:
                 raise _Fail('측정존에서 너무 멀리 벗어남')
         q = io.pose()
         off = (q[0] - px, q[1] - py)
-        r = self.sg.close_with_lift(28.0)
+
+        def redescend():                                           # 같은 자리(회피 끝난 위치)에서 다시 열고 내려감
+            raw = io.g.open(p['open_force'], p['open_width'])
+            s, _z = self._pos_descent(self._tcp_open_tip(raw, tip), p['p1_vel'], p['p1_thr'], 0.4, 1.0)
+            if s in ('contact', 'safety'):
+                io.move_z_to(z_start, 30.0)
+                raise PartError('GRASP_FAILED', f'세로 다시 내려가다 {s} (핑거가 물체 위에 얹힘)')
+
+        r = self._close_retry('세로', redescend)
         if math.hypot(*off) >= 1.0:                                # 쥔 채 측정존 중심으로 옮겨 놓기
             z_hold = io.cur_z()
             io.move_z_to(z_hold + p['carry_lift'], p['put_vel'])
+            self._check_holding(r['width_mm'], '세로 잰 뒤 들어 올리다')
             io.move_xy_to(px, py, 30.0)
             io.move_z_to(z_hold, p['put_vel'])
         raw_open = io.g.open(p['open_force'], p['open_width'])

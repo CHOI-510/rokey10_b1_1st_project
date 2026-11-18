@@ -59,7 +59,7 @@ ros2 run box_control fake_database
 ros2 run box_control fake_scan --ros-args -p box_count:=3 -p fake_delay_sec:=0.3
 ros2 run box_control fake_judge
 ros2 run box_control fake_place
-ros2 run box_control control          # 마지막에 실행
+ros2 run box_control control          # 마지막에 실행 (모니터 GUI 창이 같이 뜸, 끄기 -p gui:=false)
 ```
 
 관제는 10초 카운트다운 뒤에 시작합니다. 기다리기 싫으면 `s`를 누르면 바로 시작합니다.
@@ -293,7 +293,7 @@ self.robot.movel(target, vel=60, acc=100)
 | 단계 | 누가 | 하는 일 |
 | --- | --- | --- |
 | ① 다시 집기 | 파트 | `res = self.robot.grip_close()` → `res.grabbed`가 False면 다시 시도. 시도마다 `report.log('집기 실패, 재시도 2/3', 'WARN')` (UI 로그). 최대 `common.GRIP_RETRY`(3)번. 그래도 안 되면 그리퍼를 열고 `raise PartError('GRASP_FAILED', '3회 실패')` |
-| ② 측정존 비우기 | **관제** (`box_control/recovery.py`, 판별·적재만) | 파트 Goal이 끝난 뒤 관제가 직접 로봇을 움직여 측정존 박스를 스캔 공간으로 밀어내고(`common.RECOVERY push_path`), 측정존을 그리퍼로 잡아 봐서 비었는지 확인. 못 비우면 `ERROR : Measure zone not cleared` |
+| ② 측정존 비우기 | **관제** (`box_control/recovery.py`, 판별·적재만) | 파트 Goal이 끝난 뒤 관제가 직접 로봇을 움직여 측정존 박스를 스캔 공간으로 밀어내고(`common.RECOVERY push_path`), 측정존을 그리퍼로 잡아 봐서 비었는지 확인. 못 비우면 `ERROR : Measure zone not cleared`. **11/18: 경로 미정이라 fake**(WARN 로그만 남기고 성공 처리 → 스캔하는 동안 사람이 치움) |
 | ③ 흐름 되돌리기 | 관제 | `GRASP_FAILED`면 작업을 끝내지 않고 **공간 스캔부터 다시** (재고·박스 번호 그대로, UI 로그 `BOX_RETRY`). 연속 `RECOVER_LIMIT`(3)번을 넘거나 `RECOVERY_FAILED`면 작업 종료(`ERROR`) |
 
 파트별 다시 집기 (11/17 정함)
@@ -301,25 +301,29 @@ self.robot.movel(target, vel=60, acc=100)
 | 파트 | 다시 집는 방법 | 다 실패하면 |
 | --- | --- | --- |
 | 탐지 | 높이를 찾은 첫 지점에서 그리퍼 0° → 45° → 90°(원본 실로봇 시험값, `scan_config.GRIP_RETRY_ANGLES`) 돌려서 3번 | `GRASP_FAILED` → 관제가 공간 스캔부터 다시 (박스가 스캔 공간에 그대로라 밀어내기 없음, 탐지는 그 접촉점 −50mm부터 이어서) |
-| 판별 | 그대로 다시, 3번 | `GRASP_FAILED` → 측정존 밀어내기 → 공간 스캔부터 다시 |
-| 적재 | 그대로 다시, 3번 | `GRASP_FAILED` → 측정존 밀어내기 → 공간 스캔부터 다시 |
+| 판별 | 같은 자리·같은 자세로 다시 열고 내려가 sync 닫기 3번 (가로·세로, 11/18 구현 `_close_retry`). 가로 하강에서 핑거가 얹히면 다시 해도 같으므로 재시도 없이 바로 | `GRASP_FAILED` → 측정존 비우기(지금 fake) → 공간 스캔부터 다시 |
+| 적재 | 같은 자리·같은 자세로 sync 집기 3번 (11/18) | `GRASP_FAILED` → 측정존 비우기(지금 fake) → 공간 스캔부터 다시 |
 
 ```python
 from box_comm.common import GRIP_RETRY
 
+from box_comm.gripper import check_grip, holding
+
 for attempt in range(1, GRIP_RETRY + 1):
     ...  # 파트 방식대로 접근 (탐지는 시도마다 그리퍼 각도를 바꿈)
     res = self.robot.grip_close()
-    if res.grabbed:
+    ok, why = check_grip(res.width_mm, 1) if res.grabbed else (False, '빈손')   # 폭 범위까지 확인 (11/18)
+    if ok:
+        ...  # 들어 올린 뒤 holding(self.robot.gripper, res.width_mm)로 한 번 더 (폭이 변했으면 놓친 것)
         break
-    report.log(f'집기 실패 (폭 {res.width_mm:.1f} mm), 재시도 {attempt + 1}/{GRIP_RETRY}', 'WARN')
+    report.log(f'집기 실패 {attempt}/{GRIP_RETRY}: {why}', 'WARN')
     self.robot.grip_open()
 else:
     raise PartError('GRASP_FAILED', f'{GRIP_RETRY}회 시도 실패')
 ```
 
 - `GRASP_FAILED`는 **"다시 집어 보고 포기했다"는 뜻으로만** 씁니다. 예상 못 한 오류에 쓰면 관제가 재스캔을 반복합니다.
-- 측정존 밀어내기 경로(`push_path`)가 아직 미정이라, 지금은 판별·적재에서 못 집으면 `RECOVERY_FAILED`로 작업이 끝납니다 (사전 점검 WARN). 실물로 경로를 정하면 `common.RECOVERY`에 넣습니다.
+- 측정존 밀어내기 경로(`push_path`)가 아직 미정이라, 지금은 판별·적재에서 못 집으면 **비우기를 fake로 넘기고 바로 재스캔**합니다(사전 점검 WARN, 이벤트 로그 `ZONE_CLEAR` WARN). 스캔하는 동안 사람이 측정존 박스를 치워 주세요. 실물로 경로를 정하면 `common.RECOVERY`에 넣습니다.
 - 그리퍼는 세 파트 모두 **Modbus**(`box_comm/gripper.py`)입니다. Compute Box는 동시 접속이 1개라 `robot`이 Goal 동안만 접속을 열고 닫습니다. OnRobot 드라이버(`m0609_rg2_bringup mode:=real`)가 떠 있으면 접속이 안 되니 `pkill -f OnRobotRGControllerServer`로 끕니다. 에뮬레이터·fake 시험은 `BOX_GRIPPER=fake`(가짜 그리퍼, `fake_run.sh`가 설정).
 
 ### 2-4. 그 밖의 규칙
@@ -377,8 +381,23 @@ def scan(self, poses, report):
 | --- | --- | --- |
 | 탐지 | 놓을 때: 예상 접촉 높이 위에서 천천히 내려가 닿으면 놓음 (하한 바닥 + 2mm). 집기(작업공간)는 윗면 − 15mm | `scan_config` `GRIP_DEPTH_FROM_TOP_MM`, `PLACE_*` |
 | 판별 | 바닥 z를 테이블 기준으로 높이·폭 측정. 길이 측정 때문에 '들어 올리면서 집기'는 판별만 씀 | `judge_algorithm` `PARAMS` (`table_ref_file`로 실측값 대체 가능) |
-| 적재 | 바닥 + 5mm에서 바로 집음 (판별이 눕혀서 주므로 높이 20/25뿐, 핑거 끝이 바닥에 안 닿게). 층 판단은 TCP Z − 5 | `place_config.json` `pick_above_floor_mm` |
+| 적재 | sync 집기 (11/18, 판별과 같은 `common.SYNC_GRIP`): 100mm로 열고 핑거 끝을 바닥 + 2.6mm에 둔 채 닫으면서 TCP를 올림 → 폭과 상관없이 박스 아래쪽을 잡음. 층 판단은 TCP Z − (집은 TCP − 바닥) | `common.SYNC_GRIP` (판별·적재 공용) |
 | 관제 (측정존 확인) | 바닥 + 5mm에서 닫아 봄 | `common.RECOVERY` `probe_above_floor_mm` |
+
+**집기 기준 (11/18 정리)** — 공통은 `box_comm`(관제 관리)에서 받아 쓰고, 나머지는 파트 몫입니다.
+
+| 과정 | 공통 (`box_comm`) | 탐지 | 판별 | 적재 |
+| --- | --- | --- | --- | --- |
+| 여는 폭 | `GRIPPER open_width_mm` 100 | 공통 | 공통 | 공통 |
+| 내려가기 | — | 힘 제어 하강, 8N 닿으면 '걸림' → 다음 각도 | 높이: 닫고 위치 하강(정상 접촉) / 가로: 열고 위치 하강, 6N 얹힘 → `GRASP_FAILED` / 세로: 힘 제어 하강 + 회피 | 위치 하강만 (판별이 정렬해 줌, 얹힘 감시 없음) |
+| 집는 높이 | `SYNC_GRIP` 핑거 끝 바닥 + 2.6 | 윗면 − 15mm (고정) | sync | sync |
+| 닫는 힘 | `GRIPPER grip_force_n` 40 / `SYNC_GRIP close_force_n` 10 | 40 | 10 (폭 측정) | 10 → 40 조임 |
+| 잡힘 판정 | `gripper.check_grip`/`holding` | 비트 + 범위 + 폭 변화 | 비트 + 빈손 + 폭 변화 (범위 안 봄 → U) | 비트 + 범위 + 폭 변화 |
+| 다시 집기 | `GRIP_RETRY` 3 | 각도 0/45/90° | 같은 자리 3번 | 같은 자리 3번 |
+| 최종 실패 | `PartError('GRASP_FAILED')` | 관제가 바로 재스캔 | 관제: 측정존 비우기(지금 fake) → 재스캔 | 같음 |
+| 내려놓기 | — | 닿을 때까지 내려놓기 | 정렬해서 제자리에 | 힘 제어로 층 접촉 → 재고 |
+
+내려가기 접촉 기준(탐지 8N, 판별 6N)은 내려가는 방식(힘 제어 / 위치 하강)이 달라 같은 숫자로 맞추지 않습니다.
 
 | 단계 | 누가 | 측정존에 남기는 상태 |
 | --- | --- | --- |
