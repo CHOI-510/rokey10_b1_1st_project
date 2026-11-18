@@ -14,7 +14,7 @@
   "desired_force_n": 22.0,
   "z_stiffness_n_m": 500.0,
   "slot_dx_mm": -80.0,
-  "layer_tolerance_mm": 3.0,
+  "layer_tolerance_mm": 5.0,
   "classes": {
     "A": {
       "height_mm": 20.0,

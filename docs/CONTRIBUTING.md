@@ -390,7 +390,7 @@ def scan(self, poses, report):
 | --- | --- | --- | --- | --- |
 | 여는 폭 | `GRIPPER open_width_mm` 100 | 공통 | 공통 | 공통 |
 | 내려가기 | — | 힘 제어 하강, 8N 닿으면 '걸림' → 다음 각도 | 높이: 닫고 위치 하강(정상 접촉) / 가로: 열고 위치 하강, 6N 얹힘 → `GRASP_FAILED` / 세로: 힘 제어 하강 + 회피 | 위치 하강만 (판별이 정렬해 줌, 얹힘 감시 없음) |
-| 집는 높이 | `SYNC_GRIP` 핑거 끝 바닥 + 2.6 | 윗면 − 15mm (고정) | sync | sync |
+| 집는 높이 | `SYNC_GRIP` 핑거 끝 바닥 + 2.6 | sync (적재와 같은 방식, 11/18): 높이 탐지 뒤 올라가서 100mm로 열고 핑거 끝 **윗면 − 15**까지 위치 이동(마지막 15mm 천천히, 접촉 감시 없음) → sync 닫기. 작업대 바닥(`TABLE_Z` 29.8) + 2.6보다 낮아지면 그 높이 | sync (바닥 + 2.6) | sync (바닥 + 2.6) |
 | 닫는 힘 | `GRIPPER grip_force_n` 40 / `SYNC_GRIP close_force_n` 10 | 40 | 10 (폭 측정) | 10 → 40 조임 |
 | 들어 올리기 | `GRIPPER settle_after_grip_s` 0.5 · `lift_slow_mm` 15 · `lift_slow_vel` 20 | 0.5초 기다린 뒤 15mm 천천히 (11/18) | 3mm만 들어 돌림 | 0.5초 기다린 뒤 15mm 천천히 (11/18) |
 | 잡힘 판정 | `gripper.check_grip`/`holding` | 비트 + 범위 + 폭 변화 | 비트 + 빈손 + 폭 변화 (범위 안 봄 → U) | 비트 + 범위 + 폭 변화 |
