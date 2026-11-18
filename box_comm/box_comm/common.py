@@ -205,7 +205,7 @@ FIXED_POSES = {
         'A': [480.0, -160.0],   # 실측 (11/16)
         'B': [650.0, -160.0],   # 실측 (11/16)
         'C': [580.0, 300.0],    # 실측 (11/16)
-        'D': None,              # 미정 (D 수치 대기)
+        'D': [300.0, 300.0],    # 11/18 입력 (실물 확인 필요)
     },
     # 미분류(U) 투하 위치는 여기(DB 고정 좌표)가 아니라 box_place/config/place_config.json의 unclassified
     #   release_pose [670, -43, 144, 160, 180, 162], approach_z 160 (11/16)
@@ -305,6 +305,10 @@ GRIPPER = {
     'cal_gain': 1.0,             # 폭 보정 기울기
     'cal_offset_mm': 0.30,       # 폭 보정 오프셋
     'timeout_s': 5.0,            # 닫기 대기 최대 시간
+    'settle_after_grip_s': 0.5,  # 다 조인 뒤 들어 올리기 전 기다리는 시간 (11/18). 힘이 다 걸리기 전에 들면
+                                 # 박스가 핑거 사이로 빠짐 → 탐지·적재 공통으로 grip_close 뒤 robot.wait(이 값)
+    'lift_slow_mm': 15.0,        # 집은 직후 이 높이까지는 천천히 들어 올림 (lift_slow_vel)
+    'lift_slow_vel': 20.0,       # [mm/s]
 }
 GRIP_RETRY = 3          # 파트가 못 집었을 때 다시 집는 최대 횟수 (첫 시도 포함)
                         # 탐지 = 각도 0/45/90°, 판별·적재 = 같은 자리·같은 자세로 (11/18)
@@ -410,6 +414,62 @@ def log_qos():
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
     return QoSProfile(depth=LOG_QOS_DEPTH, reliability=ReliabilityPolicy.RELIABLE,
                       durability=DurabilityPolicy.TRANSIENT_LOCAL)
+
+
+# ----------------------------------------------------------------------
+# 관제 상태 (/control_status, std_msgs/String JSON) — 11/18
+#   보내는 쪽은 관제 하나. 받는 쪽은 모니터 GUI와 DB 노드(→ Supabase state → 웹 UI).
+#   단계가 바뀔 때·재고 반영 후·중단 시·로봇 상태가 바뀔 때 보내고,
+#   바뀐 게 없어도 STATUS_PERIOD_SEC마다 마지막 값을 다시 보낸다 (받는 쪽이 '관제 살아 있음' 판단).
+#   JSON 키 (없는 키는 받는 쪽에서 기본값으로):
+#     state, job_id, box_seq, box_id, class_id, inventory{A..U}, mismatches, retries,
+#     standby_sec, reason, stop,
+#     robot_state(int|null), robot_state_name, robot_ok, robot_connected, robot_hint, robot_monitor,
+#     sent_at (관제 PC epoch 초)
+# ----------------------------------------------------------------------
+STATUS_TOPIC = '/control_status'
+STATUS_PERIOD_SEC = 2.0
+
+
+def status_qos():
+    """/control_status용 QoS: 마지막 1개 유지 → 늦게 켠 구독자도 지금 상태를 바로 받음"""
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+    return QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
+
+
+# 로봇 상태 → 사람이 할 일 (UI에 그대로 표시). 정상(STANDBY/MOVING)은 ''
+ROBOT_HINT = {
+    0: '로봇 초기화 중 — 잠시 기다리기',
+    3: '서보 꺼짐 — 펜던트에서 서보 켜기',
+    4: '수동(티칭) 모드 — 펜던트에서 자동 모드로 바꾸기',
+    5: '보호 정지 — 충돌·과부하 원인 제거 후 펜던트에서 정지 해제',
+    6: '비상정지 — 펜던트 비상정지 버튼 해제 후 리셋',
+    7: '원점 복귀 중 — 잠시 기다리기',
+    8: '복구 모드 — 펜던트에서 복구 마치기',
+    9: '보호 정지 — 충돌·과부하 원인 제거 후 펜던트에서 정지 해제',
+    10: '서보 꺼짐 — 펜던트에서 서보 켜기',
+    15: '준비 안 됨 — 펜던트 상태 확인',
+}
+ROBOT_HINT_LOST = '로봇 응답 없음 — 로봇 전원·케이블·bringup 확인'
+ROBOT_HINT_OFF = '로봇 감시 꺼짐 (robot_monitor=off, 시험 모드)'
+
+
+def robot_hint(state, connected=True, monitor='dsr') -> str:
+    """로봇 상태 → 조치 안내 한 줄. 정상이면 ''"""
+    if monitor == 'off':
+        return ROBOT_HINT_OFF
+    if not connected or state is None:
+        return ROBOT_HINT_LOST
+    if state in ROBOT_OK_STATES:
+        return ''
+    return ROBOT_HINT.get(int(state), f'로봇 상태 {ROBOT_STATE.get(int(state), state)} — 펜던트 확인')
+
+
+# 원격 작업 명령 (UI → DB 노드 → 관제 /job_command, box_interfaces/srv/JobCommand) — 11/18
+#   start : READY에서만 받음 → 사전 점검 → 카운트다운 → 작업 (관제 상주 모드에서 구현 예정)
+JOB_COMMANDS = ('start',)
+SRV_JOB_COMMAND = '/job_command'
 
 
 class Reporter:

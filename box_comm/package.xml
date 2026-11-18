@@ -9,6 +9,7 @@
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>box_interfaces</exec_depend>
+  <exec_depend>std_msgs</exec_depend>      <!-- /control_status (11/18) -->
   <exec_depend>python3-pymodbus</exec_depend>   <!-- RG2 그리퍼 Modbus (gripper.py, 11/17) -->
 
   <export>

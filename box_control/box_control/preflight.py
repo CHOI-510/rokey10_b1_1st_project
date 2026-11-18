@@ -6,7 +6,7 @@ control.py가 GetJobData 직후, 시작 대기(STANDBY) 전에 run_all()을 한 
 점검 하나가 FAIL이면 작업을 시작하지 않는다. WARN은 기록만 하고 진행한다.
 
 점검 목록
-  1. 분류 기준(specs)  : A~D가 모두 있고 값이 양수인지
+  1. 분류 기준(specs)  : A~D가 모두 있고 치수가 양수인지 (무게 0 = 미측정 → WARN, 11/18)
   2. 고정 좌표          : DB에서 받은 HOME·측정존 좌표가 있고 형식이 맞는지 (기준은 DB, v0.3)
                          관제는 DB 값으로 이미 덮어쓴 상태 → common.py와 비교하지 않음
   3. 적재 구역 (v0.4)  : A~D 구역 1단 x, y가 모두 있는지 (없으면 FAIL, (0, 0)이면 WARN)
@@ -42,9 +42,16 @@ def check_specs(ctrl):
     if missing:
         return [(FAIL, f'분류 기준에 {missing} 없음 (DB 물품값 확인)')]
     bad = [s['class_id'] for s in specs
-           if min(s['width_mm'], s['depth_mm'], s['height_mm'], s['weight_g']) <= 0]
+           if min(s['width_mm'], s['depth_mm'], s['height_mm']) <= 0]
     if bad:
-        return [(FAIL, f'분류 기준 {bad}에 0 이하 값 있음 (DB 물품값 확인)')]
+        return [(FAIL, f'분류 기준 {bad}에 치수 0 이하 값 있음 (DB 물품값 확인)')]
+    # 무게 0 = 미측정 (11/18: 판별이 아직 무게를 쓰지 않음 → 경고만)
+    bad_w = [s['class_id'] for s in specs if s['weight_g'] < 0]
+    if bad_w:
+        return [(FAIL, f'분류 기준 {bad_w}에 음수 무게 (DB 물품값 확인)')]
+    no_w = [s['class_id'] for s in specs if s['weight_g'] == 0]
+    if no_w:
+        return [(WARN, f'분류 기준 {len(specs)}개, 무게 미측정 {no_w} (판별이 무게를 쓰기 전까지는 영향 없음)')]
     return [(OK, f'분류 기준 {len(specs)}개')]
 
 

@@ -1,0 +1,293 @@
+# DB·UI 약속 (Supabase 테이블 · 버튼 · 로그) — 11/18
+
+관제: 정쓰 · DB 노드(`database_main` 외): 정쓰 · Supabase 설정·웹 UI: 이승재
+
+## 1. 전체 구조 (노트북 한 대)
+
+```
+[관제 노트북]
+  ROS: bringup / 탐지·판별·적재 / 관제 control / DB 노드 database
+  웹: Next.js (next start) + cloudflared 터널
+                                   
+  관제 ──Service·토픽──▶ DB 노드 ──▶ Supabase state (1행) ──Realtime──▶ 브라우저 화면
+  관제 ──/event_log──▶ DB 노드 ──▶ ~/box_logs/{job_id}.jsonl ──▶ Next.js /api/logs ──▶ 화면 로그 창
+  브라우저 버튼 ──▶ Next.js /api/estop·/api/start ──▶ DB 노드 127.0.0.1:8765 ──▶ 관제
+```
+
+- Supabase는 **보여 주기 전용**이에요. 브라우저는 Supabase에서 읽기만 해요.
+- 버튼은 Supabase를 거치지 않고 노트북 안에서 DB 노드로 바로 가요. 그래서 인터넷이 끊겨도 비상정지는 돼요.
+- 로그는 DB에 쌓지 않고 파일로 남겨요.
+
+## 2. Supabase 테이블 3개
+
+### `product` — 고정, A~D 4행 (사람이 입력)
+
+| 열 | 타입 | 설명 |
+|---|---|---|
+| `class_id` | text PK | `'A'`~`'D'` |
+| `name` | text | 화면 표시 이름 (`'알루미늄 묶음 A'`) |
+| `width_mm` | float8 not null | 가로 (로봇 base X 방향) |
+| `depth_mm` | float8 not null | 세로 |
+| `height_mm` | float8 not null | 높이 |
+| `weight_g` | float8 not null default 0 | 0 = 미측정 (판별이 아직 무게를 안 씀) |
+
+### `loc` — 고정, 위치 하나 = 1행 (사람이 입력)
+
+| 열 | 타입 | 설명 |
+|---|---|---|
+| `name` | text PK | `'A'`·`'B'`·`'C'`·`'D'` = 적재 구역 1자리, `'measure_zone'` = 측정존 |
+| `x`, `y` | float8 not null | mm, 로봇 base 기준 |
+| `z` | float8 | 측정존만 (바닥 z). 적재 구역은 비움 (높이는 적재 파트가 가짐) |
+
+- **A~D와 measure_zone 5행이 모두 있어야 관제가 시작해요.** D는 (300, 300) (11/18 입력).
+- HOME 자세(관절 각도)는 DB에 넣지 않아요. 코드 `box_comm/common.py`의 `FIXED_POSES['home_j']`가 원본이에요.
+
+### `state` — 가변, 1행 (id = 1). **DB 노드만 씀**, 화면은 이 한 줄만 구독
+
+| 묶음 | 열 | 타입 | 언제 바뀌나 |
+|---|---|---|---|
+| 재고 | `a` `b` `c` `d` `u` | int | 박스 하나 적재 끝날 때 (적재가 잰 실제 수량). `u` = 미분류 |
+| 작업 결과 | `status` | text | `BEFORE` / `RUNNING` / `DONE` / `ERROR` / `STOPPED`. **다음 작업이 시작될 때까지 그대로 남음** |
+| | `reason` | text | ERROR·STOPPED 이유 (`'Fail to pick'`, `'EMERGENCY STOP'`) |
+| | `started_at`, `finished_at` | timestamptz | RUNNING 될 때 / DONE·ERROR·STOPPED 될 때 |
+| 지금 단계 | `stage` | text | 관제 단계 (아래 표). 수시로 바뀜 |
+| | `job_id`, `box_id` | text | 지금 작업·박스 |
+| | `box_seq` | int | 이번 작업에서 처리 끝난 박스 수 |
+| | `start_at` | timestamptz | 카운트다운이 끝나는 시각 (`stage = STANDBY`일 때만, 아니면 비어 있음) |
+| 로봇 | `robot_state` | text | 두산 상태 이름 (`STANDBY`, `MOVING`, `SAFE_STOP`, `EMERGENCY_STOP` …) |
+| | `robot_ok` | bool | 작업 가능 (STANDBY·MOVING) |
+| | `robot_connected` | bool | 로봇 상태 응답이 오고 있음 |
+| | `robot_hint` | text | 사람이 할 일 한 줄 (정상이면 빈칸). 화면에 그대로 표시 |
+| 연결 | `control_seen_at` | timestamptz | 관제 신호를 마지막으로 받은 시각 (관제가 2초마다 보냄) |
+| | `heartbeat_at` | timestamptz | DB 노드가 2초마다 갱신 |
+| | `updated_at` | timestamptz | 재고·결과가 바뀐 시각 |
+
+`stage` 값 (관제 단계)
+
+| 값 | 뜻 | 화면 |
+|---|---|---|
+| `READY` | 시작 버튼 기다림 (관제 상주 모드, 구현 예정) | 시작 버튼 활성 |
+| `BEFORE`, `PREFLIGHT` | 데이터 받기·사전 점검 | "점검 중" |
+| `STANDBY` | 카운트다운 | 남은 시간 = `start_at − 지금` |
+| `RUNNING` | 작업 시작 | |
+| `SCANNING`, `SCAN_DONE` | 탐지 | 단계 표시 "스캔" |
+| `JUDGING`, `JUDGE_DONE` | 판별 | "판별" |
+| `PLACING`, `PLACE_DONE` | 적재 | "적재" |
+| `CLEARING` | 집기 실패 뒤 관제가 측정존을 비우는 중 | "복구 중" |
+| `DONE`, `ERROR`, `STOPPED` | 끝남 | `status`·`reason`으로 결과 표시 |
+
+### 테이블 만들기 (SQL Editor에 그대로)
+
+지금 `product`는 `name`이 PK이고 치수가 글자(`'60,40,20'`)라서 새로 만들어요. 값은 아래 insert에 다시 넣어 뒀어요.
+
+```sql
+drop table if exists product;
+create table product (
+  class_id text primary key check (class_id in ('A','B','C','D')),
+  name text not null default '',
+  width_mm float8 not null,
+  depth_mm float8 not null,
+  height_mm float8 not null,
+  weight_g float8 not null default 0
+);
+insert into product values
+  ('A', '알루미늄 묶음 A', 60, 40, 20, 130),
+  ('B', '젠가 묶음 B',     75, 29, 25, 0),
+  ('C', '알루미늄 묶음 C', 50, 40, 20, 108),
+  ('D', '지우개 D',        50, 40, 20, 55.3);
+
+drop table if exists loc;
+create table loc (
+  name text primary key check (name in ('A','B','C','D','measure_zone')),
+  x float8 not null,
+  y float8 not null,
+  z float8
+);
+insert into loc values
+  ('A', 480, -160, null),
+  ('B', 650, -160, null),
+  ('C', 580,  300, null),
+  ('D', 300,  300, null),          -- 11/18 입력
+  ('measure_zone', 300, -160, 30);
+
+drop table if exists state;
+create table state (
+  id int primary key default 1 check (id = 1),
+  a int not null default 0, b int not null default 0, c int not null default 0,
+  d int not null default 0, u int not null default 0,
+  status text not null default 'BEFORE',
+  reason text not null default '',
+  started_at timestamptz,
+  finished_at timestamptz,
+  stage text not null default '',
+  job_id text not null default '',
+  box_id text not null default '',
+  box_seq int not null default 0,
+  start_at timestamptz,
+  robot_state text not null default '',
+  robot_ok boolean not null default false,
+  robot_connected boolean not null default false,
+  robot_hint text not null default '',
+  control_seen_at timestamptz,
+  heartbeat_at timestamptz,
+  updated_at timestamptz not null default now()
+);
+insert into state (id) values (1);
+
+-- 권한: 브라우저(anon 키)는 읽기만. 쓰기는 DB 노드(service_role 키, RLS를 건너뜀)만.
+alter table product enable row level security;
+alter table loc     enable row level security;
+alter table state   enable row level security;
+create policy "read" on product for select to anon using (true);
+create policy "read" on loc     for select to anon using (true);
+create policy "read" on state   for select to anon using (true);
+
+-- 실시간: state만
+alter publication supabase_realtime add table state;
+```
+
+- `service_role` 키는 DB 노드 환경변수(`SUPABASE_SERVICE_KEY`)에만 넣어요. 웹 코드·git에는 **절대 넣지 마세요.** 저장소가 public이고 터널 주소는 누구나 들어올 수 있어요.
+- 웹은 `anon` 키만 써요 (`NEXT_PUBLIC_SUPABASE_ANON_KEY`).
+
+**판별 주의**: C와 D(지우개)의 치수가 같아서, 물성 측정이 들어가기 전까지는 판별이 D를 C로 판정해요. DB 노드는 항상 A→D 순서로 넘겨요.
+
+## 3. 화면이 판단하는 순서
+
+`state` 한 줄로 아래 순서대로 판단해요 (위에서 걸리면 아래는 안 봄).
+
+| 순서 | 조건 | 화면 |
+|---|---|---|
+| 1 | `지금 − heartbeat_at > 5초` | "DB 노드 꺼짐". 전부 회색, 버튼 비활성 (비상정지는 펜던트로) |
+| 2 | `지금 − control_seen_at > 5초` | "관제 꺼짐". 로봇 상태 모름, 시작 비활성 |
+| 3 | `robot_ok = false` | 로봇 칸 빨강 + `robot_hint` 그대로 표시. 시작 비활성 |
+| 4 | `stage = 'READY'` | 시작 버튼 활성 |
+| 5 | 그 외 | `stage`로 진행 단계, `status`·`reason`으로 결과 |
+
+화면 구성
+
+- **마지막 작업**: `status` · `box_seq`개 처리 · `finished_at` 끝남 · `reason`. 다음 시작 전까지 그대로 남아요.
+- **경과 시간**: RUNNING 중에는 `지금 − started_at`, 끝났으면 `finished_at − started_at`.
+- **적재 현황**: 구역당 정원 **6** (1자리 3층 × 2자리), 전체 24. 그림은 1자리 3층이 다 차면 2자리에 쌓아요.
+  `layout = n => Array.from({length: Math.ceil(n/3)}, (_, i) => Math.min(3, n - 3*i))`
+- **미분류**: `u` 숫자만 (쌓지 않음).
+- **시각**: 상단 시계는 브라우저 시계로.
+
+## 4. 버튼 (Next.js API 라우트 → DB 노드)
+
+DB 노드가 노트북 안에서만 받는 창구를 열어요: `http://127.0.0.1:8765`
+
+| 웹 라우트 | DB 노드로 | 응답 |
+|---|---|---|
+| `POST /api/estop` | `POST /estop` | `{ok, message}`. `ok=false`면 message(예: "관제 연결 안 됨 — 펜던트 비상정지 버튼을 쓰세요")를 그대로 띄움 |
+| `POST /api/start` | `POST /start` | `{ok, message}`. 거절 이유 예: "준비 안 됨 (지금 관제 단계: RUNNING)" |
+| (상태 확인용) | `GET /health` | `{ok, stage, store}` |
+
+```ts
+// app/api/estop/route.ts
+export async function POST() {
+  try {
+    const r = await fetch('http://127.0.0.1:8765/estop', { method: 'POST' });
+    return Response.json(await r.json());
+  } catch {
+    return Response.json({ ok: false, message: 'DB 노드 꺼짐 — 펜던트 비상정지 버튼을 쓰세요' });
+  }
+}
+
+// app/api/start/route.ts — 터널 주소는 누구나 들어오므로 시작은 PIN 확인
+export async function POST(req: Request) {
+  const { pin } = await req.json().catch(() => ({}));
+  if (process.env.START_PIN && pin !== process.env.START_PIN)
+    return Response.json({ ok: false, message: 'PIN이 틀림' }, { status: 403 });
+  try {
+    const r = await fetch('http://127.0.0.1:8765/start', { method: 'POST' });
+    return Response.json(await r.json());
+  } catch {
+    return Response.json({ ok: false, message: 'DB 노드 꺼짐' });
+  }
+}
+```
+
+버튼 동작
+
+- **비상정지**: 확인 창 없이 바로 보내요. 언제든 눌림.
+- **시작**: 팝업 [확인] → `/api/start` → 관제가 사전 점검 후 10분 카운트다운 → 작업. [취소] → 팝업만 닫고 아무것도 안 보냄.
+  - 카운트다운 중에는 `start_at`으로 남은 시간을 보여 줘요. 카운트다운 중 멈추려면 비상정지예요 (관제가 시작을 취소함).
+- 버튼 기록은 로그 파일에 `code: 'UI_COMMAND'`로 남아요.
+
+**아직 안 된 것**: 관제 상주 모드(READY에서 시작 기다리기)와 관제 쪽 `/job_command`는 관제가 구현 중이에요. 그 전에는 시작 버튼을 눌러도 "준비 안 됨"이 와요. 화면·라우트는 미리 만들어 두면 돼요.
+
+## 5. 로그 (파일 → 화면)
+
+- DB 노드가 `~/box_logs/{job_id}.jsonl`에 한 줄씩 붙여 써요 (한 줄 = JSON 하나, 시간순).
+- 줄 형식: `{seq, stamp, job_id, source, stage, level, code, box_id, class_id, expected, measured, message, received_at}`
+  - `source`: `control` / `scan` / `judge` / `place` / `ui` → 화면 태그 관제·탐지·판별·적재·UI
+  - `level`: `INFO` / `WARN` / `ERROR` → 색
+  - `message`: 화면에 그대로 표시 (문구를 UI에서 만들지 않음)
+
+```ts
+// app/api/logs/route.ts — 가장 최근 작업 파일의 마지막 N줄 (최신순)
+import fs from 'fs'; import path from 'path';
+export const dynamic = 'force-dynamic';
+export async function GET(req: Request) {
+  const n = Number(new URL(req.url).searchParams.get('limit') ?? 20);
+  const dir = process.env.LOG_DIR ?? '/home/eunjeong/box_logs';
+  if (!fs.existsSync(dir)) return Response.json([]);
+  const files = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl'))
+    .map(f => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs })).sort((a, b) => b.t - a.t);
+  if (!files.length) return Response.json([]);
+  const lines = fs.readFileSync(path.join(dir, files[0].f), 'utf8').trim().split('\n');
+  return Response.json(lines.slice(-n).reverse().map(l => JSON.parse(l)));
+}
+```
+
+- 요약 숫자: 처리 = `state.box_seq`, 미분류 = `state.u`, 재시도 = 파일 안 `code = 'BOX_RETRY'` 줄 수, 오류 = `level = 'ERROR'` 줄 수.
+- 화면은 1~2초마다 `/api/logs?limit=20`을 가져와요.
+- 로그 화면 주의: 판별이 박스마다 측정 줄을 4~5개 남겨요. 기본은 WARN·ERROR와 `BOX_DONE`·`JOB_*`만 보여 주고, 나머지는 펼쳐 볼 수 있게 하면 깔끔해요.
+
+## 6. 실행 순서 (노트북)
+
+DB 노드 파일 (`box_database/box_database/`)
+
+| 파일 | 내용 |
+|---|---|
+| `database_main.py` | 실행 진입점 (`ros2 run box_database database_main`) |
+| `database_work.py` | 관제가 부르는 함수, 상태 동기화, 로그 파일, 버튼 창구 |
+| `database_store.py` | 저장소: Supabase / 파일(JSON, DB 연동 전 확인용) |
+| `database_config.py` | 환경 변수·주기·테이블 이름·fake 값 |
+| `database_template.py` | 약속만 보여 주는 짧은 예시 (메모리, 참고용) |
+
+**파일 모드 (DB 연동 전)**: Supabase 테이블 3개를 JSON 파일로 흉내 내요. 함수는 같고 저장소만 달라서, 나중에 Supabase로 바꿀 때 코드는 그대로예요.
+
+| 파일 (`~/box_logs/fake_db/`) | Supabase 테이블 | 누가 씀 |
+|---|---|---|
+| `product.json` | `product` | 사람 (처음엔 기본값으로 만들어짐, 직접 고치면 다음 작업부터 반영) |
+| `loc.json` | `loc` | 사람 (같음) |
+| `state.json` | `state` 1행 | DB 노드 |
+| `state_updates.jsonl` | (없음, 확인용) | DB 노드: `state`에 쓴 내용을 한 줄씩 — `{at, by, set}`. `by`: `service` = 관제 서비스(재고·작업 결과), `control_status` = 관제 단계·로봇. 2초마다 도는 heartbeat만 바뀐 줄은 뺌 |
+
+Supabase로 옮길 때: 2장 SQL로 테이블을 만들고 → `python3 scripts/db_to_sql.py` 출력(파일 값 → insert 문)을 SQL Editor에 붙여 넣고 → 키를 export하고 `store`를 빼고 실행.
+
+```bash
+# Supabase 없이 (파일 모드)
+ros2 run box_database database_main --ros-args -p store:=file
+
+# Supabase
+pip install supabase --break-system-packages
+export SUPABASE_URL=https://kdvbiivjrdqvfwzomflj.supabase.co
+export SUPABASE_SERVICE_KEY=...
+ros2 run box_database database_main          # store:=auto (키가 있으면 Supabase, 없으면 파일)
+
+# 웹
+cd box_ui && npm run build && npm start        # 시연은 dev 말고 start
+cloudflared tunnel --url http://localhost:3000 # 켤 때마다 주소가 바뀜 → 시연 직전 공유
+```
+
+## 7. 시험하는 법
+
+| 무엇을 | 어떻게 | 기대 결과 |
+|---|---|---|
+| DB 노드만 (관제·로봇 없이) | 터미널 1: `database_main -p store:=file` / 터미널 2: `./scripts/db_check.sh` | 통과 N / 실패 0. 재고는 시험 전 값으로 되돌아감. 끝에 `state_updates.jsonl` 마지막 줄을 보여 줌 |
+| 관제 + fake 파트 + 실제 DB 노드 | `DB_MAIN=1 ./scripts/fake_run.sh` (Supabase 키가 있어도 파일로: `DB_STORE=file`) | 다른 터미널 `tail -f ~/box_logs/fake_db/state_updates.jsonl` 에 단계·재고·결과가 차례로 찍힘, `~/box_logs/{job_id}.jsonl`에 로그 |
+| 비상정지 버튼 경로 | 위 상태에서 `curl -s -X POST localhost:8765/estop` | 관제가 `STOPPED : EMERGENCY STOP — by ui` |
+| 화면만 (DB 노드 없이) | Supabase 대시보드에서 `state` 값을 손으로 바꿈 | 화면이 바로 바뀜. 로그는 `~/box_logs/test.jsonl`에 샘플 줄 |
+| 시작 버튼 | `/start` | 관제 상주 모드 전까지는 "준비 안 됨" 또는 "/job_command 없음"이 정상 |

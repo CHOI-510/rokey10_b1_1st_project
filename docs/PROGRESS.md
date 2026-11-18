@@ -22,6 +22,8 @@
 
 | 날짜 | 결정 | 이유 |
 | --- | --- | --- |
+| 11/18 | **판별 → 적재 인수인계 상태 확정**: 판별 위상 정렬 후 L1(가장 긴 변) = 측정존 x, L2 = y, 가장 짧은 변 = 높이, 측정존 중앙. 적재는 집은 폭이 L1·L2 중 어느 변인지 로그, 둘 다 아니면 WARN | 판별 담당 요청(f8fdd3c 위상 정렬). 적재는 이 상태를 믿고 고정 자세로 집으므로 실물에서 어긋나면 바로 보이게 |
+| 11/18 | **집은 뒤 0.5초 기다리고 15mm 천천히 들기** (`GRIPPER settle_after_grip_s`·`lift_slow_mm`·`lift_slow_vel`, 탐지·적재 공통) | 실물: 40N이 다 걸리기 전에 들면 박스가 핑거 사이로 빠짐 (적재에서 먼저 확인, 탐지도 같은 방식으로 집으므로 같이) |
 | 11/18 | **관리자 모니터 GUI** (`box_control/monitor_gui.py`): 관제 실행 시 별도 프로세스로 같이 뜸(`-p gui:=false`로 끔), 보기 + 비상정지 버튼. 관제 상태는 새 토픽 `/control_status`(`std_msgs/String` JSON, transient_local, 임시) | DB·웹 UI 연동 전까지 관제 PC에서 단계·재고·파트 진행·로봇 상태를 한눈에 확인. 별도 프로세스라 GUI가 죽어도 작업은 계속. `box_interfaces`를 바꾸지 않으려고 JSON 문자열로 |
 | 11/18 | **적재 측정존 집기 = sync 집기, 판별과 같은 설정** (`box_comm/sync_grip.py` + `common.SYNC_GRIP`, 판별 `rg2_sync_grip` 공용화): 100mm로 열고 핑거 끝을 바닥 + 2.6mm(판별 실물 값)에 둔 채 닫으면서 TCP를 올림. 층 판단은 집을 때 잰 'TCP − 박스 바닥'으로 보정. `pick_above_floor_mm` 삭제. 적재 하강 얹힘 감시는 안 함(판별이 측정존 중심에 정해진 위상으로 정렬) | 실물: RG2는 벌릴수록 핑거 끝이 올라가(열림↔닫힘 39mm) TCP 바닥 + 5에서 닫으면 A 60mm 면을 바닥 위 17mm(위 3mm)에서 물어 2번 놓침. 고정 z로는 '아래를 잡기'와 '빈손일 때 바닥 안 찍기'를 동시에 못 함. 적재는 항상 눕힌 박스라 판별 방식이 맞음(적재 담당 의견). 핑거 끝 높이는 판별·적재가 다를 이유가 없어 공용 값 하나 |
 | 11/18 | **집기 기준 정리** (CONTRIBUTING 2-5-1 표): 잡힘 판정 공용(`gripper.check_grip`/`holding`: 비트 + 패드 간격 17~80mm + 들어 올린 뒤 폭 변화 3mm, 판별은 폭 범위 제외), 쥐는 힘 40N(`GRIPPER`, sync는 10N으로 닫음), 다시 집기 3번(탐지 각도, 판별·적재 같은 자리), 판별 가로 얹힘 → 바로 `GRASP_FAILED`, 판별·적재 최종 실패 → 측정존 비우기 → 재스캔(**밀어내기 경로가 없으면 fake: WARN 로그만, 대기 없음 — 스캔 중에 사람이 치움**) | DO 시절 탐지는 WebLogic 폭 조건으로 '한쪽 핑거만 걸려 멈춘 것'을 걸렀는데 Modbus 통합 때 비트 + 5mm만 남음. 판별은 범위 밖도 U로 재야 함. 판별 얹힘은 같은 자리로 다시 내려가도 같음. 밀어내기는 미구현 |
@@ -186,6 +188,10 @@
 
 ### 11/18
 
+- **오후 통합**: 탐지(f014445 v120/a200 탐색·높이 탐지 설정)·판별(f8fdd3c 위상 정렬·물성 C/D·측정 속도) 받음 — 파일 겹침 없음, 아침 집기 기준(`_close_retry`, `SYNC_GRIP`, 폭 판정, 40N) 그대로 유지 확인
+  - `box_comm/gripper.py` 폭 레지스터 275 부호 있게 읽기(닫힌 채 접속 시 패드 합 −6543mm, 판별 제보) + 패드 합 0~30mm 밖이면 오프셋 × 2. 판별 쪽 자체 보정은 그대로 둬도 무해
+  - 탐지 `_grip`: 다 조인 뒤 0.5초 + 처음 15mm 천천히 (적재와 같은 `common.GRIPPER` 값)
+  - 적재 `_side_note`: 집은 폭이 판별 정렬의 L1(x)·L2(y) 중 어느 변인지 로그, 아니면 WARN. `test_place_pick.py` 가짜 로봇에 `wait` 추가
 - **관리자 모니터 GUI**: `monitor_gui.py`(새, tkinter), `control_interface.publish_status`·`/control_status`, `control.py`(단계·재고 변경·중단 시 발행, 관제 실행 시 GUI 같이 띄움, 끝나도 창 유지), `setup.py`(`monitor_gui` 실행 명령), `package.xml`(std_msgs·action_msgs·python3-tk)
 - **실물 첫 통합 (탐지·판별·적재 실제 코드 + 관제)**: 한 사이클 성공 — 탐지 접촉(1번 선, dFy +2.05N) → 윗면 49.9mm → 측정존 → 판별 19.9 × 40.0 × 60.7 → A → 적재 A 1번 자리 1층 → 재고 A 1 → 다음 Goal 이어서 탐색(1번 선 Y−50). 사전 점검: 집에서 바꾼 discovery 설정 때문에 로봇 상태 응답 없음 FAIL → 실습실 설정으로 되돌려 해결
   - 적재 집기 2번 놓침(들다가) → 원인 RG2 핑거 끝 높이(위 결정 사항) → **sync 집기로 변경**: `box_comm/sync_grip.py`(새 파일, 판별 `rg2_sync_grip`의 핑거 끝 모델·닫힘 시간·`SyncGripper` 이동 + `DsrZPort`), `rg2_sync_grip.py`는 거기서 가져다 씀(판별 동작 그대로), `place_algorithm`(`_pick_widths`, `pick_from_measure_zone`, `_hold_off`로 층 판단·하강 하한·sim 보정), `place_config.json`(`pick_tip_above_floor_mm` 3, `sync_grip_force_n` 10)

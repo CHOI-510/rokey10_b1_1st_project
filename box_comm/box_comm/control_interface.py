@@ -31,7 +31,9 @@ control_interface.py — 관제 통신 계층
   log_event(level, code, message, box_id='', class_id='', expected=-1, measured=-1)
     관제 자신의 판단(작업 시작·완료·중단, 재고 불일치 등)을 올린다.
   publish_status(**fields)
-    /control_status (std_msgs/String JSON, transient_local 1개)로 관제 상태를 보낸다 (모니터 GUI용, 11/18).
+    /control_status (std_msgs/String JSON, transient_local 1개)로 관제 상태를 보낸다 (모니터 GUI·DB 노드, 11/18).
+    로봇 상태(robot_state, robot_ok, robot_hint ...)는 interface가 붙인다. 바뀐 게 없어도 2초마다 다시 보냄.
+  robot_status()                 -> dict  로봇 상태 필드 (위와 같은 키)
   set_log_context(job_id, box_id='', class_id='')
     지금 처리 중인 박스. 파트 Feedback 로그에 이 값이 붙는다.
   파트 Feedback에 log_msg가 있으면(report.log) 자동으로 /event_log에 넘긴다 (code=PART_LOG).
@@ -87,21 +89,20 @@ from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
 from box_interfaces.action import Judge, Place, Scan
 from box_interfaces.msg import ClassSpec, FixedPoses, Inventory, LogEvent, PlaceZone
 
-from box_comm.common import (LOG_LEVELS, LOG_TOPIC, ROBOT, ROBOT_STATE, SAFETY, log_qos,
-                             poses_from_msg, robot_stop_code)
+from box_comm.common import (LOG_LEVELS, LOG_TOPIC, ROBOT, ROBOT_OK_STATES, ROBOT_STATE, SAFETY,
+                             STATUS_PERIOD_SEC, STATUS_TOPIC, log_qos, poses_from_msg,
+                             robot_hint, robot_stop_code, status_qos)
 from box_interfaces.srv import EmergencyStop, GetJobData, SetJobStatus, UpdateInventory
 from rcl_interfaces.msg import ParameterDescriptor
 
 NODE_NAME = 'control'
 SERVER_WAIT_SEC = 3.0        # 서버가 떠 있는지 기다리는 시간
 SRV_EMERGENCY_STOP = '/emergency_stop'
-STATUS_TOPIC = '/control_status'   # 관제 상태 (std_msgs/String JSON, 모니터 GUI용 임시 — 11/18)
 WAIT_SLICE = 0.05            # Action 결과를 기다리며 정지 요청을 확인하는 간격
 
 
@@ -158,12 +159,12 @@ class ControlInterface(Node):
         # 이벤트 로그 (보내기만 함)
         self._log_pub = self.create_publisher(LogEvent, LOG_TOPIC, log_qos())
         self._log_ctx = {'job_id': '', 'box_id': '', 'class_id': ''}
+        self._log_seq = 0                  # 작업(job_id)마다 1부터 — DB가 중복 줄을 거르는 데 씀 (11/18)
 
-        # 관제 상태 (모니터 GUI용, 마지막 1개 유지 → GUI가 늦게 켜도 받음)
-        self._status_pub = self.create_publisher(
-            String, STATUS_TOPIC,
-            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
-                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        # 관제 상태 (모니터 GUI·DB 노드, 마지막 1개 유지 → 늦게 켜도 받음)
+        self._status_pub = self.create_publisher(String, STATUS_TOPIC, status_qos())
+        self._status_lock = threading.Lock()
+        self._status_fields = {}           # 마지막으로 보낸 관제 필드 (주기 재발행·로봇 상태 변화 때 다시 씀)
 
         # Feedback 진행 추적: name -> (stage, 받은 시각)
         self._progress_lock = threading.Lock()
@@ -193,6 +194,7 @@ class ControlInterface(Node):
         self.create_service(EmergencyStop, SRV_EMERGENCY_STOP, self._on_emergency_stop, callback_group=cb)
         self._setup_dsr(cb)
         self.create_timer(SAFETY['monitor_period_sec'], self._on_monitor_tick, callback_group=cb)
+        self.create_timer(STATUS_PERIOD_SEC, self._republish_status, callback_group=cb)
 
         self.get_logger().info(
             f'[control] 클라이언트 준비 (Action 3, Service 3, 로그 토픽 {LOG_TOPIC}) | '
@@ -265,6 +267,8 @@ class ControlInterface(Node):
     # 이벤트 로그
     # ==================================================================
     def set_log_context(self, job_id=None, box_id=None, class_id=None):
+        if job_id is not None and str(job_id) != self._log_ctx['job_id']:
+            self._log_seq = 0              # 새 작업 → 로그 번호 다시 1부터
         for k, v in (('job_id', job_id), ('box_id', box_id), ('class_id', class_id)):
             if v is not None:
                 self._log_ctx[k] = str(v)
@@ -274,7 +278,9 @@ class ControlInterface(Node):
         """/event_log에 한 줄 발행. 실패해도 예외를 밖으로 내보내지 않는다 (작업을 막지 않음)."""
         try:
             level = level if level in LOG_LEVELS else 'INFO'
+            self._log_seq += 1
             msg = LogEvent(
+                seq=self._log_seq,
                 stamp=time.strftime('%Y-%m-%d %H:%M:%S'),
                 job_id=self._log_ctx['job_id'],
                 source=str(source), stage=str(stage), level=level, code=str(code),
@@ -286,10 +292,40 @@ class ControlInterface(Node):
             self.get_logger().warn(f'[control] 이벤트 로그 발행 실패: {type(e).__name__}: {e}')
 
     def publish_status(self, **fields):
-        """/control_status에 관제 상태 한 장 발행 (모니터 GUI용). 실패해도 작업은 계속."""
+        """/control_status에 관제 상태 한 장 발행 (모니터 GUI·DB 노드). 실패해도 작업은 계속.
+        받은 필드는 기억해 두고, 로봇 상태가 바뀔 때와 STATUS_PERIOD_SEC마다 로봇 필드를 새로 붙여 다시 보낸다."""
+        with self._status_lock:
+            self._status_fields = dict(fields)
+        self._send_status()
+
+    def _republish_status(self):
+        """주기 재발행 (관제 살아 있음 + 로봇 상태 최신화). 아직 한 번도 안 보냈으면 건너뜀."""
+        if self._status_fields:
+            self._send_status()
+
+    def robot_status(self) -> dict:
+        """UI·DB용 로봇 상태 필드 (감시 타이머가 읽은 마지막 값)"""
+        st = self._robot_state
+        connected = self._monitor == 'fake' or (st is not None and self._robot_lost < SAFETY['lost_limit'])
+        if self._monitor == 'off':
+            st, connected = None, False
+        return {
+            'robot_state': st,
+            'robot_state_name': ROBOT_STATE.get(st, '') if st is not None else '',
+            'robot_ok': bool(connected and st in ROBOT_OK_STATES),
+            'robot_connected': bool(connected),
+            'robot_hint': robot_hint(st, connected, self._monitor),
+            'robot_monitor': self._monitor,
+        }
+
+    def _send_status(self):
         try:
+            with self._status_lock:
+                fields = dict(self._status_fields)
             stop = self.stop_reason()
             fields.setdefault('stop', list(stop) if stop else None)
+            fields.update(self.robot_status())
+            fields['sent_at'] = time.time()
             self._status_pub.publish(String(data=json.dumps(fields, ensure_ascii=False)))
         except Exception as e:
             self.get_logger().warn(f'[control] 상태 발행 실패: {type(e).__name__}: {e}')
@@ -435,13 +471,16 @@ class ControlInterface(Node):
 
     def _robot_state_failed(self, why):
         self._robot_lost += 1
-        if self._armed and self._robot_lost == SAFETY['lost_limit']:
-            self.request_stop('ROBOT_DISCONNECTED', why)
+        if self._robot_lost == SAFETY['lost_limit']:
+            self._republish_status()       # 연결 끊김을 UI에 바로 알림
+            if self._armed:
+                self.request_stop('ROBOT_DISCONNECTED', why)
 
     def _check_robot_state(self, state):
         if state != self._robot_state:
             self.get_logger().info(f'[control] 로봇 상태: {ROBOT_STATE.get(state, state)} ({state})')
             self._robot_state = state
+            self._republish_status()       # 로봇 상태 변화 → UI에 바로 알림
         code = robot_stop_code(state)
         if code and self._armed:
             self.request_stop(code, f'robot_state={ROBOT_STATE.get(state, state)}')

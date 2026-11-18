@@ -117,6 +117,10 @@ class FakeRobot:
         self.motion = None
         return True
 
+    def wait(self, seconds):                      # robot.wait (집은 뒤 힘이 다 걸리기를 기다림, 11/18)
+        self.clock.t += max(float(seconds), 0.0)
+        self.z()
+
     def mwait(self):
         if self.motion:
             self.clock.t = self.motion[2] + self.motion[3]

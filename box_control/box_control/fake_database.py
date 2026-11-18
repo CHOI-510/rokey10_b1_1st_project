@@ -28,7 +28,9 @@ FAKE_SPECS = [   # 실제 박스 치수 (11/17 표, 가로 = base X). 무게는 
     {'class_id': 'A', 'width_mm': 60.0, 'depth_mm': 40.0, 'height_mm': 20.0, 'weight_g': 130.0},
     {'class_id': 'B', 'width_mm': 75.0, 'depth_mm': 29.0, 'height_mm': 25.0, 'weight_g': 50.0},
     {'class_id': 'C', 'width_mm': 50.0, 'depth_mm': 40.0, 'height_mm': 20.0, 'weight_g': 108.0},
-    {'class_id': 'D', 'width_mm': 60.0, 'depth_mm': 40.0, 'height_mm': 20.0, 'weight_g': 130.0},  # A 또는 C와 같은 크기, 물성으로 구분 (임시 A)
+    {'class_id': 'D', 'width_mm': 50.0, 'depth_mm': 40.0, 'height_mm': 20.0, 'weight_g': 55.3},   # 지우개: C와 같은 크기, 물성(말랑)으로 구분
+    # 11/18: D를 임시로 A 크기로 두었던 것을 실제 값으로 (DB database_config FILE_PRODUCT와 같음).
+    #   판별은 치수 후보가 C/D 둘이면 물성(3 -> 40 N 폭 변화)으로 가른다 (judge PARAMS soft_classes='D')
 ]
 
 

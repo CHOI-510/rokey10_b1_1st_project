@@ -88,7 +88,7 @@ box_project/
 │                    + scan_original.py (담당 원본 단독 실행본, 비교용) + test/test_scan_flow.py
 ├─ box_judge/        판별: judge_template.py + judge_algorithm.py·judge_main.py·rg2_sync_grip.py (담당) + test/test_judge_grip.py
 ├─ box_place/        적재: place_template.py + place_algorithm.py·place_main.py (담당) + test/test_place_pick.py
-├─ box_database/     DB·UI: database_template.py + 담당 메인 코드
+├─ box_database/     DB 노드: database_main.py (+ database_work/store/config), 약속 예시 database_template.py
 └─ docs/             CONTRIBUTING.md, PROGRESS.md
 ```
 
@@ -100,7 +100,7 @@ box_project/
 | `box_scan` | 탐지 | `/scan` | `ros2 run box_scan scan_main` (참고용 `scan_template`) |
 | `box_judge` | 판별 | `/judge` | `ros2 run box_judge judge_main` (참고용 `judge_template`) |
 | `box_place` | 적재 | `/place` | `ros2 run box_place place_main` (참고용 `place_template`) |
-| `box_database` | DB·UI | `/database` | `ros2 run box_database database_template` |
+| `box_database` | DB·UI | `/database` | `ros2 run box_database database_main` (Supabase 키 없으면 파일 모드) |
 
 ---
 
@@ -318,7 +318,7 @@ source install/setup.bash
 서버 4개를 먼저 띄우고 관제를 마지막에 실행합니다.
 
 ```bash
-ros2 run box_database database_template
+ros2 run box_database database_main --ros-args -p store:=file   # Supabase 대신 ~/box_logs/fake_db/*.json
 ros2 run box_scan scan_template
 ros2 run box_judge judge_template
 ros2 run box_place place_template
@@ -412,6 +412,8 @@ ros2 run box_place place_main --ros-args -p sim_contact:=true        # 에뮬레
 - 폭과 잡힘 여부를 읽을 수 있어 **집기 실패 감지**와 판별 폭 측정에 씁니다. 설정은 `common.GRIPPER`(열 폭 100mm, 여는 힘 20N, 잡는 힘 20N, 빈손 기준 패드 사이 간격 5mm, 폭 보정 = 판별 실측값).
 - **잡힘 판정 (11/18, `gripper.check_grip`/`holding`, 세 파트 공용)**: 잡힘 비트만 믿지 않습니다. ① 패드 사이 간격이 **박스 범위 17~80mm** 안(`box_width_range_mm`) — 밖이면 한쪽 핑거만 걸려 멈춘 것 등 (**탐지·적재만**. 판별은 범위 밖 물체도 재서 U로 판정해야 하므로 안 봄) ② 들어 올린 뒤·이송 중 폭이 닫았을 때보다 **3mm 넘게 변하면** 놓친 것(`hold_width_tol_mm`) — 한쪽 핑거가 걸려 멈췄던 경우 들어 올리면 풀려서 계속 닫힘. DO 시절 탐지는 WebLogic 폭 조건(닫기 목표 20mm, `Width ≤ 20 AND Grip` → DI)으로 비슷한 확인을 했습니다.
 - **쥐는 힘 40N** (`GRIPPER grip_force_n`, 11/18 20 → 40): 탐지는 바로 40N, 적재는 sync(10N)로 닫은 뒤 40N으로 조임. 판별은 폭 측정 보정이 10N 기준이라 10N.
+- **집은 뒤 들어 올리기 (11/18)**: 40N이 다 걸리기 전에 들면 박스가 핑거 사이로 빠져서, 탐지·적재는 다 조인 뒤 `GRIPPER settle_after_grip_s`(0.5초) 기다리고 처음 `lift_slow_mm`(15mm)은 `lift_slow_vel`(20mm/s)로 천천히 듭니다.
+- **폭 레지스터 부호 (11/18 수정)**: 패드 사이 폭(레지스터 275)은 부호 있는 값입니다. 부호 없이 읽으면 그리퍼가 닫힌 채 접속할 때 패드 두께 합이 −6543mm가 됐습니다(판별 실물, 판별 담당 제보). `gripper.py`에서 부호 있게 읽고, 그래도 패드 합이 0~30mm 밖이면 오프셋 × 2로 씁니다.
 - **'닫으면서 핑거 끝 높이 유지'(sync 집기)** 는 `box_comm/sync_grip.py` + `common.SYNC_GRIP`(판별 폭 측정·적재 측정존 집기 공용). 탐지는 고정 높이(윗면 − 15mm)로 닫음 — 넓은 면을 잡으면 실제 무는 깊이가 얕아짐(이슈 25).
 - **다시 집기** (`GRIP_RETRY` 3): 탐지는 각도 0/45/90°, 판별·적재는 같은 자리·같은 자세로. 판별 가로 하강에서 핑거가 박스에 얹히면 같은 자리로는 다시 해도 같으므로 바로 `GRASP_FAILED`. 최종 실패: 탐지 → 관제가 바로 재스캔, 판별·적재 → 관제가 측정존 비우기 → 재스캔. **밀어내기 경로(`RECOVERY push_path`)가 아직 없어서 비우기는 fake**(WARN 로그만, 대기 없음) — 스캔하는 동안 사람이 측정존을 치웁니다.
 - Compute Box는 **동시 접속 1개**입니다. `robot`(DsrIO)이 그리퍼 명령을 처음 쓸 때 접속하고 Goal이 끝나면 끊어서, 탐지·판별·적재가 번갈아 씁니다.

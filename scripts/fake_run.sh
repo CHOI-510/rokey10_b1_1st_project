@@ -10,6 +10,9 @@
 #   ./scripts/fake_run.sh -p progress_timeout_sec:=5.0     # 관제 파라미터 추가 (기본값 대신 이걸 씀)
 #   BOX_COUNT=6 CLASSES="A,A,B,C,D,D" ./scripts/fake_run.sh
 #   DB_ARGS="-p estop_at:=2" ./scripts/fake_run.sh          # 2번째 박스 뒤 UI 비상정지 흉내
+#   DB_MAIN=1 ./scripts/fake_run.sh                         # DB 노드 실제 코드(database_main). 키 없으면 파일 모드
+#   DB_MAIN=1 DB_STORE=file ./scripts/fake_run.sh            # Supabase 키가 있어도 파일로 (~/box_logs/fake_db/*.json)
+#     → 다른 터미널: curl -s localhost:8765/state | python3 -m json.tool,  curl -s -X POST localhost:8765/estop
 #   PLACE_ARGS="-p miscount_at:=2" ./scripts/fake_run.sh    # 재고 불일치 시험
 #   MOTION=1 BOX_COUNT=2 ./scripts/fake_run.sh               # 로봇이 실제로 움직임 (아래 참고)
 #   PLACE_MAIN=1 SIM=1 BOX_COUNT=4 ./scripts/fake_run.sh     # 적재만 실제 코드(place_main), 에뮬레이터
@@ -93,7 +96,7 @@ else
 fi
 
 # 다른 터미널에서 이미 시험 중이면 멈춤 (서로 노드를 끄는 사고 방지)
-RUNNING_PATTERN='((box_control/(fake_database|fake_scan|fake_judge|fake_place|test_scan_motion|test_judge_motion|test_place_motion|control)|box_place/place_main|box_scan/scan_main)( |$))'
+RUNNING_PATTERN='((box_control/(fake_database|fake_scan|fake_judge|fake_place|test_scan_motion|test_judge_motion|test_place_motion|control)|box_place/place_main|box_scan/scan_main|box_database/(database_main|database_template))( |$))'
 if pgrep -f "$RUNNING_PATTERN" >/dev/null; then
     if [ "${FORCE:-0}" = 1 ]; then
         echo "[fake_run] FORCE=1 → 실행 중인 노드를 끄고 시작합니다."
@@ -150,7 +153,7 @@ cleanup() {
         done
     fi
     echo "[fake_run] DB 마지막 기록 ($LOG_DIR/database.log):"
-    grep -E "fake_db\]|SetJobStatus" "$LOG_DIR/database.log" 2>/dev/null | tail -n 5 | sed 's/^/  /'
+    grep -E "fake_db\]|\[database\] (SetJobStatus|재고|UI )" "$LOG_DIR/database.log" 2>/dev/null | tail -n 5 | sed 's/^/  /'
     echo "[fake_run] 종료"
 }
 trap cleanup EXIT INT TERM
@@ -166,8 +169,15 @@ start_bg() {      # start_bg 이름 실행파일 [인자...]
     echo "[fake_run] $name 시작 (pid $pid, 로그 $LOG_DIR/$name.log)"
 }
 
-# shellcheck disable=SC2086
-start_bg database fake_database --ros-args $DB_ARGS
+if [ "${DB_MAIN:-0}" = 1 ]; then
+    # 실제 DB 노드. Supabase 키가 없으면 파일 모드 → ~/box_logs/fake_db/state.json, state_updates.jsonl
+    echo "[fake_run] DB_MAIN=1 → DB 노드 실제 코드(database_main)${DB_STORE:+, store=$DB_STORE}"
+    # shellcheck disable=SC2086
+    PKG=box_database start_bg database database_main --ros-args -p store:="${DB_STORE:-auto}" $DB_ARGS
+else
+    # shellcheck disable=SC2086
+    start_bg database fake_database --ros-args $DB_ARGS
+fi
 if [ "${MOTION:-0}" = 1 ]; then
     echo "[fake_run] MOTION=1 → 로봇이 실제로 움직입니다 (test_*_motion). 작업공간을 비우세요."
     # shellcheck disable=SC2086

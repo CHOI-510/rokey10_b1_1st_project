@@ -4,7 +4,7 @@ package_name = 'box_database'
 
 setup(
     name=package_name,
-    version='0.2.0',
+    version='0.3.0',
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
@@ -19,6 +19,7 @@ setup(
     entry_points={
         'console_scripts': [
             'database_template = box_database.database_template:main',
+            'database_main = box_database.database_main:main',
         ],
     },
 )

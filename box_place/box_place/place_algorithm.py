@@ -36,10 +36,17 @@ v0.4 적재
     (11/18 실물: 들다가 2번 놓침). 이제는 100mm로 열고 핑거 끝이 바닥 + common.SYNC_GRIP tip(2.6)에 오게
     내려가서, 닫는 동안 핑거 끝이 내려가는 만큼 TCP를 올려 그 높이를 유지한다 → 폭과 상관없이 박스 아래쪽을 잡음.
     판별이 측정존 중심에 정해진 위상으로 놓아 주므로 하강 중 얹힘 감시는 하지 않는다.
+    판별 위상 정렬 (11/18 판별 f8fdd3c): L1(가장 긴 변) = 측정존 x, L2 = y, 가장 짧은 변 = 높이, 측정존 중앙.
+    집은 폭이 L1·L2 중 어느 변인지 로그에 남기고, 둘 다 아니면 WARN (_side_note).
     닫는 힘은 SYNC_GRIP close_force_n(10 N)으로 닫고 grip_force_n(기본 common 40 N)으로 다시 조인다.
+    다시 조인 뒤 common.GRIPPER settle_after_grip_s(0.5 s) 기다리고, 처음 lift_slow_mm(15)은 천천히 든다 (11/18:
+    40 N이 다 걸리기 전에 들면 박스가 핑거 사이로 빠짐). 설정에 grip_settle_s / lift_slow_vel을 넣으면 그 값을 씀.
   - 집은 높이가 폭마다 달라서(TCP − 박스 바닥 = hold_off, A 60mm 면 약 −9mm) 집을 때마다 재서 쓴다.
-    층 판단·첫 접촉 Z 기준은 TCP Z − hold_off(= 박스 바닥, 바닥 높이에서 집었을 때와 같은 기준)
-    → 기존 first_contact_z_mm(30.19 등)과 상태 파일 기준을 그대로 쓸 수 있다.
+    층 판단·첫 접촉 Z 기준은 TCP Z − hold_off(= 박스 바닥 Z, 로그의 '바닥 Z')
+  - 첫 접촉 Z 기준 (11/18 sync 집기 기준으로 다시 정함): 누르며 내려갈 때 박스가 핑거 사이로 조금 밀려
+    예전 값(A 30.19, B·C 30.0)보다 2~3mm 낮게 닿는다. A를 1자리 3층 + 2자리 1층 쌓아 본 바닥 Z
+    (27.69 / 48.46 / 68.55 / 27.37)의 가운데로 A 28.1, 다른 구역은 예전 차이(−0.19)만큼 27.9.
+    기준을 바꾸면 상태 파일(~/.ros/place_real_v04_state.json)의 같은 자리 기준도 지워야 한다 (다르면 시작 거부).
   - 잡힘 판정: box_comm.gripper.check_grip/holding — 잡힘 비트 + 폭이 박스 범위 안 + 들어 올린 뒤 폭이 안 변함
   - 층 수·자리 수는 설정에 적지 않는다. box_comm/common.py STACK(levels / max_tiers)을 그대로 쓴다
     (관제·DB·UI가 같은 규칙으로 수량을 해석하는 공용 규칙. 바꿀 때는 관제와 합의 + 자리별 첫 접촉 Z 재측정)
@@ -262,7 +269,20 @@ class PlaceAlgorithm:
             self.go_home(home)
             self._home_initialized = True
 
-    def pick_from_measure_zone(self, zone, report):
+    def _side_note(self, category, width):
+        """집은 폭이 판별이 정렬해 둔 어느 변인지 (11/18 판별 위상 정렬: L1(가장 긴 변) = 측정존 x,
+        L2(두 번째) = y, 가장 짧은 변 = 높이, 측정존 중앙). (설명, 맞는지). 크기를 모르면 ('', True)"""
+        dims = (self.c['classes'].get(category) or {}).get('dimensions_mm')
+        if not dims or len(dims) != 3:
+            return '', True
+        l1, l2 = sorted(dims, reverse=True)[:2]
+        if abs(width - l1) <= 5.0:
+            return f' = L1 {l1:g}mm 면(측정존 x)', True
+        if abs(width - l2) <= 5.0:
+            return f' = L2 {l2:g}mm 면(측정존 y)', True
+        return f' — {category} 규격 L1 {l1:g}·L2 {l2:g}mm 어느 쪽과도 5mm 넘게 다름', False
+
+    def pick_from_measure_zone(self, zone, report, category=None):
         """측정존에서 sync 집기 (11/18, 판별과 같은 공용 설정). 못 잡거나 들다가 놓치면 같은 자리·자세로 다시
         (최대 grip_retry번). 다 실패하면 그리퍼 열고 이송 높이에서 GRASP_FAILED (관제가 측정존을 비우고 재스캔)."""
         c = self.c
@@ -296,9 +316,19 @@ class PlaceAlgorithm:
                 if ok:
                     self._grip_width = width
                     self._hold_off = self.robot.pose()[2] - zone[2]   # TCP − 박스 바닥 (층 판단 보정)
+                    # 11/18: 40N이 다 걸리기 전에 들면 박스가 핑거 사이로 빠짐 → 잠깐 기다린 뒤 처음 구간은 천천히 들기
+                    self.robot.wait(float(c.get('grip_settle_s', GRIPPER['settle_after_grip_s'])))
+                    here = self.robot.pose()
+                    slow_vel = float(c.get('lift_slow_vel', GRIPPER['lift_slow_vel']))
+                    self.robot.movel([*here[:2], here[2] + GRIPPER['lift_slow_mm'], *orient],
+                                     vel=slow_vel, acc=slow_vel * 3)
                     self._move(above)
                     if self._holding():
-                        report.log(f'집기 성공 ({attempt}/{tries}번째, 폭 {width:.1f} mm, '
+                        note, side_ok = self._side_note(category, width)
+                        if not side_ok:
+                            report.log(f'집은 폭 {width:.1f} mm{note} (판별 정렬·집기 자세 확인)', 'WARN')
+                            note = ''
+                        report.log(f'집기 성공 ({attempt}/{tries}번째, 폭 {width:.1f} mm{note}, '
                                    f'TCP−바닥 {self._hold_off:+.1f} mm)')
                         return res
                     why = f'들어 올리는 중 놓침: {self._hold_why}'
@@ -472,7 +502,9 @@ class PlaceAlgorithm:
                 raise ValueError('저장된 바닥 접촉 기준의 위치/자세/물건 높이/TCP가 현재 설정과 다릅니다')
             saved = record['first_contact_z_mm']
             if supplied is not None and abs(saved-supplied) > 0.01:
-                raise ValueError('JSON과 저장 파일의 바닥 접촉 기준이 다릅니다')
+                raise ValueError(f'{category}/{tier}번 자리 바닥 접촉 기준이 설정(place_config.json {supplied:.2f})과 '
+                                 f'상태 파일({self.state_path} {saved:.2f})에서 다릅니다 → 적재 구역이 비어 있으면 '
+                                 f'상태 파일을 지우고 다시 실행 (rm {self.state_path})')
             return checked(saved)
         if supplied is not None:
             return checked(supplied)
@@ -542,7 +574,7 @@ class PlaceAlgorithm:
         self._pending(**{'class': result_class, 'phase': 'picking'})
         report('picking')
         self._home_once(home)
-        self.pick_from_measure_zone(zone, report)
+        self.pick_from_measure_zone(zone, report, result_class)
         self._pending(phase='moving')
         report('moving')
         approach = self.move_above(result_class, xy[0], xy[1])
@@ -564,7 +596,7 @@ class PlaceAlgorithm:
                 # learn_empty_slots: 기준이 없는 자리는 비어 있다고 보고 이 Z를 기준으로 학습
                 reference = z
                 self._remember_reference(result_class, tier, x, y, z)
-                report.log(f'{result_class}/{tier} 빈 자리 첫 접촉 TCP Z 학습: {z:.2f} mm')
+                report.log(f'{result_class}/{tier} 빈 자리 첫 접촉 바닥 Z 학습: {z:.2f} mm')
             level = level_from_z(z, reference, c['classes'][result_class]['height_mm'],
                                  c['layer_tolerance_mm'])
             if level > c['max_layers']:
@@ -583,7 +615,7 @@ class PlaceAlgorithm:
                 self._sim_stack[(result_class, tier)] = level
             self._remember_reference(result_class, tier, x, y, reference)   # 입력한 기준도 저장
             message = (f'{result_class} {tier}번 자리 {level}층 적재 → 수량 {count} '
-                       f'(TCP Z={z_tcp:.2f}, 기준 Z={z:.2f})')
+                       f'(TCP Z={z_tcp:.2f}, 바닥 Z={z:.2f}, 기준 {reference:.2f})')
             self.log.info(message)
             report.log(message)
             self._pending_done()

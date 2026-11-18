@@ -579,6 +579,13 @@ class ScanAlgorithm:
                 ok, why = check_grip(res.width_mm, 1) if res.grabbed else (False, f'빈손으로 닫힘 (폭 {res.width_mm:.1f} mm)')
                 if ok:
                     self._grip_width = res.width_mm
+                    # 11/18 (적재와 같음): 40N이 다 걸리기 전에 들면 박스가 핑거 사이로 빠짐
+                    #   → common.GRIPPER settle_after_grip_s 기다린 뒤, 처음 lift_slow_mm는 lift_slow_vel로 천천히
+                    r.wait(GRIPPER['settle_after_grip_s'])
+                    p = r.pose()
+                    p[2] = grip_z + min(GRIPPER['lift_slow_mm'], PICK_LIFT_MM)
+                    slow = GRIPPER['lift_slow_vel']
+                    r.movel(p, vel=[slow, 20.0], acc=[slow * 3, 40.0], tol=1.0)
                     self._move_z(grip_z + PICK_LIFT_MM)
                     time.sleep(PICK_HOLD_SECONDS)
                     if self._holding():

@@ -15,6 +15,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/UpdateInventory.srv"
   "srv/SetJobStatus.srv"
   "srv/EmergencyStop.srv"
+  "srv/JobCommand.srv"
   "action/Scan.action"
   "action/Judge.action"
   "action/Place.action"

@@ -1,0 +1,9 @@
+# Remote job command -> control (server: /job_command on control node, 11/18).
+# Caller: DB node (UI start button), or terminal for testing:
+#   ros2 service call /job_command box_interfaces/srv/JobCommand "{command: 'start', source: 'cli'}"
+# Control accepts 'start' only when it is waiting in READY (resident mode, to be implemented).
+string command         # "start"
+string source          # who sent it: "ui" / "cli" / ...
+---
+bool success
+string message         # why it was refused, e.g. "not READY (now RUNNING)"

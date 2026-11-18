@@ -132,6 +132,7 @@ class JudgeInterface(Node):
 
         except PartError as e:
             self.get_logger().error(f'[judge] 실패 {e.code}: {e}')
+            _report_error(report, f'{e.code}: {e}')
             result.success = False
             result.result_class = ''
             result.error_code = e.code
@@ -139,12 +140,21 @@ class JudgeInterface(Node):
 
         except Exception as e:
             self.get_logger().error(f'[judge] 예외: {type(e).__name__}: {e}')
+            _report_error(report, f'{type(e).__name__}: {e}')
             result.success = False
             result.result_class = ''
             result.error_code = DEFAULT_ERROR
             _finish_failed(goal_handle)
 
         return result
+
+
+def _report_error(report, message):
+    """실패 원인을 ERROR 로그로 관제에 보냄 → 관제 터미널·DB 로그에 원인이 남음 (보내기 실패는 무시)"""
+    try:
+        report.log(message, 'ERROR')
+    except Exception:
+        pass
 
 
 def _finish_failed(goal_handle):

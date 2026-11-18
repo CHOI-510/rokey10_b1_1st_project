@@ -94,6 +94,8 @@ class RG2:
                                   f'(OnRobot 드라이버가 떠 있으면 끌 것: pkill -f OnRobotRGControllerServer)')
         st = self.status()
         self.pad_total = st['width_raw_mm'] - st['width_mm']     # 양쪽 패드 두께 합
+        if not 0.0 <= self.pad_total <= 30.0:                    # 그래도 이상하면 오프셋 × 2 (판별과 같은 처리, 11/18)
+            self.pad_total = 2.0 * st['offset_mm']
 
     def close(self):
         self.c.close()
@@ -108,7 +110,9 @@ class RG2:
         return {
             'offset_mm': struct.unpack('<h', struct.pack('<H', v[0]))[0] / 10,
             'width_raw_mm': v[9] / 10,    # 267: 오프셋 미반영 (알루미늄 핑거 사이)
-            'width_mm': v[17] / 10,       # 275: 오프셋 반영 (패드 사이)
+            # 275: 오프셋 반영 (패드 사이). 부호 있는 값 — 닫힌 채면 음수 (11/18 수정: 부호 없이 읽으면
+            #      패드 두께 합이 -6543 mm가 됨, 판별 실물에서 발생. 판별 담당 제보)
+            'width_mm': struct.unpack('<h', struct.pack('<H', v[17]))[0] / 10,
             'busy': word & 1,
             'grip': (word >> 1) & 1,
             'safety': [(word >> b) & 1 for b in (2, 3, 4, 5, 6)],
