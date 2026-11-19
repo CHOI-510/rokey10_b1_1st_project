@@ -6,7 +6,7 @@ place_interface.py — 적재 파트 통신 계층
 
 서버 흐름(Goal 하나만, 좌표 넣기, TCP·툴 확인, 실패 마무리)은 세 파트 공통으로 box_comm/part_server.py에 있다.
 여기에는 적재만 다른 것만 있다.
-  - Goal 입력: result_class ('A'~'D', 'U'). 그 밖이면 PLACE_FAILED
+  - Goal 입력: result_class ('A'~'D', 'U'), poses, 현재 관제 재고 스냅샷
   - 반환값: 놓은 위치로 잰 그 클래스 수량 (int). 미분류 U는 0
       구역이 꽉 차서 미분류로 보냈으면 ('U', 그 구역 수량) → Result placed_class='U', count=그 구역 수량 (11/18)
       A~D인데 1 ~ 구역 최대 수량(common.stack_capacity) 밖이면 (11/18)
@@ -20,6 +20,7 @@ place_interface.py — 적재 파트 통신 계층
       def __init__(self, node, robot): ...     # robot = box_comm.dsr_io.DsrIO
       def place(self, result_class, poses, report) -> int:
           # poses = {'home_j': [6], 'measure_zone': [x, y, z], 'place_zones': {'A': [x, y], ...}}  (DB 값)
+          # self.inventory = Goal에 실린 현재 관제 재고 (알고리즘 입력, 결과 재고 결정은 관제가 함)
           # 1단부터 내려가며 실제로 놓을 자리를 찾고, 수량 = common.count_from_position(단, 층)
           # 단·층·z·단 간격·박스 높이는 이 안에서만 (관제에는 수량만)
           # 실패하면 raise PartError('NO_SLOT' / 'GRASP_FAILED' / 'PLACE_FAILED', '이유')

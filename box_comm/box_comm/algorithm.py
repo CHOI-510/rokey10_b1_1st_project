@@ -47,6 +47,7 @@ class AlgorithmWork:
         if not callable(getattr(self.algo, method, None)):
             raise TypeError(f'{algo_cls.__name__}에 {method}() 메서드가 없습니다')
         self.poses = None                                 # interface가 Goal마다 넣어 줌
+        self.inventory = None                             # Place Goal의 현재 관제 재고 스냅샷
 
     def run(self, *args):
         """interface가 부르는 형태: run(report) / run(specs, report) / run(result_class, report)
@@ -56,6 +57,7 @@ class AlgorithmWork:
         if robot is not None:
             robot.bind(report)
         try:
+            self.algo.inventory = dict(self.inventory or {})
             return getattr(self.algo, self.method)(*inputs, self.poses, report)
         except BaseException as exc:
             grasp = isinstance(exc, PartError) and exc.code == 'GRASP_FAILED'   # 파트가 포기한 집기 실패 (정상 흐름)

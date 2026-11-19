@@ -7,7 +7,7 @@ database_interface.py — DB 파트 통신 계층
 하는 일
   - Service 서버 3개를 띄운다 (box_interfaces/srv)
       /get_job_data      GetJobData       작업 시작 시
-      /update_inventory  UpdateInventory  적재완료마다
+      /update_inventory  UpdateInventory  시작 실측 후·작업 종료 시 스냅샷
       /set_job_status    SetJobStatus     작업중 / 작업완료 시점
   - ROS 메시지를 파이썬 값으로 바꿔 작업 클래스의 메서드를 호출한다.
   - 이벤트 로그 토픽 /event_log (LogEvent)를 구독해서 작업 클래스의 on_event(event)를 부른다.

@@ -13,7 +13,7 @@ part_server.py — 탐지·판별·적재 Action 서버 공통 틀 (11/18 통합
 
 Goal 한 번의 흐름 (세 파트 공통)
   1. 이미 실행 중이면 새 Goal 거절 (한 번에 하나)
-  2. 입력 확인 (spec.inputs) → Goal 좌표(DB 값)를 work.poses에 (없으면 common 기본값 + 경고)
+  2. 입력 확인 (spec.inputs) → Goal 좌표(DB 값)와 Place 재고 스냅샷을 work에 전달
   3. report('robot_setup') → 기본 TCP·툴 확인 (box_comm/robot.py). 실패면 ROBOT_SETUP_FAILED
   4. work.run(*입력, report) → spec.fill로 반환값 검사·Result 채움 → succeed
   5. 실패: PartError면 그 코드, 그 밖의 예외면 spec.default_error.
@@ -37,6 +37,7 @@ from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 
 from box_comm.common import SETUP_STAGE, PartError, Reporter, default_poses, poses_from_msg
+from box_comm.convert import inv_to_dict
 from box_comm.robot import RobotSetup
 
 
@@ -96,6 +97,8 @@ class PartServer(Node):
                 poses = default_poses()
                 log.warn(f'[{name}] Goal에 고정 좌표 없음 → common.py 기본값 사용 (단독 테스트용)')
             self.work.poses = poses
+            if hasattr(goal_handle.request, 'inventory'):
+                self.work.inventory = inv_to_dict(goal_handle.request.inventory)
 
             report(SETUP_STAGE)
             ok, setup_msg = self.robot.ensure_defaults()

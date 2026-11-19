@@ -21,6 +21,9 @@ class FakeInventoryCheck:
         self.robot = robot
         node.declare_parameter('fake_inventory_delay_sec', 0.1)
         node.declare_parameter('fake_inventory_counts', [0, 0, 0, 0])
+        # Physical/simulator motion is opt-in; pure fake runs must never move a robot.
+        node.declare_parameter('fake_move_robot', False)
+        self.move_robot = bool(node.get_parameter('fake_move_robot').value)
         counts = node.get_parameter('fake_inventory_counts').value
         if len(counts) != len(VALID_CLASSES):
             raise ValueError(f'fake_inventory_counts는 {len(VALID_CLASSES)}개 필요')
@@ -53,7 +56,7 @@ class FakeInventoryCheck:
     def measure(self, result_class, poses, report):
         count = self.counts[result_class]
         # 에뮬레이터(robot 연결됨)일 때만 실제 경로 이동
-        if self.robot is not None:
+        if self.robot is not None and self.move_robot:
             xy = (poses.get('place_zones') or {}).get(result_class)
             home = poses.get('home_j')
             self._move_slot(result_class, xy, home, 1, report)

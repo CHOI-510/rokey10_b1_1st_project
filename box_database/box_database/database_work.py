@@ -9,7 +9,7 @@ ROS 통신은 box_comm/database_interface.py가 하고, 이 클래스의 함수�
   -----------------------------------------------------------------------------
   get_job_data()        작업 시작 때          product(분류 기준) + state(재고) 읽기
   get_fixed_poses()     작업 시작 때          loc(측정존·적재 구역) 읽기, HOME은 코드 값
-  update_inventory()    박스 하나 끝날 때     state 재고 열 쓰기 (관제가 응답을 기다림)
+  update_inventory()    초기 실측 후·작업 종료 시 state 재고 열 쓰기 (적재 중간 저장 없음)
   set_job_status()      RUNNING·DONE 등      state 작업 결과 열 쓰기 (관제가 응답을 기다림)
   on_state()            /control_status      바뀐 열만 모아 두고 동기화 스레드가 씀 (관제를 안 막음)
   on_event()            /event_log           ~/box_logs/{job_id}.jsonl에 한 줄 (DB에는 안 올림)
@@ -18,7 +18,6 @@ ROS 통신은 box_comm/database_interface.py가 하고, 이 클래스의 함수�
     POST /estop   → 관제 /emergency_stop     (언제든, 인터넷 없어도 동작)
     POST /start   → 관제 /job_command start  (관제 단계가 READY일 때만)
     POST /cancel  → 관제 /job_command cancel (카운트다운 중 취소, 관제가 판단)
-    POST /inventory {a,b,c,d,u[,source]} → 시작 전 재고 설정 (관제 READY일 때만, 11/19) → 관제에 알림
     GET  /inventory → 지금 재고 {a,b,c,d,u, capacity}
     GET  /health  → {ok, stage, store}
     GET  /state   → 지금 state 행 (시험·디버그용)
@@ -62,7 +61,8 @@ class DatabaseWork:
         self._log_seq = 0
         self._log_lock = threading.Lock()
 
-        self._inv_updates = 0        # 이 노드가 받은 재고 반영 횟수 (시험용 estop_at)
+        self._boxes_done = 0         # 시험용 estop_at: 완료 박스 수
+        self._estop_job = None
         self._db_down = False        # 저장소 쓰기 실패 중 (재고·상태를 모아 두고 다시 보내는 중)
         self._setup_test_params(node)
 
@@ -78,22 +78,15 @@ class DatabaseWork:
     # 시험용 파라미터 (파일 모드 전용, 11/18 — 예전 box_control/fake_database 기능을 옮김)
     # ------------------------------------------------------------------
     def _setup_test_params(self, node):
-        """start_inventory: [A, B, C, D(, U)] 이 값으로 재고를 덮어쓰고 시작 (기본 [-1] = 안 건드림)
-        estop_at        : N번째 재고 반영 직후 UI 비상정지 버튼을 누른 것처럼 관제 /emergency_stop (0 = 끔)
-        Supabase(실제 데이터)에서는 둘 다 무시한다."""
-        start_inv = [int(n) for n in node.declare_parameter('start_inventory', [-1]).value]
+        """estop_at: N번째 BOX_DONE 이벤트 뒤 UI 비상정지 버튼을 누른 것처럼 요청 (파일 모드 시험 전용)."""
         self.estop_at = int(node.declare_parameter('estop_at', 0).value)
         if self.store.kind != 'file':
-            if (start_inv and start_inv[0] >= 0) or self.estop_at:
-                self.log.warn('[database] start_inventory·estop_at은 파일 모드 시험 전용 → Supabase에서는 무시')
+            if self.estop_at:
+                self.log.warn('[database] estop_at은 파일 모드 시험 전용 → Supabase에서는 무시')
             self.estop_at = 0
             return
-        if start_inv and start_inv[0] >= 0:
-            patch = {c.lower(): (start_inv[i] if i < len(start_inv) else 0) for i, c in enumerate(INVENTORY_KEYS)}
-            self.store.update_state(patch)
-            self.log.warn(f'[database] (시험) 재고를 {patch}로 시작')
         if self.estop_at:
-            self.log.warn(f'[database] (시험) {self.estop_at}번째 재고 반영 직후 비상정지 요청')
+            self.log.warn(f'[database] (시험) {self.estop_at}번째 BOX_DONE 뒤 비상정지 요청')
 
     # ------------------------------------------------------------------
     # 관제가 부르는 함수 (응답을 기다림 → 짧게)
@@ -136,10 +129,6 @@ class DatabaseWork:
         patch['updated_at'] = now_iso()
         self._write_or_queue(patch, f'재고 {box_id}')
         self.log.info(f'[database] 재고 ← {box_id}: {inventory}')
-        self._inv_updates += 1
-        if self.estop_at and self._inv_updates == self.estop_at:
-            self.log.warn(f'[database] (시험) estop_at={self.estop_at} → UI 비상정지 흉내')
-            self.node.request_emergency_stop('test')
 
     def set_job_status(self, status, reason):
         patch = {'status': status, 'reason': reason or '', 'updated_at': now_iso()}
@@ -154,7 +143,7 @@ class DatabaseWork:
     def _write_or_queue(self, patch, what):
         """재고·작업 상태 쓰기 (11/18). 저장소(Supabase)가 안 되면 실패로 돌려주지 않고 모아 두었다가
         동기화 스레드가 다시 쓴다 (새 값이 옛 값을 이김). 와이파이가 잠깐 끊겨도 작업이 멈추지 않게.
-        재고는 적재가 매번 실제로 재므로, 늦게 올라가도 값이 틀어지지 않는다."""
+        재고는 초기 실측 및 작업 종료·중단 스냅샷으로 기록한다."""
         try:
             self.store.update_state(patch)
             return
@@ -261,6 +250,9 @@ class DatabaseWork:
     def on_event(self, event):
         job = event.get('job_id') or 'no_job'
         seq = int(event.get('seq') or 0)
+        if job != self._estop_job:
+            self._estop_job = job
+            self._boxes_done = 0
         with self._log_lock:
             if job != self._log_job:
                 self._log_job, self._log_seq = job, self._last_seq_in_file(job)
@@ -269,6 +261,11 @@ class DatabaseWork:
             if seq > 0:
                 self._log_seq = seq
             self._append_log(job, event)
+        if event.get('code') == 'BOX_DONE':
+            self._boxes_done += 1
+            if self.estop_at and self._boxes_done == self.estop_at:
+                self.log.warn(f'[database] (시험) estop_at={self.estop_at} → UI 비상정지 흉내')
+                self.node.request_emergency_stop('test')
 
     def _log_path(self, job):
         return os.path.join(cfg.LOG_DIR, f'{job}.jsonl')
@@ -309,55 +306,6 @@ class DatabaseWork:
     # UI 버튼 창구 (HTTP, 127.0.0.1 전용)
     # ------------------------------------------------------------------
     # ------------------------------------------------------------------
-    # 시작 전 재고 설정 (11/19) — UI 시작 팝업의 −/+ · [전부 0], 관리자 GUI 시작 확인창
-    #   관제가 READY일 때만 (작업 중에 바뀌면 관제가 들고 있는 재고와 어긋남)
-    #   A~D는 0 ~ 구역 정원, U는 0 이상. 적재가 실제로 재면 그 값으로 덮어써지고, 다르면 COUNT_MISMATCH로 남음
-    # ------------------------------------------------------------------
-    def set_inventory(self, body, headers):
-        if cfg.START_TOKEN and headers.get('X-Box-Token', '') != cfg.START_TOKEN:
-            return 403, {'ok': False, 'message': '권한 없음'}
-        if self.stage != 'READY':
-            return 200, {'ok': False, 'message': f'대기(READY)일 때만 재고를 바꿀 수 있음 (지금 관제 단계: {self.stage or "알 수 없음"})'}
-        try:
-            data = json.loads(body or b'{}')
-            source = str(data.get('source') or 'ui')
-            cap = stack_capacity()
-            new = {}
-            for c in INVENTORY_KEYS:
-                v = data.get(c.lower(), data.get(c))
-                if v is None:
-                    raise ValueError(f'{c.lower()} 값이 없음')
-                if isinstance(v, bool) or int(v) != float(v):
-                    raise ValueError(f'{c.lower()}={v!r} 정수가 아님')
-                v = int(v)
-                if v < 0 or (c in VALID_CLASSES and v > cap):
-                    raise ValueError(f'{c.lower()}={v} 범위 밖 (A~D 0~{cap}, U 0 이상)')
-                new[c] = v
-        except (ValueError, TypeError) as e:
-            return 400, {'ok': False, 'message': f'잘못된 값: {e}'}
-        st = self.store.get_state()
-        with self._lock:
-            st.update({k: v for k, v in self._pending.items() if k in {c.lower() for c in INVENTORY_KEYS}})
-        old = {c: int(st.get(c.lower()) or 0) for c in INVENTORY_KEYS}
-        changed = [f'{c} {old[c]}→{new[c]}' for c in INVENTORY_KEYS if old[c] != new[c]]
-        if changed:
-            patch = {c.lower(): new[c] for c in INVENTORY_KEYS}
-            patch['updated_at'] = now_iso()
-            self._write_or_queue(patch, f'재고 설정 ({source})')
-        msg = f'재고 설정 ({source}): ' + (', '.join(changed) if changed else '바뀐 값 없음')
-        self.log.warn(f'[database] {msg}')
-        event = {'seq': 0, 'stamp': time.strftime('%Y-%m-%d %H:%M:%S'), 'job_id': self._log_job or '',
-                 'source': source if source in ('ui', 'monitor_gui') else 'ui', 'stage': self.stage,
-                 'level': 'WARN' if changed else 'INFO', 'code': 'INVENTORY_SET', 'box_id': '', 'class_id': '',
-                 'expected': -1, 'measured': -1, 'message': msg}
-        with self._log_lock:
-            self._append_log(self._log_job or 'no_job', event)
-        if changed:                              # 관제가 READY 화면·상태에 새 재고를 바로 보이게
-            ok, why = self.node.request_job_command('inventory_changed', 'db')
-            if not ok:
-                self.log.warn(f'[database] 관제에 재고 변경 알림 실패: {why} (다음 시작 때 DB 값을 읽으므로 작업에는 영향 없음)')
-        return 200, {'ok': True, 'message': msg, 'inventory': new}
-
     def get_inventory(self):
         st = self.store.get_state()
         with self._lock:
@@ -417,8 +365,8 @@ class DatabaseWork:
             def do_POST(self):
                 n = int(self.headers.get('Content-Length') or 0)
                 body = self.rfile.read(n) if n else b''
-                if self.path.strip('/') == 'inventory':      # 본문을 쓰는 건 재고 설정뿐
-                    self._send(*work.set_inventory(body, self.headers))
+                if self.path.strip('/') == 'inventory':
+                    self._send(405, {'ok': False, 'message': '재고는 로봇 실측 결과만 반영합니다'})
                     return
                 self._send(*work.handle_command(self.path.strip('/'), self.headers))
 

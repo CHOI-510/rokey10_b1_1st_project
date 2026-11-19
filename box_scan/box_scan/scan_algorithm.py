@@ -195,6 +195,7 @@ def parse_sim_boxes(text):
 
 
 SIM_HALF_MM = 20.0          # 가상 박스 반 폭
+SIM_PROBE_HALF_MM = 40.0    # 단순 sim_boxes 모델의 가상 윗면 반폭 (50mm 반원 탐침의 중심 추정용)
 SIM_TOUCH_MM = 25.0         # 탐색 중 이 거리 안이면 접촉 (핑거 두께 포함)
 SIM_CONTACT_FY = 4.0        # 가상 접촉 힘 [N]
 
@@ -837,7 +838,10 @@ class ScanAlgorithm:
 
     def _sim_probe(self, floor_z):
         p = self.robot.pose()
-        b = self._sim_box_at(p[0], p[1], SIM_HALF_MM)
+        # sim_boxes는 실제 형상을 넣지 않는 간략 모델이다. 접촉점에서
+        # PROBE_FAN_RADIUS_MM만큼 떨어진 위치를 찍는 중심 탐지 경로가
+        # 가상 윗면에 닿도록, 시뮬레이션 탐침 판정만 별도 반폭을 사용한다.
+        b = self._sim_box_at(p[0], p[1], SIM_PROBE_HALF_MM)
         if b is None or Z0 + b[2] < floor_z:
             self._move_z(floor_z)
             raise ProbeMiss('(sim) 하한까지 내려갔지만 윗면 없음')

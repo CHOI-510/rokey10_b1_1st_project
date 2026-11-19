@@ -17,16 +17,16 @@ control_interface.py — 관제 통신 계층
 
   scan(poses)                         -> (found: bool, err)
   judge(specs, poses)                 -> (result_class: str, err)
-  place(result_class, poses)          -> (count: int|None, placed_class: str, err)
+  place(result_class, poses, inventory) -> (count: int|None, placed_class: str, err)
     count = 적재가 실제로 놓은 위치로 잰 result_class 수량 (v0.4)
     placed_class = 실제로 놓은 곳. 보통 result_class, 구역이 꽉 차서 미분류로 보냈으면 'U' (11/18)
     poses = {'home_j': [6], 'measure_zone': [3], 'place_zones': {'A': [x, y], ...}} (DB 값).
             모든 Goal에 실어 보낸다.
-  inventory_check(poses)              -> (counts: dict, err)
+  inventory_check(poses, inventory)   -> (counts: dict, err)
     A/B/C/D를 순차 점검하고 네 결과가 모두 0~6 및 분류 일치일 때만 dict를 반환한다.
   get_job_data()                 -> (specs: list, inventory: dict, poses: dict|None, err)
     poses = 위와 같은 형식 (DB 값), DB에 없으면 None
-  update_inventory(box_id, inv)  -> err
+  update_inventory(box_id, inv)  -> err (시작 실측 및 종료 시에만 저장)
   set_job_status(status, reason='') -> err
     status: BEFORE / RUNNING / DONE / ERROR / STOPPED, reason: ERROR·STOPPED일 때 UI 표시 이유
 
@@ -106,7 +106,7 @@ from std_msgs.msg import String
 from box_interfaces.action import Judge, Place, Scan
 from box_interfaces.msg import LogEvent
 
-from box_comm.common import (LOG_LEVELS, LOG_TOPIC, ROBOT, ROBOT_OK_STATES, ROBOT_STATE, SAFETY, ROBOT_HINT_WAIT,
+from box_comm.common import (INVENTORY_KEYS, LOG_LEVELS, LOG_TOPIC, ROBOT, ROBOT_OK_STATES, ROBOT_STATE, SAFETY, ROBOT_HINT_WAIT,
                              SRV_JOB_COMMAND, STATUS_PERIOD_SEC, STATUS_TOPIC, log_qos, poses_from_msg,
                              robot_hint, robot_stop_code, status_qos, stack_capacity, VALID_CLASSES)
 from box_comm.convert import dict_to_inv, dict_to_poses, dict_to_spec, inv_to_dict, spec_to_dict
@@ -204,9 +204,10 @@ class ControlInterface(Node):
             return '', res.error_code or 'NO_ERROR_CODE'
         return res.result_class, None
 
-    def place(self, result_class, poses=None, timeout=None):
+    def place(self, result_class, poses=None, inventory=None, timeout=None):
         """-> (count, placed_class, err). placed_class = 실제로 놓은 곳 (구역 만재면 'U', 11/18)"""
-        goal = Place.Goal(result_class=result_class, poses=dict_to_poses(poses))
+        goal = Place.Goal(result_class=result_class, poses=dict_to_poses(poses),
+                          inventory=dict_to_inv(inventory or {c: 0 for c in INVENTORY_KEYS}))
         res, err = self._call_action(self._place, goal, 'place', timeout)
         if err:
             return None, '', err
@@ -214,30 +215,33 @@ class ControlInterface(Node):
             return None, '', res.error_code or 'NO_ERROR_CODE'
         return int(res.count), (res.placed_class or result_class), None
 
-    def inventory_check(self, poses):
+    def inventory_check(self, poses, inventory=None):
         """A/B/C/D를 순차 점검하고 네 결과가 모두 유효할 때만 반환한다."""
         poses_msg = dict_to_poses(poses)
         if not poses_msg.available:
             return {}, 'PLACE_FAILED'
 
         measured = {}
+        snapshot = dict(inventory or {c: 0 for c in INVENTORY_KEYS})
         for category in VALID_CLASSES:
-            goal = Place.Goal(result_class=category, poses=poses_msg)
+            goal = Place.Goal(result_class=category, poses=poses_msg,
+                              inventory=dict_to_inv(snapshot))
             result, err = self._call_action(
                 self._inventory_check, goal, 'inventory_check', INVENTORY_CHECK_TIMEOUT_SEC)
             if err:
-                return {}, err
+                return measured, err
             if not result.success:
-                return {}, result.error_code or 'NO_ERROR_CODE'
+                return measured, result.error_code or 'NO_ERROR_CODE'
             if result.placed_class != category:
                 self.get_logger().error(
                     f'[control] {category} 재고 점검 응답 불일치 또는 교정 결과 — 재고 반영 금지')
-                return {}, 'PLACE_FAILED'
+                return measured, 'PLACE_FAILED'
             if type(result.count) is not int or not 0 <= result.count <= stack_capacity():
                 self.get_logger().error(
                     f'[control] {category} 재고 점검 수량 범위 오류: {result.count!r}')
-                return {}, 'PLACE_FAILED'
+                return measured, 'PLACE_FAILED'
             measured[category] = result.count
+            snapshot[category] = result.count
         return measured, None
 
     # ==================================================================

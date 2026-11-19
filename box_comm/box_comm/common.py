@@ -58,7 +58,8 @@ VALID_CLASSES = ('A', 'B', 'C', 'D')     # 정상 분류: 분류 기준(specs)·
 #   - 판별은 'U'를 반환할 수 있다. 관제는 적재에 'U'로 Goal을 보낸다.
 #   - 적재는 미분류 투하 위치(place_config.json의 unclassified)에 놓기만 하고 수량을 재지 않는다.
 #     (쌓지 않으므로 높이로 셀 필요가 없음) → Place Result count = 0
-#   - 미분류 수량은 관제가 센다: 시작 시 U=0, 적재 성공 시 재고 U = 이전 + 1
+#   - 미분류 수량은 관제가 센다: 새 작업은 U=0, 판별 U 또는 구역 만재 투하 성공 시 U = 이전 + 1
+#   - DB에는 초기 실측 완료 및 작업 종료·중단 시점 스냅샷만 기록
 #   - 미분류 위치는 DB 고정 좌표가 아니라 적재 설정에 있다 (투하 자세까지 포함한 한 점이라서)
 # ----------------------------------------------------------------------
 UNCLASSIFIED = 'U'
@@ -403,6 +404,7 @@ LOG_LEVELS = ('INFO', 'WARN', 'ERROR')
 LOG_CODES = (
     'PART_LOG',         # 파트가 report.log()로 보낸 로그 (재시도, 정렬, 스캔 결과 등)
     'JOB_START',        # 작업 시작 (RUNNING)
+    'INVENTORY_CHECK_DONE',  # 시작 시 실측 재고 확인 및 초기 스냅샷 반영
     'JOB_DONE',         # 작업 완료 (요약 포함)
     'JOB_CANCELED',     # 시작 전 취소 (데이터 실패, 사전 점검 실패, q)
     'JOB_ERROR',        # 공정 오류로 중단 (status ERROR)
@@ -419,7 +421,6 @@ LOG_CODES = (
     'CONTROL_ERROR',    # 관제 코드 예외 → 작업 종료 후 대기로 (11/18)
     'CONTROL_WARN',     # 관제 대기·카운트다운 중 예상 못 한 오류 (터미널 키 입력 등) → 로그만 남기고 계속 (11/18)
     'ZONE_FULL',        # 구역 만재 → 적재가 미분류로 보냄 (재고: 그 구역 = 정원, U +1, 11/18)
-    # DB 노드가 직접 쓰는 줄: 'INVENTORY_SET' (시작 전 재고 설정, 바꾸기 전 → 후, 11/19)
     # DB 노드가 직접 쓰는 줄: 'UI_COMMAND' (웹 버튼 기록, seq 0)
 )
 LOG_QOS_DEPTH = 100     # reliable + transient_local: DB가 조금 늦게 켜져도 최근 100개는 받음
@@ -488,8 +489,7 @@ def robot_hint(state, connected=True, monitor='dsr') -> str:
 #   cancel : 작업 시작 전(BEFORE·PREFLIGHT·STANDBY)에만 받음 → 시작하지 않고 READY
 #   start_now : 카운트다운(STANDBY) 생략. 현장 관리자 전용 (관리자 GUI·터미널 s).
 #               웹 UI 경로(DB 노드 HTTP)는 받지 않고, 관제도 source='ui'면 거절한다.
-JOB_COMMANDS = ('start', 'cancel', 'start_now', 'inventory_changed')
-#   inventory_changed (11/19): DB 노드가 재고를 바꿨다고 알림 (UI·관리자 GUI 재고 설정) → 관제가 READY면 DB에서 다시 읽음
+JOB_COMMANDS = ('start', 'cancel', 'start_now')
 REMOTE_JOB_COMMANDS = ('start', 'cancel')     # 웹 UI(DB 노드 HTTP 창구)가 보낼 수 있는 명령
 SRV_JOB_COMMAND = '/job_command'
 

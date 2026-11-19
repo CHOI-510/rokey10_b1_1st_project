@@ -38,12 +38,9 @@ monitor_gui.py — 관제 모니터 GUI (관리자·개발 확인용)
 """
 
 import json
-import os
 import queue
 import threading
 import time
-import urllib.error
-import urllib.request
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk
@@ -237,30 +234,6 @@ class MonitorNode(Node):
             ('estop', bool(f.result() and f.result().success),
              f.result().message if f.result() else '응답 없음')))
 
-    def set_inventory_then_start(self, values):
-        """시작 전 재고 설정 (11/19): DB 노드 HTTP 창구(같은 노트북)에 저장 → 성공하면 시작 명령.
-        GUI가 멈추지 않게 별도 스레드에서. 결과는 ('inv', ok, message)로 화면에."""
-        def work():
-            body = json.dumps({**{k.lower(): int(v) for k, v in values.items()}, 'source': 'monitor_gui'}).encode()
-            req = urllib.request.Request(f'http://127.0.0.1:{os.environ.get("BOX_DB_PORT", "8765")}/inventory',
-                                         data=body, method='POST', headers={'Content-Type': 'application/json'})
-            if os.environ.get('BOX_START_TOKEN'):
-                req.add_header('X-Box-Token', os.environ['BOX_START_TOKEN'])
-            try:
-                with urllib.request.urlopen(req, timeout=6.0) as r:
-                    res = json.loads(r.read().decode() or '{}')
-            except urllib.error.HTTPError as e:
-                try:
-                    res = json.loads(e.read().decode() or '{}')
-                except ValueError:
-                    res = {'ok': False, 'message': f'HTTP {e.code}'}
-            except Exception as e:
-                res = {'ok': False, 'message': f'DB 노드 연결 안 됨 ({type(e).__name__}) — 재고 설정 없이 시작하려면 값을 그대로 두세요'}
-            self.q.put(('inv', bool(res.get('ok')), str(res.get('message', ''))))
-            if res.get('ok'):
-                self.job_command('start')
-        threading.Thread(target=work, daemon=True).start()
-
     def job_command(self, command):
         if not self._cli_job.service_is_ready():
             self.q.put(('job', command, False, '/job_command 없음 (관제가 안 떠 있거나 auto_start 모드)'))
@@ -279,6 +252,7 @@ class MonitorGui:
         self.root, self.node, self.q = root, node, q
         self.status = None              # 마지막 /control_status
         self.status_at = 0.0
+        self.standby_deadline = None
         self.inferred = 'BEFORE'        # /control_status 없을 때 추정 단계
         self.job_id = ''
         self.job_started = None         # monotonic
@@ -334,8 +308,10 @@ class MonitorGui:
     def tile(self, parent, label, value='—', fg='text'):
         """회색 둥근 타일 (라벨 + 큰 값)"""
         fr = tk.Frame(parent, bg=C['tile'])
-        tk.Label(fr, text=label, font=self.f['s'], fg=C['dim'], bg=C['tile'], anchor='w').pack(
-            fill='x', padx=12, pady=(8, 0))
+        heading = tk.Label(fr, text=label, font=self.f['s'], fg=C['dim'], bg=C['tile'], anchor='w')
+        heading.pack(fill='x', padx=12, pady=(8, 0))
+        if label == '남은 시간':
+            self.t_time_heading = heading
         val = tk.Label(fr, text=value, font=self.f['tile'], fg=C[fg], bg=C['tile'], anchor='w')
         val.pack(fill='x', padx=12, pady=(0, 8))
         return fr, val
@@ -422,7 +398,7 @@ class MonitorGui:
         tiles = tk.Frame(sb, bg=C['card'])
         tiles.pack(fill='x')
         t1, self.t_done = self.tile(tiles, '처리 완료', '—')
-        t2, self.t_time = self.tile(tiles, '경과 시간', '—')
+        t2, self.t_time = self.tile(tiles, '남은 시간', '—')
         t3, self.t_cond = self.tile(tiles, '대기 상태', '—')
         t4, self.t_box = self.tile(tiles, '현재 박스', '—')
         t5, self.t_retry = self.tile(tiles, '집기 실패 재스캔', '—', 'orange')
@@ -572,6 +548,11 @@ class MonitorGui:
 
     def _on_status(self, st):
         self.status, self.status_at = st, time.monotonic()
+        if st.get('state') == 'STANDBY':
+            self.standby_deadline = float(st.get('standby_until') or
+                                          (time.time() + max(0.0, float(st.get('standby_sec') or 0))))
+        elif st.get('state') != 'STANDBY':
+            self.standby_deadline = None
         if st.get('job_id') and st['job_id'] != self.job_id:
             self._new_job(st['job_id'])
         state = st.get('state')
@@ -644,11 +625,6 @@ class MonitorGui:
                                                 'msg': f'{what} 요청 → {"수락" if ok else "거절"}: {message}',
                                                 'meta': 'JOB_COMMAND'})
 
-    def _on_inv(self, ok, message):
-        self._add_row('WARN' if ok else 'ERROR', {'time': time.strftime('%H:%M:%S'), 'src': 'monitor',
-                                                 'msg': (message if ok else f'재고 설정 실패 → 시작 안 함: {message}'),
-                                                 'meta': 'INVENTORY_SET'})
-
     def _on_estop(self, ok, message):
         self._add_row('WARN' if ok else 'ERROR', {'time': time.strftime('%H:%M:%S'), 'src': 'monitor',
                                                  'msg': f'비상정지 요청 → {message}', 'meta': 'ESTOP_SENT'})
@@ -656,6 +632,7 @@ class MonitorGui:
     # ---------------- 주기 갱신 ----------------
     def _tick(self):
         now = time.monotonic()
+        now_wall = time.time()
         self.date_lbl.config(text=time.strftime('%m월 %d일 ').lstrip('0') + '월화수목금토일'[time.localtime().tm_wday] + '요일')
         self.clock_lbl.config(text=time.strftime('%H:%M:%S'))
 
@@ -673,8 +650,8 @@ class MonitorGui:
             text = STATE_LABEL.get(state, state)
             color = STATE_COLOR.get(state, 'dim')
             sub = state + ('' if live else ' · 로그로 추정')
-            if live and state == 'STANDBY' and st.get('standby_sec'):
-                remain = st['standby_sec'] - (now - self.status_at)
+            if live and state == 'STANDBY' and self.standby_deadline is not None:
+                remain = self.standby_deadline - now_wall
                 if remain > 0:
                     sub = f'시작까지 {remain:.0f}초 · 관제 터미널 q/s · UI 취소'
         self.state_lbl.config(text=text)
@@ -712,14 +689,22 @@ class MonitorGui:
                               + (f' [{st["class_id"]}]' if st.get('class_id') else ''))
         else:
             self.t_box.config(text='—')
-        if self.job_started is not None:
+        if state == 'STANDBY' and self.standby_deadline is not None:
+            remain = max(0, int(self.standby_deadline - now_wall + 0.999))
+            self.t_time_heading.config(text='남은 시간')
+            self.t_time.config(text=f'{remain // 60:02d}:{remain % 60:02d}')
+        elif self.job_started is not None:
+            self.t_time_heading.config(text='경과 시간')
             sec = int((self.job_ended or now) - self.job_started)
             self.t_time.config(text=f'{sec // 3600:d}:{sec // 60 % 60:02d}:{sec % 60:02d}' if sec >= 3600
                                else f'{sec // 60:02d}:{sec % 60:02d}')
         else:
+            self.t_time_heading.config(text='남은 시간')
             self.t_time.config(text='—')
         stop = st.get('stop')
-        if state in ('ERROR', 'STOPPED') or stop:
+        if st.get('inventory_needs_recheck'):
+            self.t_cond.config(text='재고 재측정 필요', fg=C['red'])
+        elif state in ('ERROR', 'STOPPED') or stop:
             self.t_cond.config(text='정지' if (state == 'STOPPED' or stop) else '오류', fg=C['red'])
         elif state == 'CANCELED':
             self.t_cond.config(text='시작 취소', fg=C['orange'])
@@ -861,73 +846,11 @@ class MonitorGui:
                      '바로 시작', '대기 후 시작', 'teal'):
             self.node.job_command('start_now')
 
-    def _ask_start(self):
-        """시작 확인창 + 지금 재고 설정 (11/19). [시작] → 재고 dict, [취소]/닫기 → None.
-        A~D 0~정원, U 0 이상. [전부 0] 버튼. 적재가 실제로 재면 그 값으로 덮어써짐 (다르면 COUNT_MISMATCH 로그)."""
-        cur = {k: int((self.status or {}).get('inventory', {}).get(k, 0) or 0) for k in INVENTORY_KEYS}
-        win = tk.Toplevel(self.root)
-        win.title('작업 시작')
-        win.configure(bg=C['card'])
-        win.resizable(False, False)
-        win.transient(self.root)
-        result = {'values': None}
-        tk.Label(win, text='작업 시작', font=self.f['h'], fg=C['teal'], bg=C['card']).pack(anchor='w', padx=24, pady=(20, 6))
-        tk.Label(win, text='작업을 시작하시겠습니까?\n사전 점검 후 카운트다운이 끝나면 로봇이 움직입니다.\n\n'
-                           '지금 쌓여 있는 재고 (실제와 다르면 맞춰 주세요 — 적재하면 실제로 잰 값으로 바뀜)',
-                 font=self.f['n'], fg=C['text'], bg=C['card'], justify='left').pack(anchor='w', padx=24, pady=(0, 10))
-        grid = tk.Frame(win, bg=C['card'])
-        grid.pack(anchor='w', padx=24, pady=(0, 6))
-        vars_ = {}
-
-        def bump(k, d):
-            hi = CAPACITY if k != 'U' else 999
-            vars_[k].set(max(0, min(hi, vars_[k].get() + d)))
-        for row, k in enumerate(INVENTORY_KEYS):
-            vars_[k] = tk.IntVar(value=cur[k])
-            name = '미분류' if k == 'U' else f'{k} 구역'
-            tk.Label(grid, text=name, font=self.f['nb'], fg=CLASS_COLOR[k], bg=C['card'], width=8, anchor='w').grid(
-                row=row, column=0, pady=3)
-            tk.Button(grid, text='−', font=self.f['btn'], width=3, relief='flat', bg=C['tile'], cursor='hand2',
-                      command=lambda k=k: bump(k, -1)).grid(row=row, column=1, padx=(0, 6))
-            tk.Label(grid, textvariable=vars_[k], font=self.f['tile'], fg=C['text'], bg=C['card'], width=3).grid(
-                row=row, column=2)
-            tk.Button(grid, text='+', font=self.f['btn'], width=3, relief='flat', bg=C['tile'], cursor='hand2',
-                      command=lambda k=k: bump(k, +1)).grid(row=row, column=3, padx=(6, 10))
-            tk.Label(grid, text=f'/ {CAPACITY}' if k != 'U' else '', font=self.f['s'], fg=C['dim'], bg=C['card']).grid(
-                row=row, column=4, sticky='w')
-        tk.Button(win, text='전부 0', font=self.f['sb'], relief='flat', bg=C['tile'], fg=C['text'], cursor='hand2',
-                  padx=10, pady=4, command=lambda: [v.set(0) for v in vars_.values()]).pack(anchor='w', padx=24, pady=(4, 14))
-        bar = tk.Frame(win, bg=C['card'])
-        bar.pack(fill='x', padx=24, pady=(0, 20))
-
-        def close(ok):
-            result['values'] = {k: v.get() for k, v in vars_.items()} if ok else None
-            win.destroy()
-        tk.Button(bar, text='취소', font=self.f['btn'], fg=C['text'], bg=C['tile'], relief='flat', bd=0,
-                  padx=16, pady=8, cursor='hand2', command=lambda: close(False)).pack(side='right')
-        tk.Button(bar, text='시작', font=self.f['btn'], fg='white', bg=C['teal'], activebackground=C['teal'],
-                  activeforeground='white', relief='flat', bd=0, padx=16, pady=8, cursor='hand2',
-                  command=lambda: close(True)).pack(side='right', padx=(0, 8))
-        win.bind('<Escape>', lambda _e: close(False))
-        win.protocol('WM_DELETE_WINDOW', lambda: close(False))
-        win.update_idletasks()
-        x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_width()) // 2
-        y = self.root.winfo_rooty() + (self.root.winfo_height() - win.winfo_height()) // 3
-        win.geometry(f'+{max(x, 0)}+{max(y, 0)}')
-        win.grab_set()
-        win.focus_set()
-        self.root.wait_window(win)
-        return result['values'], cur
-
     def _job_btn(self):
         mode = self._job_mode
         if mode == 'start':
-            values, cur = self._ask_start()
-            if values is None:
-                return
-            if values != cur:                  # 재고를 바꿨으면 DB에 먼저 저장 → 성공하면 시작
-                self.node.set_inventory_then_start(values)
-            else:
+            if self._ask('작업 시작', '10분 후 작업이 시작됩니다. 작업공간 내 사람 또는 파손 위험이 있는 물품이 없는지 확인해주세요.',
+                         '확인', '취소', 'teal'):
                 self.node.job_command('start')
         elif mode == 'cancel':
             self.node.job_command('cancel')

@@ -10,15 +10,15 @@
 #   ./scripts/fake_run.sh -p progress_timeout_sec:=5.0     # 관제 파라미터 추가 (기본값 대신 이걸 씀)
 #   BOX_COUNT=6 CLASSES="A,A,B,C,D,D" ./scripts/fake_run.sh
 #   DB_ARGS="-p estop_at:=2" ./scripts/fake_run.sh          # 2번째 박스 뒤 UI 비상정지 흉내
-#   DB_ARGS="-p start_inventory:=[0,5,0,0,0]" ./scripts/fake_run.sh   # 재고 B=5로 시작 (불일치 시험)
 #   DB_STORE=auto ./scripts/fake_run.sh                     # Supabase 키가 있으면 Supabase로 (기본은 파일, 실제 데이터 보호)
 #   RESIDENT=1 ./scripts/fake_run.sh                        # 관제 상주 모드 (READY에서 시작 대기, 11/18)
 #   (11/18: fake_database는 없어지고 DB는 항상 database_main. 파일 모드 ~/box_logs/fake_db/*.json,
-#    매번 재고 0으로 시작 = -p start_inventory:=[0,0,0,0,0]. DB_MAIN은 더 이상 필요 없음)
+#    시작 재고는 fake_inventory_check 결과를 사용. DB_MAIN은 더 이상 필요 없음)
 #     → 다른 터미널: curl -s -X POST localhost:8765/start  /  .../cancel  (관제 터미널 s: 시작, READY에서 q: 종료)
 #     RESIDENT 없이 실행하면 관제는 -p auto_start:=true (예전처럼 바로 한 번 실행하고 끝)
 #     → 다른 터미널: curl -s localhost:8765/state | python3 -m json.tool,  curl -s -X POST localhost:8765/estop
 #   PLACE_ARGS="-p miscount_at:=2" ./scripts/fake_run.sh    # 재고 불일치 시험
+#   INVENTORY_ARGS="-p fake_inventory_counts:=[0,3,0,0]" PLACE_ARGS="-p fake_start:=[0,3,0,0]" ./scripts/fake_run.sh  # 초기 실측 B=3
 #   MOTION=1 BOX_COUNT=2 ./scripts/fake_run.sh               # 로봇이 실제로 움직임 (아래 참고)
 #   PLACE_MAIN=1 SIM=1 BOX_COUNT=4 ./scripts/fake_run.sh     # 적재만 실제 코드(place_main), 에뮬레이터
 #   PLACE_MAIN=1 SIM=1 BOX_COUNT=3 CLASSES="A,U,B" ./scripts/fake_run.sh   # 미분류(U) 포함
@@ -58,7 +58,7 @@
 #
 # 환경 변수 (기본값)
 #   BOX_COUNT=4  CLASSES="A,B,B,D"  DELAY=0.5
-#   DB_ARGS=""  SCAN_ARGS=""  JUDGE_ARGS=""  PLACE_ARGS=""
+#   DB_ARGS=""  INVENTORY_ARGS=""  SCAN_ARGS=""  JUDGE_ARGS=""  PLACE_ARGS=""
 #
 # 작업 중 다른 터미널에서 정지 시험
 #   ros2 param set /control fake_robot_state 5      # 로봇 안전 정지 흉내
@@ -101,7 +101,7 @@ else
 fi
 
 # 다른 터미널에서 이미 시험 중이면 멈춤 (서로 노드를 끄는 사고 방지)
-RUNNING_PATTERN='((box_control/(fake_scan|fake_judge|fake_place|test_scan_motion|test_judge_motion|test_place_motion|control)|box_place/place_main|box_scan/scan_main|box_judge/judge_main|box_database/(database_main|database_template))( |$))'
+RUNNING_PATTERN='((box_control/(fake_inventory_check|fake_scan|fake_judge|fake_place|test_scan_motion|test_judge_motion|test_place_motion|control)|box_place/(inventory_check|place_main)|box_scan/scan_main|box_judge/judge_main|box_database/(database_main|database_template))( |$))'
 if pgrep -f "$RUNNING_PATTERN" >/dev/null; then
     if [ "${FORCE:-0}" = 1 ]; then
         echo "[fake_run] FORCE=1 → 실행 중인 노드를 끄고 시작합니다."
@@ -175,11 +175,13 @@ start_bg() {      # start_bg 이름 실행파일 [인자...]
 }
 
 # DB 노드 (실제 코드). 기본 파일 모드 → ~/box_logs/fake_db/state.json, state_updates.jsonl
-#   시험마다 재고 0으로 시작 (DB_ARGS의 start_inventory가 있으면 그게 우선 — 뒤에 온 값이 이김)
+#   파일 모드 DB. 시작 재고는 fake_inventory_check가 반환한다.
 echo "[fake_run] DB 노드 database_main (store=${DB_STORE:-file})"
 # shellcheck disable=SC2086
-PKG=box_database start_bg database database_main --ros-args -p store:="${DB_STORE:-file}" \
-    -p start_inventory:="[0,0,0,0,0]" $DB_ARGS
+PKG=box_database start_bg database database_main --ros-args -p store:="${DB_STORE:-file}" $DB_ARGS
+# 시작 실재고 점검 Action 서버 (기본 fake 측정값은 A~D 모두 0)
+# shellcheck disable=SC2086
+start_bg inventory_check fake_inventory_check --ros-args $INVENTORY_ARGS
 if [ "${MOTION:-0}" = 1 ]; then
     echo "[fake_run] MOTION=1 → 로봇이 실제로 움직입니다 (test_*_motion). 작업공간을 비우세요."
     # shellcheck disable=SC2086
@@ -231,8 +233,8 @@ fi
 # 서버 4개가 뜰 때까지 대기 (최대 40초). 그 사이 죽은 노드가 있으면 로그를 보여 주고 멈춤
 # 확인은 ros2 CLI(데몬) 대신 각 노드 로그의 '준비' 줄로 한다 — 데몬이 걸려도 영향 없음, 바로 판단.
 #   box_comm interface가 서버를 띄우면 남기는 줄: "[scan] Action 서버 /scan 준비", "[database] Service 서버 준비"
-NAMES=(database scan judge place)
-READY=('Service 서버 준비' 'Action 서버 /scan 준비' 'Action 서버 /judge 준비' 'Action 서버 /place 준비')
+NAMES=(database inventory_check scan judge place)
+READY=('Service 서버 준비' 'Action 서버 /inventory_check 준비' 'Action 서버 /scan 준비' 'Action 서버 /judge 준비' 'Action 서버 /place 준비')
 echo -n "[fake_run] 서버 준비 대기 "
 all_ready=0
 for _ in $(seq 1 80); do

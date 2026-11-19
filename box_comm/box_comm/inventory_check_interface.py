@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Place Action 재사용, /inventory_check 전용. count=0은 정상 빈 자리다."""
+"""Place Action 재사용, /inventory_check 전용. 현재 재고와 DB 좌표를 받고 실측 count를 반환한다."""
 from box_interfaces.action import Place
 from box_comm import part_server
 from box_comm.common import STAGES, VALID_CLASSES, PartError, stack_capacity

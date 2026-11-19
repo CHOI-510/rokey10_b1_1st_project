@@ -1,6 +1,7 @@
-# v0.4: place measures the real stack and reports the count (no inventory in Goal)
+# place receives the current inventory snapshot and reports the measured count.
 string result_class    # "A" / "B" / "C" / "D" / "U" (v0.5: U = drop at unclassified spot, not counted by place)
 FixedPoses poses       # home_j, measure_zone, place_zones (from DB via control)
+Inventory inventory    # current control-side snapshot; returned counts are applied by control
 ---
 bool success
 int32 count            # measured count of result_class in its zone after placing (this box included)

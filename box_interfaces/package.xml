@@ -2,8 +2,8 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>box_interfaces</name>
-  <version>0.5.0</version>
-  <description>box_project interface contract v0.2 (msg / srv / action) - managed by control</description>
+  <version>0.7.0</version>
+  <description>box_project interface contract v0.7 (msg / srv / action) - managed by control</description>
   <maintainer email="todo@todo.todo">TODO</maintainer>
   <license>TODO</license>
 

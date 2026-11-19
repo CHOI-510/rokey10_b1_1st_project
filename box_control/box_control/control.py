@@ -232,6 +232,8 @@ class Control:
         self.specs = []
         self.poses = default_poses()       # 고정 좌표. GetJobData 후 DB 값으로 무조건 덮어씀 → 모든 Goal에 실어 보냄
         self.inventory = {c: 0 for c in INVENTORY_KEYS}     # A~D + U(미분류)
+        self._inventory_available = False
+        self._inventory_needs_recheck = False
         self.box_seq = 0
         self.job_id = ''                   # 작업마다 새로 (_new_job). READY에서는 마지막 작업 ID 유지
         self._current_class = ''          # 지금 박스의 판별 결과 (중단 이유 표시용)
@@ -249,9 +251,10 @@ class Control:
         self._start_req = threading.Event()
         self._cancel_req = threading.Event()
         self._now_req = threading.Event()          # 카운트다운 생략 (현장 관리자)
-        self._inv_req = threading.Event()          # DB 재고가 바뀜 (시작 전 재고 설정, 11/19) → READY에서 다시 읽음
         self._now_source = ''
         self._start_source = ''
+        self._start_requested_at = None
+        self._start_requested_at_wall = None
         self._cancel_source = ''
         io.set_job_command_handler(self.on_job_command)
 
@@ -281,8 +284,16 @@ class Control:
             box_seq=self.box_seq, box_id=self._current_box, class_id=self._current_class,
             inventory=self.inventory, mismatches=len(self.count_mismatches),
             retries=self.grasp_retry_total,
-            standby_sec=self.start_delay if self.state == State.STANDBY else 0,
+            standby_sec=self._standby_remaining() if self.state == State.STANDBY else 0,
+            standby_until=(self._start_requested_at_wall + self.start_delay
+                           if self.state == State.STANDBY and self._start_requested_at_wall is not None else None),
+            inventory_needs_recheck=self._inventory_needs_recheck,
             reason=reason)
+
+    def _standby_remaining(self):
+        if self._start_requested_at is None:
+            return self.start_delay
+        return max(0.0, self.start_delay - (time.monotonic() - self._start_requested_at))
 
     # ------------------------------------------------------------------
     # 메인 시퀀스
@@ -290,6 +301,8 @@ class Control:
     def run(self):
         if self.auto_start:
             self._start_source = 'terminal'
+            self._start_requested_at = time.monotonic()
+            self._start_requested_at_wall = time.time()
             self.run_job_safe()
             return
         self.io.set_log_context(job_id=f'idle_{self._boot_id}')    # 작업 밖 로그(알람 등)용 파일
@@ -309,6 +322,9 @@ class Control:
         """작업 한 번. 관제 코드 자체에서 예상 못 한 예외가 나도 관제는 죽지 않는다 (11/18).
         → 로봇 정지(move_stop) + 진행 중인 파트 Goal cancel → DB에 ERROR : Control error — 이유 → READY로."""
         try:
+            if self._start_requested_at is None:
+                self._start_requested_at = time.monotonic()
+                self._start_requested_at_wall = time.time()
             self.run_job()
         except Exception as e:                           # KeyboardInterrupt(Ctrl+C)는 그대로 통과
             self.on_control_error(e)
@@ -356,10 +372,14 @@ class Control:
         self.set_state(State.BEFORE)
         self.log.info(f'[control] job_id={self.job_id} (시작: {self._start_source or "-"})')
         self.io.set_log_context(job_id=self.job_id)
-        self.specs, _db_inventory, db_poses, err = self.io.get_job_data()
+        self._inventory_available = False
+        self._inventory_needs_recheck = False
+        self.specs, db_inventory, db_poses, err = self.io.get_job_data()
         if err:
             return self.cancel_start(f'작업 데이터를 받지 못함 ({err})')
-        self.inventory = {c: 0 for c in INVENTORY_KEYS}
+        self.inventory = {c: int(db_inventory.get(c, 0)) for c in INVENTORY_KEYS}
+        self.inventory[UNCLASSIFIED] = 0       # 새 작업의 미분류 투하 구역은 0부터 집계
+        self._inventory_available = True       # 직전 DB 재고를 기준값으로 보존, 실측 후 A~D 교체
         self.log.info(f'[control] specs {len(self.specs)}개; 시작 재고는 로봇 점검으로 확인합니다')
         self.apply_db_poses(db_poses)
 
@@ -385,16 +405,22 @@ class Control:
 
         # 시작 재고는 DB 값이 아니라 실물 점검 결과를 기준으로 한다.
         self.set_state(State.INVENTORY_CHECK)
-        measured, err = self.io.inventory_check(self.poses)
+        measured, err = self.io.inventory_check(self.poses, self.inventory)
         if err:
+            self.inventory.update(measured)     # 완료된 분류는 새 실측값, 나머지는 기존 DB 기준값
+            self._inventory_needs_recheck = True
+            self.publish_status()
             return self.abort_job(err)
         inventory = {c: 0 for c in INVENTORY_KEYS}
         inventory.update(measured)
         self.inventory = inventory
+        self._inventory_needs_recheck = False
         self.publish_status()
         self.log.info(f'[control] 시작 재고 점검 완료: {self.inventory}')
+        if err := self.io.update_inventory(f'{self.job_id}_initial', self.inventory):
+            return self.abort_job(err)
         self.io.log_event('INFO', 'INVENTORY_CHECK_DONE',
-                          f'시작 재고 점검 완료: {self.inventory}')
+                          f'시작 재고 점검 완료, DB 반영: {self.inventory}')
 
         while True:
             box_id = f'{self.job_id}_{self.box_seq + 1:03d}'   # 이번 박스 (적재까지 끝나야 확정)
@@ -428,7 +454,7 @@ class Control:
 
             # ---- 적재 ----
             self.set_state(State.PLACING)
-            measured, placed_class, err = self.io.place(result_class, self.poses)
+            measured, placed_class, err = self.io.place(result_class, self.poses, self.inventory)
             if err:
                 if (err := self.on_part_error(err, 'place')) is None:
                     continue
@@ -448,8 +474,6 @@ class Control:
                 self.log.info(f'[control] 적재 측정 수량: {result_class} {measured}개')
                 inventory_new = self.verify_inventory(box_id, result_class, measured)
                 done_msg = f'{result_class} 적재 완료 → {result_class} {inventory_new[result_class]}개'
-            if err := self.io.update_inventory(box_id, inventory_new):
-                return self.abort_job(err)
             self.inventory = inventory_new
             self.publish_status()                  # 재고 바뀜 → GUI 갱신
             self.grasp_retries = 0                 # 박스 하나를 끝까지 처리 → 연속 집기 실패 횟수 초기화
@@ -459,6 +483,8 @@ class Control:
         # DONE
         self.io.arm_monitor(False)
         self.io.set_log_context(box_id='', class_id='')
+        if err := self.io.update_inventory(f'{self.job_id}_final', self.inventory):
+            self.log.error(f'[control] 최종 재고 DB 기록 실패: {err}')
         self.set_state(State.DONE)
         if err := self.io.set_job_status(State.DONE.value):
             self.log.error(f'[control] DONE 상태 DB 기록 실패: {err} '
@@ -521,7 +547,7 @@ class Control:
     # ------------------------------------------------------------------
     def wait_for_start(self):
         """start_delay 동안 카운트다운. (True, '') = 시작, (False, 이유) = 취소 (터미널 q / UI 취소 / 정지)."""
-        delay = self.start_delay
+        delay = self._standby_remaining()
         how = ('중단하려면 q(또는 UI 취소), 바로 시작하려면 s 를 누르세요.' if sys.stdin.isatty()
                else '중단은 UI·관리자 GUI의 시작 취소, 바로 시작은 관리자 GUI 버튼으로 (launch라 터미널 키 없음).')
         print(
@@ -586,9 +612,6 @@ class Control:
                     if self._start_req.is_set():
                         print(f'  시작 명령 받음 ({self._start_source})', flush=True)
                         return True
-                    if self._inv_req.is_set():
-                        self._inv_req.clear()
-                        self.reload_inventory()
                     key = keys.read(0.2)
                     if keys.error and keys.error != warned:
                         warned = keys.error
@@ -596,22 +619,14 @@ class Control:
                     if key == 's':
                         with self._cmd_lock:
                             self._start_source = 'terminal'
+                            self._start_requested_at = time.monotonic()
+                            self._start_requested_at_wall = time.time()
                             self._start_req.set()
                     elif key == 'q':
                         return False
                 except Exception as e:          # 대기 중 예상 못 한 오류 → 주의 로그만, 계속 대기 (Ctrl+C는 통과)
                     self.warn_and_continue('대기', f'{type(e).__name__}: {e}')
                     time.sleep(1.0)
-
-    def reload_inventory(self):
-        """READY에서 DB 재고를 다시 읽어 화면(/control_status)에 반영. 작업 시작 때도 어차피 다시 읽는다."""
-        _specs, inventory, _poses, err = self.io.get_job_data()
-        if err:
-            self.log.warn(f'[control] 재고 다시 읽기 실패: {err} (시작 때 다시 읽음)')
-            return
-        self.log.info(f'[control] 재고 설정 반영: {self.inventory} → {inventory}')
-        self.inventory = inventory
-        self.publish_status()
 
     def _record_idle_stop(self, stop):
         """READY에서 비상정지 → 정지할 작업은 없지만 DB status를 STOPPED로 (UI 작업 상태 빨간불 '비상정지').
@@ -634,6 +649,8 @@ class Control:
                 if self._start_req.is_set():
                     return False, '이미 시작 명령을 받음'
                 self._start_source = source
+                self._start_requested_at = time.monotonic()
+                self._start_requested_at_wall = time.time()
                 self._start_req.set()
                 return True, '시작 명령 수락 — 사전 점검 후 카운트다운'
             if command == 'start_now':
@@ -644,11 +661,6 @@ class Control:
                 self._now_source = source
                 self._now_req.set()
                 return True, '카운트다운 생략 — 바로 시작'
-            if command == 'inventory_changed':        # DB 노드: 시작 전 재고 설정 (11/19)
-                if state != State.READY:
-                    return False, f'대기(READY)가 아님 (관제 단계: {now}) — 시작 때 DB 값을 읽음'
-                self._inv_req.set()
-                return True, '재고 다시 읽음'
             if command == 'cancel':
                 if state not in _CANCELABLE:
                     return False, f'취소할 카운트다운 없음 (관제 단계: {now})'
@@ -756,11 +768,21 @@ class Control:
         if detail:
             reason += f' — {detail}'
 
+        # Any mid-job interruption can leave an item in the gripper, on the
+        # measuring zone, or between a physical placement and its result.
+        # Keep the last confirmed controller snapshot, but flag it for recount.
+        self._inventory_needs_recheck = True
+        if self._inventory_available:
+            if inv_err := self.io.update_inventory(f'{self.job_id}_final', self.inventory):
+                self.log.error(f'[control] 중단 시 최종 재고 DB 기록 실패: {inv_err}')
+
         msg = f'[control] {where} 단계에서 중단: {err}'
         stage = ''
         if action:
             stage, sec = self.io.progress(action)
             msg += f' | /{action} 마지막 stage="{stage}" ({sec:.1f}초 전)'
+        if self._inventory_needs_recheck:
+            reason += ' — 재고 재측정 필요 (작업 중단으로 현재 수량이 확정되지 않음)'
         self.log.error(msg)
 
         self.set_state(State.STOPPED if status == 'STOPPED' else State.ERROR)

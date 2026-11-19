@@ -10,8 +10,8 @@ system.launch.py — 전체 실행 (로봇 bringup + 탐지·판별·적재 + DB
 mode에 따라 바뀌는 것
   | mode            | 로봇 bringup              | 탐지              | 판별        | 적재                 | 그리퍼(BOX_GRIPPER) |
   | real            | 실제 192.168.1.100        | scan_main         | judge_main  | place_main + inventory_check | modbus     |
-  | virtual         | 에뮬레이터 127.0.0.1       | scan_main 가상 박스 | fake_judge  | place_main 가상 접촉 + fake 점검 | fake |
-  | fake:=true      | 없음 (robot_monitor=fake) | fake_scan         | fake_judge  | fake_place + fake 점검 | fake             |
+  | virtual         | 에뮬레이터 127.0.0.1       | scan_main 가상 박스 | fake_judge  | place_main 가상 접촉 + 경로 이동 fake 점검 | fake |
+  | fake:=true      | 없음 (robot_monitor=fake) | fake_scan         | fake_judge  | fake_place + 이동 없는 fake 점검 | fake             |
 
 그 밖의 인자 (기본값)
   bringup:=true        false면 로봇 bringup은 따로 띄운 것을 씀 (sodvir/sodreal 터미널을 따로 쓸 때)
@@ -116,14 +116,13 @@ def generate_launch_description():
         node('box_control', 'fake_place', when(is_fake)),
         # 시작 재고 점검 (실물 모드만 로봇 접촉 점검, 나머지는 fake 응답)
         node('box_place', 'inventory_check', when(not_fake, is_real), [{'robot_setup': 'on'}]),
-        node('box_control', 'fake_inventory_check', when_any(is_fake, is_virtual)),
+        node('box_control', 'fake_inventory_check', when(is_fake), [{'fake_move_robot': False}]),
+        node('box_control', 'fake_inventory_check', when(is_virtual), [{'fake_move_robot': True}]),
     ]
 
-    # fake:=true는 시험이라 DB에 재고 0을 설정한다. 시작 재고는 모든 모드에서 점검 결과를 사용한다.
-    #   (DB 노드는 Supabase에서는 start_inventory를 무시함 — 실제 데이터 보호)
     database = node('box_database', 'database_main', parameters=[{
         'store': LaunchConfiguration('db_store'),
-        'start_inventory': _expr("[0, 0, 0, 0, 0] if (", *is_fake, ") else [-1]")}])
+    }])
 
     control = node(
         'box_control', 'control',

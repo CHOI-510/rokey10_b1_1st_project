@@ -57,7 +57,8 @@ ros2 pkg list | grep box_       # 7개가 나오면 성공
 터미널을 따로 열 때는 5개를 열고, 각 터미널에서 먼저 `source ~/ws/install/setup.bash`를 합니다.
 
 ```bash
-ros2 run box_database database_main --ros-args -p store:=file -p start_inventory:="[0,0,0,0,0]"
+ros2 run box_database database_main --ros-args -p store:=file
+ros2 run box_control fake_inventory_check
 ros2 run box_control fake_scan --ros-args -p box_count:=3 -p fake_delay_sec:=0.3
 ros2 run box_control fake_judge
 ros2 run box_control fake_place
@@ -145,7 +146,8 @@ class JudgeAlgorithm:
 ```python
 class PlaceAlgorithm:
     def __init__(self, node, robot): ...
-    def place(self, result_class, poses, report) -> int:       # v0.4
+    def place(self, result_class, poses, report) -> int:       # v0.7 Goal 재고는 self.inventory로 접근
+        # self.inventory: Place Goal을 받은 시점의 관제 재고 스냅샷 (A~D, U)
         # result_class = 'B'
         # 매번 1단부터 박스를 쥔 채 내려가며 놓을 자리를 찾고(최상층 위 높이에서 닿으면 다음 단),
         # 놓은 위치로 잰 수량을 반환: count_from_position(단, 층)  예: 2단 2층 → 5
@@ -162,6 +164,7 @@ class PlaceAlgorithm:
 ```python
 def get_job_data(self) -> tuple:           # (specs, inventory) 반환
 def update_inventory(self, box_id, inventory) -> None:
+    # 시작 실측값과 작업 종료·중단 최종 스냅샷만 기록 (박스마다 쓰지 않음)
 def set_job_status(self, status, reason) -> None:
     # status: 'BEFORE' / 'RUNNING' / 'DONE' / 'ERROR' / 'STOPPED'
     # reason: ERROR·STOPPED일 때 이유 ('Fail to pick', 'EMERGENCY STOP'), 그 밖에는 ''
@@ -209,8 +212,8 @@ def scan(self, poses, report) -> bool:
 ```
 
 - 판별의 길이 측정은 물품 방향에 따라 가로·세로·높이가 달라질 수 있어 번호로 구분합니다. 템플릿의 `classify()`는 측정한 길이 3개와 기준 W·D·H를 각각 **크기순으로 정렬해서** 비교하므로, 측정 순서가 바뀌어도 판별에는 영향이 없습니다.
-- 적재가 잰 수량은 관제가 검증합니다. 기대값(**적재 전 재고의 `result_class` 수량 + 1**)과 다르면 관제가 **측정값**으로 DB에 반영하고 경고를 남깁니다 (v0.4: 실제 적재 상태가 기준).
-- 미분류 `U`(v0.5)는 쌓지 않으므로 적재가 세지 않습니다. 관제가 적재 성공마다 재고 `U`를 +1 해서 DB에 보냅니다.
+- 적재가 잰 수량은 관제가 검증합니다. 기대값(**적재 전 재고의 `result_class` 수량 + 1**)과 다르면 관제가 **측정값**으로 메모리 재고를 갱신하고 경고를 남깁니다 (v0.4: 실제 적재 상태가 기준). DB에는 시작 실측 후와 작업 종료·중단 때만 재고 스냅샷을 기록합니다.
+- 미분류 `U`(v0.5)는 매 작업 0부터 시작합니다. 판별 결과 U 또는 구역 만재로 U에 보낸 물품은 관제가 메모리에서 U를 +1 합니다.
 
 ### 2-3. 실패 처리
 
