@@ -1,4 +1,3 @@
-```python
 #!/usr/bin/env python3
 """
 place_algorithm.py — 적재 알고리즘 (담당: 정수현)
@@ -722,4 +721,3 @@ class PlaceAlgorithm:
         self._drop_unclassified(home, release_pose, approach_z, report)
         self._pending_done()
         return UNCLASSIFIED, full
-```
