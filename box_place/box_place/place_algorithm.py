@@ -129,6 +129,15 @@ def validate_config(c):
             raise ValueError(f'잘못된 {k}')
     if not c['min_search_z'] < c['travel_z']:
         raise ValueError('최저 Z는 이송 높이보다 낮아야 합니다')
+    c.setdefault('force_start_bottom_z', 85.0)
+    c.setdefault('force_start_clearance_mm', 10.0)
+    for key in ('force_start_bottom_z', 'force_start_clearance_mm'):
+        if type(c[key]) not in (int, float) or not math.isfinite(c[key]):
+            raise ValueError(f'유한한 수 필요: {key}')
+    if not c['min_search_z'] < c['force_start_bottom_z'] < c['travel_z']:
+        raise ValueError('힘제어 전환 바닥 Z는 하한과 이송 높이 사이여야 합니다')
+    if c['force_start_clearance_mm'] <= 0:
+        raise ValueError('힘제어 전환 여유는 양수여야 합니다')
     # 적재 규칙(층·자리 수)은 공용 STACK 하나가 기준 → 여기서 채워 넣는다 (설정 파일에는 적지 않음)
     # 예전 설정에 키가 남아 있으면 STACK과 같을 때만 허용 (다르면 어느 쪽이 맞는지 모호하므로 시작 안 함)
     for key, shared in (('max_layers', STACK['levels']), ('slot_count', STACK['max_tiers'])):
@@ -192,6 +201,10 @@ class PlaceAlgorithm:
         config_path = Path(node.get_parameter('place_config').value).expanduser()
         self.log.info(f'[place] 설정 파일: {config_path}')
         self.c = validate_config(json.loads(config_path.read_text()))
+        self.log.info(
+            f"[PRE-DESCENT ENABLED] 기본 박스 바닥 Z={self.c['force_start_bottom_z']:.1f}mm, "
+            f"만재 접촉 여유={self.c['force_start_clearance_mm']:.1f}mm → movel 후 힘제어"
+        )
         self.learn_empty = bool(node.get_parameter('learn_empty_slots').value)
         self.show_force = bool(node.get_parameter('show_force').value)
         self.sim_contact = bool(node.get_parameter('sim_contact').value)
@@ -350,6 +363,37 @@ class PlaceAlgorithm:
         pose = [x, y, self.c['travel_z'], *self.c['classes'][category]['orientation']]
         self._move(pose)
         return pose
+
+    def _move_to_force_start(self, category, approach, reference, report):
+        """박스 바닥 기준 전환 높이까지 직선 하강. 첫 접촉 기준은 기존 층 판정과 같은 기준.
+
+        만재 자리도 매번 탐색하므로 reference + 3 * height 위에서 힘제어를 시작한다.
+        기준 미학습 시에는 빠른 하강을 생략한다. 물체 위치/높이가 등록 범위라는 전제다.
+        """
+        if reference is None:
+            report.log('[PRE-DESCENT SKIP] 첫 접촉 기준 미설정: 상부에서 바로 힘제어 시작', 'WARN')
+            return list(approach)
+        c = self.c
+        if type(self._hold_off) not in (int, float) or not math.isfinite(self._hold_off):
+            raise PartError('PLACE_FAILED', '파지 TCP 높이 보정값 오류')
+        full_contact_bottom_z = reference + c['max_layers'] * c['classes'][category]['height_mm']
+        bottom_z = max(c['force_start_bottom_z'],
+                       full_contact_bottom_z + c['force_start_clearance_mm'])
+        tcp_z = bottom_z + self._hold_off
+        actual = self.robot.pose()
+        # 움직일 여유가 없으면 이송 높이에서 시작한다. 만재 접촉 높이 자체가
+        # 현재 높이 이상이면 직선 이동/힘제어를 보내지 않는다.
+        if actual[2] - self._hold_off <= full_contact_bottom_z:
+            raise PartError('PLACE_FAILED', '상부 높이가 예상 만재 접촉 높이보다 낮습니다')
+        if tcp_z >= actual[2]:
+            report.log('[PRE-DESCENT SKIP] 빠른 하강 여유 없음: 현재 상부에서 힘제어 시작')
+            return [*approach[:2], actual[2], *approach[3:]]
+        self._ensure_holding(f'{category} 힘제어 전환 높이 이동 전')
+        target = [*approach[:2], tcp_z, *approach[3:]]
+        report.log(f'[PRE-DESCENT] {category}: movel → TCP Z={tcp_z:.2f} '
+                   f'(박스 바닥 Z={bottom_z:.2f}), 이후 힘제어')
+        self._move(target)
+        return target
 
     def release(self):
         self._grip(True)
@@ -615,6 +659,7 @@ class PlaceAlgorithm:
             self._pending(phase='placing', tier=tier)
             self._ensure_holding(f'{result_class} {tier}번 자리 하강 전')
             reference = references[tier-1]
+            approach = self._move_to_force_start(result_class, approach, reference, report)
             if self.sim_contact:
                 z_tcp = self._sim_descend(result_class, tier, approach, reference)
             else:
@@ -664,3 +709,4 @@ class PlaceAlgorithm:
         self._drop_unclassified(home, release_pose, approach_z, report)
         self._pending_done()
         return UNCLASSIFIED, full
+```
