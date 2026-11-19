@@ -83,7 +83,7 @@ def validate_config():
         raise ValueError('PROBE_START_Z는 SCAN_Z보다 높아야 함')
     if not PROBE_FAN_ANGLES_DEG or any(not -90 <= a <= 90 for a in PROBE_FAN_ANGLES_DEG):
         raise ValueError('반원 탐침 각도는 -90~90도여야 함')
-    if not (0 < PROBE_FAN_RADIUS_MM < PROBE_RAY_MAX_MM and PROBE_RAY_STEP_MM > 0
+    if not (0 < PROBE_FAN_RADIUS_MM < PROBE_RAY_FIRST_MM <= PROBE_RAY_MAX_MM
             and PROBE_RAY_BISECTIONS > 0 and PROBE_TOP_TOL_MM > 0 and PROBE_TOP_EXTRA_MM >= 0):
         raise ValueError('반원·직선 탐침 거리 또는 허용차 설정 오류')
     if not math.isfinite(GRIP_WIDTH_RANGE_MARGIN_MM) or GRIP_WIDTH_RANGE_MARGIN_MM < 0:
@@ -147,12 +147,13 @@ def probe_direction(scan_direction, angle):
 
 
 def locate_probe_edge(distance_limit, sample_top):
-    """반경부터 전진해 찾은 경계 구간을 이분 탐색한다."""
+    """첫 직선 거리를 찍고, 같은 윗면이면 상한까지 전진해 경계를 찾는다."""
     inside = PROBE_FAN_RADIUS_MM
-    while inside < distance_limit:
-        outside = min(distance_limit, inside + PROBE_RAY_STEP_MM)
+    outside = min(distance_limit, PROBE_RAY_FIRST_MM)
+    while inside < outside:
         if sample_top(outside):
             inside = outside
+            outside = distance_limit
             continue
         for _ in range(PROBE_RAY_BISECTIONS):
             middle = (inside + outside) / 2.0
