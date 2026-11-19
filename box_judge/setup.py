@@ -21,6 +21,7 @@ setup(
             'judge_template = box_judge.judge_template:main',
             'judge_main = box_judge.judge_main:main',          # 실제 판별 (judge_algorithm.py)
             'rg2_sync_grip = box_judge.rg2_sync_grip:main',    # RG2 폭 한 번 재기 (단독 시험)
+            'regrip_align_test = box_judge.regrip_align_test:main',   # 대각 잡기 보정 시험 (단독)
         ],
     },
 )
