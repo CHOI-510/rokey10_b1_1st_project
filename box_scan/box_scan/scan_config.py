@@ -8,12 +8,8 @@ scan_config.py — 탐지 설정값 (담당: 김창균)
 """
 
 # 일반 이동 속도 · 가속도
-HOME_VEL, HOME_ACC = 60.0, 80.0                  # 관절 deg/s, deg/s²
-APPROACH_VEL, APPROACH_ACC = 60.0, 80.0          # 탐색 시작점 관절 이동
-LINEAR_VEL, LINEAR_ACC = 80.0, 100.0             # 일반 직선 이동 mm/s (회전 20 deg/s)
-TRANSFER_JOINT_VEL, TRANSFER_JOINT_ACC = 60.0, 80.0
-GRIP_ROTATE_VEL, GRIP_ROTATE_ACC = 45.0, 90.0    # 집기 각도 회전 deg/s
-TILT_VEL, TILT_ACC = 60.0, 80.0                  # 탐색 기울기 회전 deg/s, deg/s²
+ANGULAR_VEL, ANGULAR_ACC = 60.0, 80.0  # 관절 이동과 제자리 자세 조절 [deg/s, deg/s²]
+LINEAR_VEL, LINEAR_ACC = 80.0, 100.0    # 일반 직선 이동과 탐색 줄 사이 X 이동 [mm/s, mm/s²]
 
 # 탐색 경로 · 외력 보정 조건 (보정표와 한 세트 — 바꾸면 보정표 다시 측정)
 X_LANES = tuple(270.0 + 30.0*i for i in range(11))
@@ -22,13 +18,10 @@ SCAN_Z = 35.0
 SCAN_VEL, SCAN_ACC = 120.0, 200.0  # mm/s, mm/s²
 FORCE_LIMIT = 2.5            # 보정 외력 |Fy - 기준| [N]. 한 샘플이 한계 이상이면 즉시 정지
 SAMPLE_PERIOD = 0.05         # 기준 데이터 측정 주기와 동일
-# BACKWARD_TILT_DEG = 20.0
 BACKWARD_TILT_DEG = 15.0
 
 # 탐색 재개 · 대기
-# SCAN_RESUME_Y_OFFSET_MM = -50.0   # 접촉 Y에서 BASE Y -50mm 지점부터 다시
-# RESUME_IGNORE_MM = 15.0           # 재출발 첫 15mm는 접촉 판정 제외
-SCAN_RESUME_Y_OFFSET_MM = -60.0   # 접촉 Y에서 BASE Y -60mm 지점부터 다시
+SCAN_RESUME_Y_OFFSET_MM = -60.0   # 정지점에서 진행 방향 뒤로 이동할 거리(절댓값 사용)
 RESUME_IGNORE_MM = 40.0           # 재출발 첫 40mm는 접촉 판정 제외
 
 BETWEEN_LINES_WAIT = 0.2
@@ -39,17 +32,12 @@ Z0 = 0.0                     # 탐색 작업대 바닥 TCP Z (원본 값, 높이
 TABLE_Z = 29.8               # 탐색 작업대 바닥 TCP Z 실측 (11/18: 20mm 박스 윗면 49.8). TCP = 닫힌 핑거 끝이라 윗면 Z − 박스 높이
                              #   sync 집기 하한(TABLE_Z + 2.6)과 측정존 내려놓기 예상 높이에 씀
 MAX_OBJECT_HEIGHT_MM = 80.0
-GRIP_DEPTH_FROM_TOP_MM = 15.0   # sync 집기: 핑거 끝 = 윗면 − 이 값 (11/18 25로 했다가 실물에서 바닥에 박아 15로)
-                                #   이게 작업대 바닥(Z0) + 2.6보다 낮으면(얇은 박스) Z0 + 2.6에서 집음 → Z0가 실제 바닥이어야 함
-SYNC_SLOW_FROM_MM = 15.0        # 적재처럼: 집는 높이 이 위까지 보통 속도, 그 아래는 천천히 (적재 PICK_SLOW_FROM_MM)
-SYNC_SLOW_VEL = 30.0            # [mm/s] (적재 PICK_SLOW_VEL)
-                                # (원본: 윗면 높이의 50%. 박스가 겹쳐 있으면 아래 박스까지 걸려서 바꿈)
-MIN_GRIP_ABOVE_Z0_MM = 2.0
+GRIP_DEPTH_FROM_TOP_MM = 15.0   # 핑거 끝 목표 깊이. 하한은 TABLE_Z + SYNC_GRIP의 2.6 mm
 GRIP_RETRY_ANGLES = (0.0, 45.0, 90.0)    # 원본 실로봇 시험값 (11/17 팀 논의안 0/+30/-30은 보류)
 GRIP_RETRY_LIFT_MM = 20.0
 PICK_LIFT_MM = 20.0
 PICK_HOLD_SECONDS = 0.2
-GRIP_FORCE_N = None          # 잡는 힘 [N]. None = common.GRIPPER['grip_force_n'] (40 N, 원본 WebLogic 값과 같음). 탐지만 다르게 하려면 숫자로 (11/18 공용값으로)
+GRIP_FORCE_N = 40.0          # 잡는 힘 [N]. 원본 WebLogic 설정값 40 N (RG2 최대). None이면 common GRIPPER grip_force_n(40 N) (11/18)
 OPEN_WIDTH_MM = None         # None이면 common.GRIPPER['open_width_mm']
 
 # 높이 탐지 실패 반복 (부채꼴 4점 모두 높이 없음)
@@ -62,8 +50,7 @@ HEIGHT_MISS_SAME_SPOT_MM = 30.0
 PROBE_START_Z = 100.0
 PROBE_POINTS = ((25.0, 0.0), (60.0, 20.0), (60.0, 0.0), (60.0, -20.0))   # (반지름 mm, 각도 deg)
 PROBE_CLEARANCE_MM = 20.0
-# PROBE_MIN_Z = 50.0          # 높이 탐지 하강 하한 (BASE TCP Z, mm). 하한까지 윗면이 없으면 다음 후보로 이동
-PROBE_MIN_Z = 40.0
+PROBE_MIN_Z = 40.0          # 높이 탐지 하강 하한 (베이스 TCP Z, mm)
 PROBE_CONTACT_N = 8.0        # 기준 대비 Fz 증가량
 PROBE_FORCE_TARGET_N = 25.0
 PROBE_SAFETY_N = 50.0
@@ -85,9 +72,9 @@ PROBE_TIMEOUT_REFERENCE_MM_S = 5.0
 
 # 측정존 내려놓기 (판별 _pos_descent 방식: 천천히 내려가다 닿으면 멈추고 놓음)
 #   측정존 z = 측정존 바닥 Z (Goal poses['measure_zone'][2], 11/18 세 파트 통일)
-#   예상 접촉 TCP Z = 측정존 z + (집은 높이 - Z0)  (박스가 작업대 바닥에 있었다고 가정, 겹친 박스면 이보다 낮게 닿음)
+#   예상 접촉 TCP Z = 측정존 z + (파지 TCP Z - TABLE_Z)  (박스가 작업대 바닥에 있었다고 가정, 겹친 박스면 이보다 낮게 닿음)
 PLACE_SLOW_FROM_MM = 15.0    # 예상 접촉 높이 위 이 거리부터 천천히
-PLACE_MIN_ABOVE_FLOOR_MM = 2.0   # 하강 하한 = 측정존 z + 이 값 (핑거 끝이 바닥에 닿기 전). 못 닿으면 거기서 놓음
+PLACE_MIN_ABOVE_FLOOR_MM = 2.0   # 핑거 끝 최소 높이 = 측정존 바닥 Z + 이 값. TCP 하한은 핑거 끝 오프셋을 보정
 PLACE_DESCENT_VEL = 10.0     # mm/s
 PLACE_CONTACT_N = 5.0        # Fz 증가량
 PLACE_SAFETY_N = 25.0
