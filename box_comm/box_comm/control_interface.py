@@ -5,7 +5,7 @@ control_interface.py — 관제 통신 계층
 관리: 관제(정쓰).
 
 하는 일
-  - Action 클라이언트 3개 (/scan, /judge, /place)
+  - Action 클라이언트 4개 (/inventory_check, /scan, /judge, /place)
   - Service 클라이언트 3개 (/get_job_data, /update_inventory, /set_job_status)
   - ROS 메시지 ↔ 파이썬 값 변환
   - 실행 구조: MultiThreadedExecutor는 별도 스레드에서 spin,
@@ -22,6 +22,8 @@ control_interface.py — 관제 통신 계층
     placed_class = 실제로 놓은 곳. 보통 result_class, 구역이 꽉 차서 미분류로 보냈으면 'U' (11/18)
     poses = {'home_j': [6], 'measure_zone': [3], 'place_zones': {'A': [x, y], ...}} (DB 값).
             모든 Goal에 실어 보낸다.
+  inventory_check(poses)              -> (counts: dict, err)
+    A/B/C/D를 순차 점검하고 네 결과가 모두 0~6 및 분류 일치일 때만 dict를 반환한다.
   get_job_data()                 -> (specs: list, inventory: dict, poses: dict|None, err)
     poses = 위와 같은 형식 (DB 값), DB에 없으면 None
   update_inventory(box_id, inv)  -> err
@@ -68,14 +70,15 @@ control_interface.py — 관제 통신 계층
 
   진행 추적 (Feedback 기반)
   progress(name)                 -> (last_stage: str, seconds_since: float)
-    name = 'scan' / 'judge' / 'place'
+    name = 'inventory_check' / 'scan' / 'judge' / 'place'
     Goal을 보내면 stage='goal_sent'로 초기화, Feedback이 올 때마다 갱신.
     → "어느 단계에서 몇 초째 멈춰 있는지" 확인용. abort_job이 중단 이유에 붙인다.
     progress_timeout_sec > 0이면 주기 감시가 이 값으로 NO_PROGRESS 정지를 판단한다.
     오래 걸리는 단계는 파트가 report.keepalive()로 시각을 갱신해야 오인 정지가 나지 않는다.
 
   Action 대기 시간
-    scan/judge/place는 timeout=None(무한 대기)으로 호출된다. 대기를 끝내는 것은
+    scan/judge/place는 timeout=None(무한 대기)으로 호출된다. inventory_check는 분류별 480초 제한이다.
+    대기를 끝내는 것은
     정지 요청, 파트 노드 죽음(PART_DIED, 항상 켜짐), progress_timeout_sec(켰을 때, '살아 있는데 멈춤')이다.
 
   관제 내부 코드 (파트가 보내는 코드가 아님)
@@ -105,7 +108,7 @@ from box_interfaces.msg import LogEvent
 
 from box_comm.common import (LOG_LEVELS, LOG_TOPIC, ROBOT, ROBOT_OK_STATES, ROBOT_STATE, SAFETY, ROBOT_HINT_WAIT,
                              SRV_JOB_COMMAND, STATUS_PERIOD_SEC, STATUS_TOPIC, log_qos, poses_from_msg,
-                             robot_hint, robot_stop_code, status_qos)
+                             robot_hint, robot_stop_code, status_qos, stack_capacity, VALID_CLASSES)
 from box_comm.convert import dict_to_inv, dict_to_poses, dict_to_spec, inv_to_dict, spec_to_dict
 from box_interfaces.srv import EmergencyStop, GetJobData, JobCommand, SetJobStatus, UpdateInventory
 from rcl_interfaces.msg import ParameterDescriptor
@@ -115,6 +118,7 @@ SERVER_WAIT_SEC = 3.0        # 서버가 떠 있는지 기다리는 시간
 SRV_EMERGENCY_STOP = '/emergency_stop'
 WAIT_SLICE = 0.05            # Action 결과를 기다리며 정지 요청을 확인하는 간격
 PART_LOST_SEC = 3.0          # 실행 중인 파트 Action 서버가 이만큼 안 보이면 PART_DIED (11/18)
+INVENTORY_CHECK_TIMEOUT_SEC = 480.0
 
 
 class ControlInterface(Node):
@@ -125,6 +129,7 @@ class ControlInterface(Node):
         self._scan = ActionClient(self, Scan, '/scan', callback_group=cb)
         self._judge = ActionClient(self, Judge, '/judge', callback_group=cb)
         self._place = ActionClient(self, Place, '/place', callback_group=cb)
+        self._inventory_check = ActionClient(self, Place, '/inventory_check', callback_group=cb)
 
         self._get_job = self.create_client(GetJobData, '/get_job_data', callback_group=cb)
         self._update_inv = self.create_client(UpdateInventory, '/update_inventory', callback_group=cb)
@@ -175,7 +180,7 @@ class ControlInterface(Node):
         self.create_timer(STATUS_PERIOD_SEC, self._republish_status, callback_group=cb)
 
         self.get_logger().info(
-            f'[control] 클라이언트 준비 (Action 3, Service 3, 로그 토픽 {LOG_TOPIC}) | '
+            f'[control] 클라이언트 준비 (Action 4, Service 3, 로그 토픽 {LOG_TOPIC}) | '
             f'비상정지 {SRV_EMERGENCY_STOP} | 작업 명령 {SRV_JOB_COMMAND} | robot_monitor={self._monitor} | '
             f'progress_timeout_sec={self._progress_timeout or "off"}')
 
@@ -208,6 +213,32 @@ class ControlInterface(Node):
         if not res.success:
             return None, '', res.error_code or 'NO_ERROR_CODE'
         return int(res.count), (res.placed_class or result_class), None
+
+    def inventory_check(self, poses):
+        """A/B/C/D를 순차 점검하고 네 결과가 모두 유효할 때만 반환한다."""
+        poses_msg = dict_to_poses(poses)
+        if not poses_msg.available:
+            return {}, 'PLACE_FAILED'
+
+        measured = {}
+        for category in VALID_CLASSES:
+            goal = Place.Goal(result_class=category, poses=poses_msg)
+            result, err = self._call_action(
+                self._inventory_check, goal, 'inventory_check', INVENTORY_CHECK_TIMEOUT_SEC)
+            if err:
+                return {}, err
+            if not result.success:
+                return {}, result.error_code or 'NO_ERROR_CODE'
+            if result.placed_class != category:
+                self.get_logger().error(
+                    f'[control] {category} 재고 점검 응답 불일치 또는 교정 결과 — 재고 반영 금지')
+                return {}, 'PLACE_FAILED'
+            if type(result.count) is not int or not 0 <= result.count <= stack_capacity():
+                self.get_logger().error(
+                    f'[control] {category} 재고 점검 수량 범위 오류: {result.count!r}')
+                return {}, 'PLACE_FAILED'
+            measured[category] = result.count
+        return measured, None
 
     # ==================================================================
     # DB (Service)

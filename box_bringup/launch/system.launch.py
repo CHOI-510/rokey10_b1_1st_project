@@ -9,9 +9,9 @@ system.launch.py — 전체 실행 (로봇 bringup + 탐지·판별·적재 + DB
 
 mode에 따라 바뀌는 것
   | mode            | 로봇 bringup              | 탐지              | 판별        | 적재                 | 그리퍼(BOX_GRIPPER) |
-  | real            | 실제 192.168.1.100        | scan_main         | judge_main  | place_main           | modbus              |
-  | virtual         | 에뮬레이터 127.0.0.1       | scan_main 가상 박스 | fake_judge  | place_main 가상 접촉 | fake                |
-  | fake:=true      | 없음 (robot_monitor=fake) | fake_scan         | fake_judge  | fake_place           | fake                |
+  | real            | 실제 192.168.1.100        | scan_main         | judge_main  | place_main + inventory_check | modbus     |
+  | virtual         | 에뮬레이터 127.0.0.1       | scan_main 가상 박스 | fake_judge  | place_main 가상 접촉 + fake 점검 | fake |
+  | fake:=true      | 없음 (robot_monitor=fake) | fake_scan         | fake_judge  | fake_place + fake 점검 | fake             |
 
 그 밖의 인자 (기본값)
   bringup:=true        false면 로봇 bringup은 따로 띄운 것을 씀 (sodvir/sodreal 터미널을 따로 쓸 때)
@@ -27,6 +27,8 @@ mode에 따라 바뀌는 것
 관제는 상주 모드: launch가 뜨면 READY에서 시작 명령(웹 UI / 관리자 GUI)을 기다린다.
   launch로 띄우면 터미널 키(s/q)는 들어가지 않는다 → 시작·취소·바로 시작은 관리자 GUI 버튼으로.
   비상정지: 웹 UI / 관리자 GUI / 펜던트. 전체 종료: launch 터미널에서 Ctrl+C 한 번.
+실물 첫 사용 전에는 교정 안내에 따라 8개 자리의 빈 바닥 Z 기준을 먼저 저장한다.
+system.launch는 일반 점검 모드로 /inventory_check 서버를 띄우고, 시작 명령 뒤 첫 /scan 전에 점검한다.
 ================================================================
 """
 import os
@@ -112,9 +114,12 @@ def generate_launch_description():
         node('box_place', 'place_main', when(not_fake, is_real)),
         node('box_place', 'place_main', when(not_fake, is_virtual), [{'sim_contact': True}]),
         node('box_control', 'fake_place', when(is_fake)),
+        # 시작 재고 점검 (실물 모드만 로봇 접촉 점검, 나머지는 fake 응답)
+        node('box_place', 'inventory_check', when(not_fake, is_real), [{'robot_setup': 'on'}]),
+        node('box_control', 'fake_inventory_check', when_any(is_fake, is_virtual)),
     ]
 
-    # fake:=true는 시험이라 매번 재고 0으로 시작 (fake_place도 0에서 셈 → 불일치 안 남). 실제·에뮬레이터는 DB 값 그대로
+    # fake:=true는 시험이라 DB에 재고 0을 설정한다. 시작 재고는 모든 모드에서 점검 결과를 사용한다.
     #   (DB 노드는 Supabase에서는 start_inventory를 무시함 — 실제 데이터 보호)
     database = node('box_database', 'database_main', parameters=[{
         'store': LaunchConfiguration('db_store'),

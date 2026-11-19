@@ -58,7 +58,7 @@ VALID_CLASSES = ('A', 'B', 'C', 'D')     # 정상 분류: 분류 기준(specs)·
 #   - 판별은 'U'를 반환할 수 있다. 관제는 적재에 'U'로 Goal을 보낸다.
 #   - 적재는 미분류 투하 위치(place_config.json의 unclassified)에 놓기만 하고 수량을 재지 않는다.
 #     (쌓지 않으므로 높이로 셀 필요가 없음) → Place Result count = 0
-#   - 미분류 수량은 관제가 센다: 적재 성공 시 재고 U = 이전 + 1 → DB UpdateInventory
+#   - 미분류 수량은 관제가 센다: 시작 시 U=0, 적재 성공 시 재고 U = 이전 + 1
 #   - 미분류 위치는 DB 고정 좌표가 아니라 적재 설정에 있다 (투하 자세까지 포함한 한 점이라서)
 # ----------------------------------------------------------------------
 UNCLASSIFIED = 'U'
@@ -138,6 +138,11 @@ def error_text(code: str, part: str = '', class_id: str = '') -> str:
 SETUP_STAGE = 'robot_setup'     # box_comm이 run() 전에 TCP·툴을 확인할 때 보내는 stage
 
 STAGES = {
+    'inventory_check': (
+        SETUP_STAGE,
+        'moving',
+        'placing',
+    ),
     'scan': (
         SETUP_STAGE,
         'space_scan',            # 작업공간 스캔·물품 감지

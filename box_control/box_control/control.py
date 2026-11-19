@@ -21,6 +21,7 @@ control.py — 관제 메인 (작업 시퀀스 · 재고 반영 · 중단 처리
 
 작업 한 번의 흐름 (인터페이스 문서 2.5 관제 상태)
   BEFORE → GetJobData → PREFLIGHT(사전 점검) → STANDBY(시작 대기) → RUNNING
+  → INVENTORY_CHECK(A/B/C/D 시작 수량 측정)
   → [SCANNING → SCAN_DONE → JUDGING → JUDGE_DONE → PLACING → PLACE_DONE
      → UpdateInventory] 반복
   → /scan found=False → DONE
@@ -32,7 +33,7 @@ control.py — 관제 메인 (작업 시퀀스 · 재고 반영 · 중단 처리
   - 단계 상태는 관제 내부에만 둔다 (DB에는 BEFORE/RUNNING/DONE만).
   - 상태 값은 영어(State), 로그에는 한글 표시를 함께 붙인다.
   - 고정 좌표(HOME, 측정존)는 DB가 기준이다. GetJobData로 받은 값을
-    모든 Action Goal(/scan, /judge, /place)에 실어 보내고, 파트는 그 값으로 움직인다.
+    모든 Action Goal(/inventory_check, /scan, /judge, /place)에 실어 보내고, 파트는 그 값으로 움직인다.
   - box_id는 '<작업 시작 시각>_<순번>' (예: 20261114_130512_001).
     관제를 다시 실행해도 이전 작업의 box_id와 겹치지 않는다.
   - 재고 검증 (v0.4): 적재는 실제로 놓은 위치로 잰 result_class 수량(count)만 돌려준다.
@@ -41,9 +42,10 @@ control.py — 관제 메인 (작업 시퀀스 · 재고 반영 · 중단 처리
     DB에는 항상 '측정값'을 반영한다 (실제 적재 상태가 기준). 다르면 경고 로그를 남기고
     작업을 계속한다. 다른 클래스 수량은 그대로 둔다. (불일치 기록을 DB에 남길지는 DB/UI와 협의 중)
     단, 수량이 1보다 작게 오면(적재가 수량을 안 채움) 반영하지 않는다 → 다음 같은 클래스 적재 때 바로잡힘.
-  - 미분류 U (v0.5): 재고는 DB에서 A, B, C, D, U 다섯 개를 받는다 (U는 DB 초기값 0).
-    판별이 'U'를 내면 적재에 'U'로 보낸다. 적재는 미분류 위치에 놓기만 하고
-    수량을 재지 않는다(count 0). 관제가 적재 성공 후 재고 U = 이전 + 1로 DB에 반영한다 (검증 없음).
+  - 시작 재고: DB 응답의 재고값은 사용하지 않는다. 시작 대기 후 A~D 구역을 측정하고,
+    U는 0으로 시작한다. 적재 결과에서 실제 수량을 계속 반영하며, 구역 6개가 찬 뒤의 물품은 U로 보낸다.
+  - 미분류 U (v0.5): 판별이 'U'를 내면 적재에 'U'로 보낸다. 적재는 미분류 위치에 놓기만 하고
+    수량을 재지 않는다(count 0). 관제가 적재 성공 후 재고 U = 이전 + 1로 집계한다 (검증 없음).
   - 집기 실패 (11/17): 파트가 GRIP_RETRY번 다시 집어 보고 포기하면 GRASP_FAILED로 Goal을 끝낸다.
     관제는 작업을 끝내지 않는다. 판별·적재였으면 CLEARING(측정존 비우기, recovery.py — 관제가 로봇을 움직임),
     탐지였으면 바로, BOX_RETRY 경고를 남긴 뒤 공간 스캔부터 다시 한다 (재고·박스 번호 그대로).
@@ -58,8 +60,9 @@ control.py — 관제 메인 (작업 시퀀스 · 재고 반영 · 중단 처리
     control_interface의 request_stop()이 맡는다 (비상정지 요청, 로봇 상태 이상, 진행 없음).
     정지 요청이 있었으면 파트가 돌려준 CANCELED 대신 정지 원인 코드를 DB에 남긴다.
   - 이벤트 로그: /event_log 토픽으로 보내기만 한다 (DB가 저장·UI 표시).
-    관제 이벤트(JOB_START / BOX_DONE / COUNT_MISMATCH / JOB_ERROR / JOB_STOPPED / JOB_CANCELED /
-    JOB_DONE)와 파트가 report.log()로 보낸 것(PART_LOG, control_interface가 자동으로 넘김).
+    관제 이벤트(JOB_START / INVENTORY_CHECK_DONE / BOX_DONE / COUNT_MISMATCH /
+    JOB_ERROR / JOB_STOPPED / JOB_CANCELED / JOB_DONE)와 파트가 report.log()로 보낸 것
+    (PART_LOG, control_interface가 자동으로 넘김).
 
 사전 점검 (PREFLIGHT) — box_control/preflight.py
   분류 기준, 고정 좌표, 적재 구역, 로봇 상태를 점검한다.
@@ -128,6 +131,7 @@ class State(str, Enum):
     PREFLIGHT = 'PREFLIGHT'     # 사전점검 (관제 내부)
     STANDBY = 'STANDBY'         # 시작대기 (카운트다운, 관제 내부)
     RUNNING = 'RUNNING'         # 작업중   (DB 기록)
+    INVENTORY_CHECK = 'INVENTORY_CHECK'  # 시작 재고 점검
     SCANNING = 'SCANNING'       # 스캔중
     SCAN_DONE = 'SCAN_DONE'     # 스캔완료
     JUDGING = 'JUDGING'         # 판별중
@@ -150,6 +154,7 @@ _STATE_LABEL = {
     State.PREFLIGHT: '사전점검',
     State.STANDBY: '시작대기',
     State.RUNNING: '작업중',
+    State.INVENTORY_CHECK: '시작 재고 점검',
     State.SCANNING: '스캔중',
     State.SCAN_DONE: '스캔완료',
     State.JUDGING: '판별중',
@@ -212,6 +217,7 @@ class _Keys:
 
 
 _STATE_ACTION = {
+    State.INVENTORY_CHECK: 'inventory_check',
     State.SCANNING: 'scan', State.SCAN_DONE: 'scan',
     State.JUDGING: 'judge', State.JUDGE_DONE: 'judge',
     State.PLACING: 'place', State.PLACE_DONE: 'place',
@@ -346,14 +352,15 @@ class Control:
 
     def run_job(self):
         self._new_job()
-        # BEFORE: 물품값과 재고 받아오기
+        # BEFORE: 분류 기준·좌표를 받고, 시작 재고는 뒤에서 실물 점검
         self.set_state(State.BEFORE)
         self.log.info(f'[control] job_id={self.job_id} (시작: {self._start_source or "-"})')
         self.io.set_log_context(job_id=self.job_id)
-        self.specs, self.inventory, db_poses, err = self.io.get_job_data()
+        self.specs, _db_inventory, db_poses, err = self.io.get_job_data()
         if err:
             return self.cancel_start(f'작업 데이터를 받지 못함 ({err})')
-        self.log.info(f'[control] specs {len(self.specs)}개, inventory={self.inventory}')
+        self.inventory = {c: 0 for c in INVENTORY_KEYS}
+        self.log.info(f'[control] specs {len(self.specs)}개; 시작 재고는 로봇 점검으로 확인합니다')
         self.apply_db_poses(db_poses)
 
         # PREFLIGHT: 시작 전 점검 (box_control/preflight.py)
@@ -373,8 +380,21 @@ class Control:
         self.io.arm_monitor(True)                        # 작업 중에만 로봇 이상·진행 없음을 정지로 처리
         if err := self.io.set_job_status(State.RUNNING.value):
             return self.abort_job(err)
-        self.io.log_event('INFO', 'JOB_START', f'작업 시작 ({self._start_source or "-"}, 재고 {self.inventory})',
-                          box_id='')
+        self.io.log_event('INFO', 'JOB_START',
+                          f'작업 시작 ({self._start_source or "-"}) — 초기 재고 점검 시작', box_id='')
+
+        # 시작 재고는 DB 값이 아니라 실물 점검 결과를 기준으로 한다.
+        self.set_state(State.INVENTORY_CHECK)
+        measured, err = self.io.inventory_check(self.poses)
+        if err:
+            return self.abort_job(err)
+        inventory = {c: 0 for c in INVENTORY_KEYS}
+        inventory.update(measured)
+        self.inventory = inventory
+        self.publish_status()
+        self.log.info(f'[control] 시작 재고 점검 완료: {self.inventory}')
+        self.io.log_event('INFO', 'INVENTORY_CHECK_DONE',
+                          f'시작 재고 점검 완료: {self.inventory}')
 
         while True:
             box_id = f'{self.job_id}_{self.box_seq + 1:03d}'   # 이번 박스 (적재까지 끝나야 확정)

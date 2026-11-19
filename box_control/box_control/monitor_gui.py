@@ -74,7 +74,8 @@ except Exception:
     CAPACITY = 6
 
 STATUS_TOPIC = '/control_status'
-PARTS = (('scan', '탐지', Scan), ('judge', '판별', Judge), ('place', '적재', Place))
+PARTS = (('inventory_check', '초기 재고', Place), ('scan', '탐지', Scan),
+         ('judge', '판별', Judge), ('place', '적재', Place))
 MAX_LOG_ROWS = 3000
 STALE_WARN_SEC = 30.0          # 파트 Feedback이 이 시간 넘게 없으면 주황색
 CTRL_FRESH_SEC = 5.0           # 관제 /control_status가 이 안에 왔으면 로봇 상태는 관제 값을 씀 (직접 조회 안 함)
@@ -91,10 +92,12 @@ LIGHT = {'teal': '#dff3ee', 'green': '#dcfce7', 'orange': '#fdf1d8', 'red': '#fd
 CLASS_COLOR = {'A': '#1fb39e', 'B': '#3b82f6', 'C': '#f59e0b', 'D': '#8b5cf6', 'U': '#9aa3ae'}
 # 로그 출처 배지 (배경, 글자)
 SRC_BADGE = {
+    'inventory_check': ('#dff3ee', '#14806f'),
     'scan': ('#fdf1d3', '#b7791f'), 'judge': ('#e3edff', '#2f6fe0'), 'place': ('#dff3ee', '#14806f'),
     'control': ('#eceff3', '#4b5563'), 'robot': ('#fde2e2', '#c42b2b'), 'monitor': ('#ede4fe', '#6d3fd6'),
 }
-SRC_LABEL = {'scan': '탐지', 'judge': '판별', 'place': '적재', 'control': '관제', 'robot': '로봇',
+SRC_LABEL = {'inventory_check': '초기 재고', 'scan': '탐지', 'judge': '판별', 'place': '적재',
+             'control': '관제', 'robot': '로봇',
              'monitor': 'GUI'}
 
 RUN_GOALS = (GoalStatus.STATUS_ACCEPTED, GoalStatus.STATUS_EXECUTING)
@@ -110,24 +113,27 @@ GOAL_TEXT = {
 
 STATE_LABEL = {
     'READY': '대기 (시작 가능)', 'BEFORE': '작업전', 'PREFLIGHT': '사전점검', 'STANDBY': '시작대기', 'RUNNING': '작업중',
+    'INVENTORY_CHECK': '시작 재고 점검',
     'SCANNING': '스캔중', 'SCAN_DONE': '스캔완료', 'JUDGING': '판별중', 'JUDGE_DONE': '판별완료',
     'PLACING': '적재중', 'PLACE_DONE': '적재완료', 'CLEARING': '측정존 비우기',
     'DONE': '작업완료', 'ERROR': '오류중단', 'STOPPED': '정지', 'CANCELED': '시작취소',
 }
 STATE_COLOR = {
     'READY': 'blue', 'BEFORE': 'dim', 'PREFLIGHT': 'orange', 'STANDBY': 'orange', 'RUNNING': 'teal',
+    'INVENTORY_CHECK': 'teal',
     'SCANNING': 'teal', 'SCAN_DONE': 'teal', 'JUDGING': 'teal', 'JUDGE_DONE': 'teal',
     'PLACING': 'teal', 'PLACE_DONE': 'teal', 'CLEARING': 'orange',
     'DONE': 'green', 'ERROR': 'red', 'STOPPED': 'red', 'CANCELED': 'orange',
 }
 STATE_PART = {'SCANNING': 'scan', 'SCAN_DONE': 'scan', 'JUDGING': 'judge', 'JUDGE_DONE': 'judge',
-              'PLACING': 'place', 'PLACE_DONE': 'place'}
+              'PLACING': 'place', 'PLACE_DONE': 'place', 'INVENTORY_CHECK': 'inventory_check'}
 END_STATES = ('DONE', 'ERROR', 'STOPPED', 'CANCELED', 'READY')   # READY = 상주 모드 대기 (지난 결과 유지)
 
 # 이벤트 로그 code → 추정 단계 (/control_status가 없을 때만 사용)
 CODE_STATE = {'JOB_START': 'RUNNING', 'JOB_DONE': 'DONE', 'JOB_ERROR': 'ERROR',
               'JOB_STOPPED': 'STOPPED', 'JOB_CANCELED': 'CANCELED'}
-PART_STATE = {'scan': 'SCANNING', 'judge': 'JUDGING', 'place': 'PLACING'}
+PART_STATE = {'inventory_check': 'INVENTORY_CHECK', 'scan': 'SCANNING',
+              'judge': 'JUDGING', 'place': 'PLACING'}
 
 
 # ======================================================================

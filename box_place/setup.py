@@ -23,6 +23,7 @@ setup(
         'console_scripts': [
             'place_template = box_place.place_template:main',
             'place_main = box_place.place_main:main',          # 실제 로봇 적재
+            'inventory_check = box_place.inventory_check_main:main',
         ],
     },
 )
