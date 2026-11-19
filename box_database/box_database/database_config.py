@@ -65,10 +65,10 @@ FILE_PRODUCT = [
     {'class_id': 'D', 'name': '지우개 D', 'width_mm': 50.0, 'depth_mm': 40.0, 'height_mm': 20.0, 'weight_g': 55.3},
 ]
 FILE_LOC = [
-    {'name': 'A', 'x': 480.0, 'y': -160.0, 'z': None},
-    {'name': 'B', 'x': 650.0, 'y': -160.0, 'z': None},
-    {'name': 'C', 'x': 580.0, 'y': 300.0, 'z': None},
-    {'name': 'D', 'x': 300.0, 'y': 300.0, 'z': None},           # 11/18 입력
+    {'name': 'A', 'x': 480.0, 'y': -200.0, 'z': None},
+    {'name': 'B', 'x': 630.0, 'y': -200.0, 'z': None},
+    {'name': 'C', 'x': 635.0, 'y': -30.0, 'z': None},
+    {'name': 'D', 'x': 635.0, 'y': 115.0, 'z': None},           # 11/18 입력
     {'name': LOC_MEASURE_ZONE, 'x': 300.0, 'y': -160.0, 'z': 30.9},   # z = 측정존 바닥 (판별 실측, 11/18 30 → 30.9)
 ]
 FILE_STATE = {        # Supabase state 테이블 기본값과 같게
