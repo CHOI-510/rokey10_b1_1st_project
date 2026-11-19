@@ -53,16 +53,14 @@ HEIGHT_MISS_SAME_SPOT_MM = 30.0
 
 # 높이 탐지 지점 · 접촉 조건
 PROBE_START_Z = 100.0
-PROBE_FAN_RADIUS_MM = 30.0
+PROBE_FAN_RADIUS_MM = 50.0
 PROBE_FAN_ANGLES_DEG = (90, 45, 0, -45, -90)
 PROBE_TOOL_Z_ROTATION_DEG = 90.0
-PROBE_RAY_FIRST_MM = 85.0  # 측면 정지점 기준 첫 직선 탐침 거리
-PROBE_RAY_MAX_MM = 150.0
+PROBE_RAY_FIRST_MM = 85.0  # 측면 정지점 기준 직선 탐침 최대 거리
 PROBE_RAY_BISECTIONS = 1
-PROBE_TOP_TOL_MM = 3.0
-PROBE_TOP_EXTRA_MM = 2.0  # 윗면 허용차 아래 추가 탐침 깊이
+PROBE_TOP_TOL_MM = 5.0  # 첫 윗면 대비 허용 높이 차
 PROBE_CLEARANCE_MM = 20.0
-PROBE_MIN_Z = 40.0          # 높이 탐지 하강 하한 (베이스 TCP Z, mm)
+PROBE_MIN_Z = 35.0          # 높이 탐지 하강 하한 (베이스 TCP Z, mm)
 PROBE_CONTACT_N = 8.0        # 기준 대비 Fz 증가량
 PROBE_FORCE_TARGET_N = 40.0
 PROBE_SAFETY_N = 50.0

@@ -83,8 +83,8 @@ def validate_config():
         raise ValueError('PROBE_START_Z는 SCAN_Z보다 높아야 함')
     if not PROBE_FAN_ANGLES_DEG or any(not -90 <= a <= 90 for a in PROBE_FAN_ANGLES_DEG):
         raise ValueError('반원 탐침 각도는 -90~90도여야 함')
-    if not (0 < PROBE_FAN_RADIUS_MM < PROBE_RAY_FIRST_MM <= PROBE_RAY_MAX_MM
-            and PROBE_RAY_BISECTIONS > 0 and PROBE_TOP_TOL_MM > 0 and PROBE_TOP_EXTRA_MM >= 0):
+    if not (0 < PROBE_FAN_RADIUS_MM < PROBE_RAY_FIRST_MM
+            and PROBE_RAY_BISECTIONS > 0 and PROBE_TOP_TOL_MM > 0):
         raise ValueError('반원·직선 탐침 거리 또는 허용차 설정 오류')
     if not math.isfinite(GRIP_WIDTH_RANGE_MARGIN_MM) or GRIP_WIDTH_RANGE_MARGIN_MM < 0:
         raise ValueError('쥠 폭 범위 여유는 0 이상의 유한한 값이어야 함')
@@ -147,22 +147,27 @@ def probe_direction(scan_direction, angle):
 
 
 def locate_probe_edge(distance_limit, sample_top):
-    """첫 직선 거리를 찍고, 같은 윗면이면 상한까지 전진해 경계를 찾는다."""
+    """85 mm에서 같은 윗면이면 그 거리를 끝점으로 사용한다."""
     inside = PROBE_FAN_RADIUS_MM
     outside = min(distance_limit, PROBE_RAY_FIRST_MM)
-    while inside < outside:
-        if sample_top(outside):
-            inside = outside
-            outside = distance_limit
-            continue
+    if outside <= inside:
+        raise ProbeMiss('작업 범위 안에서 직선 탐침 경계를 확인하지 못함')
+    try:
+        distance = outside
+        if sample_top(distance):
+            if distance == PROBE_RAY_FIRST_MM:
+                return distance
+            raise ProbeMiss('85 mm 전에 작업 범위 한계에 도달해 경계를 확인하지 못함')
         for _ in range(PROBE_RAY_BISECTIONS):
-            middle = (inside + outside) / 2.0
-            if sample_top(middle):
-                inside = middle
+            distance = (inside + outside) / 2.0
+            if sample_top(distance):
+                inside = distance
             else:
-                outside = middle
-        return (inside + outside) / 2.0
-    raise ProbeMiss('작업 범위 안에서 직선 탐침 경계를 확인하지 못함')
+                outside = distance
+    except DifferentProbeObject:
+        # 다른 물체를 찍은 지점은 바깥쪽 경계 후보로만 사용한다.
+        outside = distance
+    return (inside + outside) / 2.0
 
 
 def calculate_grip_z(top_z):
@@ -192,6 +197,10 @@ SIM_CONTACT_FY = 4.0        # 가상 접촉 힘 [N]
 
 class ProbeMiss(Exception):
     """정상적으로 내려갔지만 유효한 윗면 높이가 없음"""
+
+
+class DifferentProbeObject(Exception):
+    """유효한 접촉이지만 첫 윗면과 높이가 다름."""
 
 
 class Recorder:
@@ -539,9 +548,9 @@ class ScanAlgorithm:
             r.stop()                                   # 힘·순응 제어 해제 + 멈춤 확인 (실패·취소 때도)
         return result, r.pose()
 
-    def _probe_height(self, stop_z=PROBE_MIN_Z):
+    def _probe_height(self):
         """지금 위치에서 내려가 윗면 높이 탐지 → 윗면 접촉 pose. 유효 높이가 없으면 ProbeMiss"""
-        floor_z = max(PROBE_MIN_Z, stop_z)
+        floor_z = PROBE_MIN_Z
         if self.sim_boxes is not None:
             return self._sim_probe(floor_z)
         result, pose = self._force_down(floor_z, PROBE_FORCE_TARGET_N, PROBE_CONTACT_N, PROBE_SAFETY_N,
@@ -594,45 +603,47 @@ class ScanAlgorithm:
         def sample(x, y, reference_top=None):
             self._move_z(PROBE_START_Z)
             self._move([x, y, PROBE_START_Z, *probe_orientation])
-            stop_z = (PROBE_MIN_Z if reference_top is None
-                      else reference_top - PROBE_TOP_TOL_MM - PROBE_TOP_EXTRA_MM)
             try:
-                top = self._probe_height(stop_z)
+                top = self._probe_height()
             except ProbeMiss:
                 self.log.info(f'[scan] 탐침 X={x:.1f}, Y={y:.1f}: 미접촉')
                 return None
             if math.dist(top[:2], (x, y)) > PROBE_XY_DRIFT_LIMIT_MM:
                 raise RuntimeError('윗면 접촉점이 계획한 탐지점에서 벗어남')
             self.log.info(f'[scan] 탐침 X={x:.1f}, Y={y:.1f}, Z={top[2]:.1f}')
-            if reference_top is not None and top[2] > reference_top + PROBE_TOP_TOL_MM:
-                raise ProbeMiss('기준보다 높은 윗면 접촉')
-            return top if reference_top is None or abs(top[2] - reference_top) <= PROBE_TOP_TOL_MM else None
+            if reference_top is not None and abs(top[2] - reference_top) > PROBE_TOP_TOL_MM:
+                report.log(f'다른 물체 높이 감지: 기준 Z={reference_top:.1f}, 접촉 Z={top[2]:.1f}', 'WARN')
+                raise DifferentProbeObject()
+            return top
 
         angles = []
         first_z = None
         try:
-            for angle in PROBE_FAN_ANGLES_DEG:
+            fan_angles = (PROBE_FAN_ANGLES_DEG if direction == '-Y'
+                          else reversed(PROBE_FAN_ANGLES_DEG))
+            for angle in fan_angles:
                 x, y = xy(*probe_direction(direction, angle), PROBE_FAN_RADIUS_MM)
                 if not (x_min <= x <= x_max and y_min <= y <= y_max):
                     if angles:
                         break
                     continue
-                top = sample(x, y, first_z)
+                try:
+                    top = sample(x, y, first_z)
+                except DifferentProbeObject:
+                    break
                 if top is None:
                     if angles:
                         break
                     continue
                 if first_z is None:
                     first_z = top[2]
-                    if first_z - PROBE_TOP_TOL_MM < PROBE_MIN_Z:
-                        raise ProbeMiss('같은 윗면 허용차가 탐침 Z 하한보다 낮음')
                 angles.append(angle)
             if not angles:
                 raise ProbeMiss('반원에 유효 윗면 없음')
 
             angle = (angles[0] + angles[-1]) / 2.0
             ux, uy = probe_direction(direction, angle)
-            limits = [PROBE_RAY_MAX_MM]
+            limits = [PROBE_RAY_FIRST_MM]
             for position, component, lower, upper in (
                     (origin[0], ux, x_min, x_max), (origin[1], uy, y_min, y_max)):
                 if abs(component) > 1e-12:
@@ -644,6 +655,8 @@ class ScanAlgorithm:
                 return sample(min(x_max, max(x_min, x)), min(y_max, max(y_min, y)), first_z)
 
             edge = locate_probe_edge(limit, sample_ray)
+            if edge == PROBE_RAY_FIRST_MM:
+                report.log(f'{edge:g} mm에서 같은 윗면 확인 → 추가 탐침 없이 집기')
         except ProbeMiss as miss:
             self._move_z(PROBE_START_Z)
             report.log(f'중심 탐지 실패: {miss}', 'WARN')
