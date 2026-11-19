@@ -38,14 +38,14 @@ TABLE_Z = 29.8               # 탐색 작업대 바닥 TCP Z 실측 (11/18: 20mm
                              #   sync 집기 하한(TABLE_Z + 2.6)과 측정존 내려놓기 예상 높이에 씀
 MAX_OBJECT_HEIGHT_MM = 80.0
 GRIP_DEPTH_FROM_TOP_MM = 15.0   # 핑거 끝 목표 깊이. 하한은 TABLE_Z + SYNC_GRIP의 2.6 mm
-GRIP_RETRY_ANGLES = (0.0, 45.0, 90.0)    # 원본 실로봇 시험값 (11/17 팀 논의안 0/+30/-30은 보류)
+GRIP_RETRY_ANGLES = (0.0, 90.0, 45.0)    # 직선 탐침 방향에 정렬한 최초 집기 자세 기준
 GRIP_RETRY_LIFT_MM = 20.0
 PICK_LIFT_MM = 20.0
 PICK_HOLD_SECONDS = 0.2
 GRIP_FORCE_N = 40.0          # 잡는 힘 [N]. 원본 WebLogic 설정값 40 N (RG2 최대). None이면 common GRIPPER grip_force_n(40 N) (11/18)
 OPEN_WIDTH_MM = None         # None이면 common.GRIPPER['open_width_mm']
 
-# 높이 탐지 실패 반복 (부채꼴 4점 모두 높이 없음)
+# 중심 탐지 실패 반복 (반원·직선 탐침 실패)
 #   같은 자리(같은 선, Y 차이 30mm 안)에서 이 횟수만큼 실패하면 '스캔공간 막힘'으로 보고 멈춤
 #   멈춘 뒤 처리(건너뛰기 등)는 팀 결정 대기 → scan_algorithm.py _on_scan_blocked
 HEIGHT_MISS_LIMIT = 3
@@ -53,7 +53,14 @@ HEIGHT_MISS_SAME_SPOT_MM = 30.0
 
 # 높이 탐지 지점 · 접촉 조건
 PROBE_START_Z = 100.0
-PROBE_POINTS = ((25.0, 0.0), (60.0, 20.0), (60.0, 0.0), (60.0, -20.0))   # (반지름 mm, 각도 deg)
+PROBE_FAN_RADIUS_MM = 50.0
+PROBE_FAN_ANGLES_DEG = (90, 60, 30, 0, -30, -60, -90)
+PROBE_TOOL_Z_ROTATION_DEG = 90.0
+PROBE_RAY_STEP_MM = 50.0
+PROBE_RAY_MAX_MM = 150.0
+PROBE_RAY_BISECTIONS = 2
+PROBE_TOP_TOL_MM = 3.0
+PROBE_TOP_EXTRA_MM = 2.0  # 윗면 허용차 아래 추가 탐침 깊이
 PROBE_CLEARANCE_MM = 20.0
 PROBE_MIN_Z = 40.0          # 높이 탐지 하강 하한 (베이스 TCP Z, mm)
 PROBE_CONTACT_N = 8.0        # 기준 대비 Fz 증가량

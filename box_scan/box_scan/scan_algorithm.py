@@ -11,13 +11,10 @@ GRASP_FAILED는 탐색 커서를 유지해 관제 재요청 시 같은 경로에
   변화량의 절댓값이 FORCE_LIMIT 이상이면 정지한다. 보정표 범위 밖에서는
   판정하지 않는다. 재개 시 멈춘 줄의 원래 시작점으로 돌아가고,
   재출발 후 40 mm 구간은 감지에서 제외한다.
-- picking: 정지점 앞 부채꼴 후보를 최대 4곳 탐침한다. 닫힌 RG2를 힘 제어로
-  내려 윗면을 찾으며 하강 하한은 TCP Z 40 mm다. 유효한 첫 윗면에서
-  핑거 끝 목표를 윗면 아래 15 mm로 계산하되 실측 작업대 +2.6 mm를 하한으로 쓴다.
-  열린 RG2를 힘 제어로 내려 조기 접촉 또는 정지 후 Z 오차가 있으면
-  다음 자세로 재시도한다(0°, +90°, +45°). 접근에 성공하면 동기 닫기,
-  재조임 후 이송 높이까지 상승해 최종 파지를 확인한다. 네 후보 모두 높이 탐지에
-  실패하면 탐색을 재개하고, 같은 위치에서 반복되면 SCAN_FAILED를 반환한다.
+- picking: 측면 정지점을 기준으로 진행 방향 앞쪽 반원에서 윗면을 탐침한다.
+  연속 검출 각도의 양 끝 평균 방향으로 직선 탐침해 먼 경계를 좁힌다.
+  측면 정지점과 경계의 중간에서 첫 윗면 높이를 사용하고, 0°, +90°, +45° 순으로 집기한다.
+  동기 닫기, 재조임 및 파지 판별은 기존 통합 방식에 따른다.
 - moving: 수직 상승 후 파지를 확인하고 측정존까지 수평 직선 이동한다.
   +45°에서 집은 경우는 이송 높이에서 최초 집기 자세로 회전하고 파지를 다시 확인한다.
 - placing: 예상 접촉점 위에서 저속으로 내려가 Fz 접촉 또는 하강 하한에서
@@ -36,7 +33,7 @@ from bisect import bisect_right
 from datetime import datetime
 from pathlib import Path
 
-from box_comm.common import GRIP_RETRY, GRIPPER, PartError
+from box_comm.common import GRIPPER, PartError
 from box_comm.sync_grip import GripMissed, make_sync_gripper, tip_h_mm
 from box_comm.common import SYNC_GRIP, TCP
 
@@ -84,8 +81,11 @@ def validate_config():
         raise ValueError('PROBE_START_Z가 최대 물품 높이 + 여유보다 낮음')
     if PROBE_START_Z <= SCAN_Z:
         raise ValueError('PROBE_START_Z는 SCAN_Z보다 높아야 함')
-    if not PROBE_POINTS or any(r <= 0 or abs(a) >= 90 for r, a in PROBE_POINTS):
-        raise ValueError('높이 탐지점: 반지름 > 0, -90 < 각도 < 90')
+    if not PROBE_FAN_ANGLES_DEG or any(not -90 <= a <= 90 for a in PROBE_FAN_ANGLES_DEG):
+        raise ValueError('반원 탐침 각도는 -90~90도여야 함')
+    if not (0 < PROBE_FAN_RADIUS_MM < PROBE_RAY_MAX_MM and PROBE_RAY_STEP_MM > 0
+            and PROBE_RAY_BISECTIONS > 0 and PROBE_TOP_TOL_MM > 0 and PROBE_TOP_EXTRA_MM >= 0):
+        raise ValueError('반원·직선 탐침 거리 또는 허용차 설정 오류')
     if not math.isfinite(GRIP_WIDTH_RANGE_MARGIN_MM) or GRIP_WIDTH_RANGE_MARGIN_MM < 0:
         raise ValueError('쥠 폭 범위 여유는 0 이상의 유한한 값이어야 함')
     if not math.isfinite(GRIP_HOLD_WIDTH_TOL_MM) or GRIP_HOLD_WIDTH_TOL_MM <= 0:
@@ -139,12 +139,29 @@ def scan_orientation(reference, direction):
     return angles
 
 
-def sector_probe_points(contact):
-    """접촉점에서 진행 방향 앞쪽 부채꼴 높이 탐지점 [x, y, PROBE_START_Z]"""
-    side = contact['stopped_pose']
-    sign = 1.0 if contact['direction'] == '+Y' else -1.0
-    return [[side[0] + r*math.sin(math.radians(a)), side[1] + sign*r*math.cos(math.radians(a)), PROBE_START_Z]
-            for r, a in PROBE_POINTS]
+def probe_direction(scan_direction, angle):
+    """탐색 방향과 반원 각도를 BASE XY 단위벡터로 변환한다."""
+    sign = -1 if scan_direction == '-Y' else 1
+    radians = math.radians(angle)
+    return -sign * math.sin(radians), sign * math.cos(radians)
+
+
+def locate_probe_edge(distance_limit, sample_top):
+    """반경부터 전진해 찾은 경계 구간을 이분 탐색한다."""
+    inside = PROBE_FAN_RADIUS_MM
+    while inside < distance_limit:
+        outside = min(distance_limit, inside + PROBE_RAY_STEP_MM)
+        if sample_top(outside):
+            inside = outside
+            continue
+        for _ in range(PROBE_RAY_BISECTIONS):
+            middle = (inside + outside) / 2.0
+            if sample_top(middle):
+                inside = middle
+            else:
+                outside = middle
+        return (inside + outside) / 2.0
+    raise ProbeMiss('작업 범위 안에서 직선 탐침 경계를 확인하지 못함')
 
 
 def calculate_grip_z(top_z):
@@ -309,7 +326,7 @@ class ScanAlgorithm:
                     r.movej(home, vel=ANGULAR_VEL, acc=ANGULAR_ACC)
                     report.log('물품 1개 측정존 배치 완료, HOME 복귀')
                     return True
-                failure = '높이 탐지 4점 모두 유효 높이 없음' if grip is None else '이송 높이에서 파지 확인 실패'
+                failure = '반원·직선 중심 탐지 실패' if grip is None else '이송 높이에서 파지 확인 실패'
                 # 같은 위치에서 재탐지와 실패가 반복되는 횟수를 제한한다.
                 if (self._last_miss and self._last_miss[0] == lane
                         and abs(self._last_miss[1] - sp[1]) < HEIGHT_MISS_SAME_SPOT_MM):
@@ -521,9 +538,9 @@ class ScanAlgorithm:
             r.stop()                                   # 힘·순응 제어 해제 + 멈춤 확인 (실패·취소 때도)
         return result, r.pose()
 
-    def _probe_height(self):
+    def _probe_height(self, stop_z=PROBE_MIN_Z):
         """지금 위치에서 내려가 윗면 높이 탐지 → 윗면 접촉 pose. 유효 높이가 없으면 ProbeMiss"""
-        floor_z = PROBE_MIN_Z
+        floor_z = max(PROBE_MIN_Z, stop_z)
         if self.sim_boxes is not None:
             return self._sim_probe(floor_z)
         result, pose = self._force_down(floor_z, PROBE_FORCE_TARGET_N, PROBE_CONTACT_N, PROBE_SAFETY_N,
@@ -556,31 +573,93 @@ class ScanAlgorithm:
     # 높이 탐지 + 집기 (원본 pick_and_place의 앞부분 + try_pick_and_place의 집기)
     # ==================================================================
     def _find_and_grip(self, contact, reference, report):
-        """부채꼴 4점 높이 탐지 → 처음 찾은 점에서 최대 3번 집기.
-        성공: 파지 높이·윗면 높이·이송 정렬 정보 / 4점 모두 높이 없음: None / 집기 실패: PartError('GRASP_FAILED')"""
-        r = self.robot
-        if contact['stopped_pose'][2] >= PROBE_START_Z:
+        """측면 정지점에서 반원·직선 탐침으로 집기 중심을 추정한다."""
+        origin = contact['stopped_pose']
+        direction = contact['direction']
+        if origin[2] >= PROBE_START_Z:
             raise RuntimeError('접촉 Z가 높이 탐지 시작 높이보다 높음')
+        if direction not in ('-Y', '+Y'):
+            raise ValueError(f'높이 탐침 방향 오류: {direction}')
         self._move_z(PROBE_START_Z)
-        self._orient(reference)
-        points = sector_probe_points(contact)
-        for i, probe in enumerate(points, 1):
-            r.movejx([*probe, *r.pose()[3:6]], vel=ANGULAR_VEL, acc=ANGULAR_ACC)
-            try:
-                top = self._probe_height()
-            except ProbeMiss as miss:
-                self.log.info(f'[scan] 높이 {i}/{len(points)} 없음: {miss}')
-                self._move_z(PROBE_START_Z)
-                continue
-            if math.dist(top[:2], probe[:2]) > PROBE_XY_DRIFT_LIMIT_MM:
-                raise RuntimeError('윗면 접촉점이 계획한 탐지점에서 벗어남')
-            report.log(f'윗면 높이 {top[2]-Z0:.1f} mm (탐지점 {i}/{len(points)})')
-            self._move_z(PROBE_START_Z)
-            return self._grip(top, reference, report)
-        self._orient(reference)
-        return None
+        probe_orientation = list(reference)
+        probe_orientation[2] += PROBE_TOOL_Z_ROTATION_DEG
+        self._orient(probe_orientation)
+        x_min, x_max = min(X_LANES), max(X_LANES)
+        y_min, y_max = sorted((Y_START, Y_END))
 
-    def _grip(self, top, reference, report):
+        def xy(ux, uy, distance):
+            return origin[0] + ux * distance, origin[1] + uy * distance
+
+        def sample(x, y, reference_top=None):
+            self._move_z(PROBE_START_Z)
+            self._move([x, y, PROBE_START_Z, *probe_orientation])
+            stop_z = (PROBE_MIN_Z if reference_top is None
+                      else reference_top - PROBE_TOP_TOL_MM - PROBE_TOP_EXTRA_MM)
+            try:
+                top = self._probe_height(stop_z)
+            except ProbeMiss:
+                self.log.info(f'[scan] 탐침 X={x:.1f}, Y={y:.1f}: 미접촉')
+                return None
+            if math.dist(top[:2], (x, y)) > PROBE_XY_DRIFT_LIMIT_MM:
+                raise RuntimeError('윗면 접촉점이 계획한 탐지점에서 벗어남')
+            self.log.info(f'[scan] 탐침 X={x:.1f}, Y={y:.1f}, Z={top[2]:.1f}')
+            if reference_top is not None and top[2] > reference_top + PROBE_TOP_TOL_MM:
+                raise ProbeMiss('기준보다 높은 윗면 접촉')
+            return top if reference_top is None or abs(top[2] - reference_top) <= PROBE_TOP_TOL_MM else None
+
+        angles = []
+        first_z = None
+        try:
+            for angle in PROBE_FAN_ANGLES_DEG:
+                x, y = xy(*probe_direction(direction, angle), PROBE_FAN_RADIUS_MM)
+                if not (x_min <= x <= x_max and y_min <= y <= y_max):
+                    if angles:
+                        break
+                    continue
+                top = sample(x, y, first_z)
+                if top is None:
+                    if angles:
+                        break
+                    continue
+                if first_z is None:
+                    first_z = top[2]
+                    if first_z - PROBE_TOP_TOL_MM < PROBE_MIN_Z:
+                        raise ProbeMiss('같은 윗면 허용차가 탐침 Z 하한보다 낮음')
+                angles.append(angle)
+            if not angles:
+                raise ProbeMiss('반원에 유효 윗면 없음')
+
+            angle = (angles[0] + angles[-1]) / 2.0
+            ux, uy = probe_direction(direction, angle)
+            limits = [PROBE_RAY_MAX_MM]
+            for position, component, lower, upper in (
+                    (origin[0], ux, x_min, x_max), (origin[1], uy, y_min, y_max)):
+                if abs(component) > 1e-12:
+                    limits.append(((upper if component > 0 else lower) - position) / component)
+            limit = min(limits)
+
+            def sample_ray(distance):
+                x, y = xy(ux, uy, distance)
+                return sample(min(x_max, max(x_min, x)), min(y_max, max(y_min, y)), first_z)
+
+            edge = locate_probe_edge(limit, sample_ray)
+        except ProbeMiss as miss:
+            self._move_z(PROBE_START_Z)
+            report.log(f'중심 탐지 실패: {miss}', 'WARN')
+            return None
+
+        center_x, center_y = xy(ux, uy, edge / 2.0)
+        # 직선 탐침 기울기로 정렬한다. 평행 핑거의 180도 대칭을 이용한다.
+        ray_angle = math.degrees(math.atan2(ux, -uy))
+        ray_angle = (ray_angle + 90.0) % 180.0 - 90.0
+        grip_orientation = probe_orientation[:]
+        grip_orientation[2] -= ray_angle
+        report.log(f'반원 성공 {angles}, 방향 {angle:+.1f}도, 먼 경계 {edge:.1f} mm, '
+                   f'집기 중심 X={center_x:.1f}, Y={center_y:.1f}, 윗면 Z={first_z:.1f}')
+        self._move_z(PROBE_START_Z)
+        return self._grip([center_x, center_y, first_z], reference, report, grip_orientation)
+
+    def _grip(self, top, reference, report, grip_orientation):
         """sync 집기 (11/18 정쓰, 적재와 같은 방식). 높이 탐지한 윗면 기준:
         윗면 위로 올라감 → 100mm로 열기 → 핑거 끝이 윗면 − GRIP_DEPTH_FROM_TOP_MM에 오는 TCP 높이까지 하강
         (순응·힘 제어로 하강하고 조기 접촉 감시) → sync로 닫기(핑거 끝 높이 유지) → 40N 조임 → 0.5초 → 천천히 들기.
@@ -595,8 +674,8 @@ class ScanAlgorithm:
                                log=lambda m: self.log.info(f'[scan] {m}'))
         retry_z = max(PROBE_START_Z, top[2] + GRIP_RETRY_LIFT_MM)
         self._move([top[0], top[1], retry_z, *r.pose()[3:6]])   # 높이 탐지 뒤 위로
-        initial = r.pose()[3:6]
-        angles = GRIP_RETRY_ANGLES[:GRIP_RETRY]
+        initial = list(grip_orientation)
+        angles = GRIP_RETRY_ANGLES
         force = GRIP_FORCE_N or GRIPPER['grip_force_n']
         why = ''
         for n, angle in enumerate(angles, 1):
