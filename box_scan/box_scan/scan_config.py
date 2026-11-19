@@ -83,12 +83,12 @@ PROBE_TIMEOUT_REFERENCE_MM_S = 5.0
 # 측정존 내려놓기 (판별 _pos_descent 방식: 천천히 내려가다 닿으면 멈추고 놓음)
 #   측정존 z = 측정존 바닥 Z (Goal poses['measure_zone'][2], 11/18 세 파트 통일)
 #   예상 접촉 TCP Z = 측정존 z + (파지 TCP Z - TABLE_Z)  (박스가 작업대 바닥에 있었다고 가정, 겹친 박스면 이보다 낮게 닿음)
-PLACE_SLOW_FROM_MM = 15.0    # 예상 접촉 높이 위 이 거리부터 천천히
+PLACE_SLOW_FROM_MM = 20.0    # 예상 접촉 Z 위에서 순응·힘 제어 시작
 PLACE_MIN_ABOVE_FLOOR_MM = 2.0   # 핑거 끝 최소 높이 = 측정존 바닥 Z + 이 값. TCP 하한은 핑거 끝 오프셋을 보정
-PLACE_DESCENT_VEL = 10.0     # mm/s
+PLACE_FORCE_TARGET_N = 20.0  # BASE -Z 배치 목표 힘
+PLACE_CONTACT_Z_TOL_MM = 5.0  # 예상 접촉 TCP Z 허용 편차
 PLACE_CONTACT_N = 5.0        # Fz 증가량
 PLACE_SAFETY_N = 25.0
-PLACE_IGNORE_S = 0.3         # 하강 시작 직후 가속 때문에 튀는 힘 무시
 
 # 통신 주기
 POLL = 0.005

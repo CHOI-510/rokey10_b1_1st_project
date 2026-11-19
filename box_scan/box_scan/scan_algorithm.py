@@ -17,8 +17,8 @@ GRASP_FAILED는 탐색 커서를 유지해 관제 재요청 시 같은 경로에
   동기 닫기, 재조임 및 파지 판별은 기존 통합 방식에 따른다.
 - moving: 수직 상승 후 파지를 확인하고 측정존까지 수평 직선 이동한다.
   +45°에서 집은 경우는 이송 높이에서 최초 집기 자세로 회전하고 파지를 다시 확인한다.
-- placing: 예상 접촉점 위에서 저속으로 내려가 Fz 접촉 또는 하강 하한에서
-  멈춘다. 하한까지 접촉이 없으면 경고 후 그 자리에서 놓는다.
+- placing: 예상 접촉점 위 20 mm에서 순응·힘 제어로 하강한다.
+  허용 높이에서 Fz 접촉과 정지를 확인한 뒤에만 놓는다.
 
 ROS 파라미터
 - csv_dir: 지정한 경우에만 탐색 중 힘과 보정값을 CSV로 기록한다.
@@ -62,6 +62,10 @@ def lane_direction(index):
 
 
 def validate_config():
+    if not 0 < PLACE_CONTACT_N < PLACE_FORCE_TARGET_N < PLACE_SAFETY_N:
+        raise ValueError('배치: 0 < 접촉 < 목표 < 안전 힘')
+    if not 0 < PLACE_CONTACT_Z_TOL_MM < PLACE_SLOW_FROM_MM:
+        raise ValueError('배치 접촉 Z 허용차는 시작 여유보다 작아야 함')
     if set(BASELINE_N) != set(range(1, len(X_LANES)+1)):
         raise ValueError('보정표가 모든 선을 덮지 않음')
     for lane, x in enumerate(X_LANES, 1):
@@ -503,7 +507,7 @@ class ScanAlgorithm:
     # ==================================================================
     # Force 하강 (원본 probe_contact + grip_force_approach 공통 부분)
     # ==================================================================
-    def _force_down(self, stop_z, target_n, contact_n, safety_n, check_xyz):
+    def _force_down(self, stop_z, target_n, contact_n, safety_n, check_xyz, *, contact_details=None):
         """순응·힘 제어로 내려가다 (1) Fz가 기준보다 contact_n 이상 늘면 'contact', (2) stop_z에 닿으면 'reached'.
         어느 쪽이든 힘·순응 제어를 풀고 멈춘 뒤 (결과, 정지 후 pose)를 돌려준다.
         check_xyz: True면 기준 안정성·안전 힘을 XYZ 합성으로 (집기 접근), False면 Fz만 (높이 탐지)"""
@@ -533,6 +537,8 @@ class ScanAlgorithm:
                 if change >= safety_n:
                     raise RuntimeError(f'Force 하강 안전 한계: {change:.1f} N')
                 if dfz >= contact_n:
+                    if contact_details is not None:
+                        contact_details.update(z=r.pose()[2], dfz=dfz)
                     result = 'contact'
                     break
                 p = r.pose()
@@ -773,56 +779,46 @@ class ScanAlgorithm:
         report('placing')
         if not self._holding():
             raise RuntimeError(f'측정존 도착 전 박스를 놓침 ({self._hold_why}) — 떨어진 위치 확인 필요')
-        self._move_z(contact_z + PLACE_SLOW_FROM_MM)
-        # 하한: 핑거 끝이 측정존 바닥 + PLACE_MIN_ABOVE_FLOOR_MM (sync 집기는 TCP가 핑거 끝보다 아래일 수 있음)
+        # 핑거 끝이 측정존 바닥 아래로 가지 않도록 동기 집기의 오프셋을 반영한다.
         floor_tcp = zone[2] + PLACE_MIN_ABOVE_FLOOR_MM - grip.get('tip_off', 0.0)
-        status, z = self._descend_until_contact(floor_tcp, contact_z)
-        if status == 'clear':
-            report.log(f'측정존 바닥 접촉 없이 하한 도달 (Z={z:.1f}) → 그 자리에서 놓음', 'WARN')
+        self._place_with_force(contact_z, floor_tcp, report)
         self._open()
         self._move_z(transfer_z)
         return True
 
-    def _descend_until_contact(self, z_target, expected_z=None):
-        """판별 _pos_descent 방식: 비동기로 천천히 내려가며 Fz 증가를 보다 닿으면 빠른 정지.
-        z_target: 하강 하한(측정존 바닥 바로 위), expected_z: 예상 접촉 높이(sim에서만 사용)"""
-        r = self.robot
-        if self.sim_boxes is not None:              # 가상: 예상 접촉 높이까지 가서 닿은 셈
-            self._move_z(max(z_target, expected_z if expected_z is not None else z_target))
-            return 'contact', r.pose()[2]
-        time.sleep(0.3)
-        samples = [r.force('base')[2] for _ in range(10)]
-        if max(samples) - min(samples) > PROBE_NOISE_MAX_N:
-            raise RuntimeError('내려놓기 전 Fz 불안정')
-        fz0 = sum(samples) / len(samples)
-        z0 = r.pose()[2]
-        dist = z0 - z_target
-        if dist <= 0.2:
-            return 'clear', z0
-        r.amovel_rel([0.0, 0.0, -dist, 0.0, 0.0, 0.0], vel=PLACE_DESCENT_VEL, acc=PLACE_DESCENT_VEL*4)
-        t0, status = time.monotonic(), 'timeout'
-        while time.monotonic() - t0 < dist/PLACE_DESCENT_VEL + 3.0:
-            d = r.force('base')[2] - fz0
-            z = r.pose()[2]
-            if d >= PLACE_SAFETY_N:
-                status = 'safety'
-                break
-            if d >= PLACE_CONTACT_N and time.monotonic() - t0 >= PLACE_IGNORE_S:
-                status = 'contact'
-                break
-            if z <= z_target + 0.2:
-                status = 'clear'
-                break
-            time.sleep(0.02)
-        if status != 'clear':
-            r.move_stop(1)
+    def _place_with_force(self, contact_z, floor_tcp, report):
+        """예상 높이에서의 접촉과 정지를 확인한 경우에만 반환한다."""
+        upper_z = contact_z + PLACE_CONTACT_Z_TOL_MM
+        stop_z = max(floor_tcp, contact_z - PLACE_CONTACT_Z_TOL_MM)
+        if not math.isfinite(upper_z) or not math.isfinite(floor_tcp) or stop_z >= upper_z:
+            raise RuntimeError('배치 하한과 예상 접촉 구간이 맞지 않음; 파지 유지')
+
+        self._move_z(contact_z + PLACE_SLOW_FROM_MM)
         self._wait_still()
-        z = r.pose()[2]
-        if status == 'safety':
-            raise RuntimeError(f'내려놓기 중 과도한 힘 (Z={z:.1f})')
-        if status == 'timeout':
-            raise TimeoutError('내려놓기 하강 시간 초과')
-        return status, z
+        if not self._holding():
+            raise RuntimeError(f'배치 하강 전 파지 실패: {self._hold_why}')
+
+        details = {}
+        if self.sim_boxes is not None:
+            self._move_z(max(stop_z, contact_z))
+            status, stopped_pose = 'contact', self.robot.pose()
+            details['z'] = stopped_pose[2]
+        else:
+            status, stopped_pose = self._force_down(
+                stop_z, PLACE_FORCE_TARGET_N, PLACE_CONTACT_N, PLACE_SAFETY_N,
+                check_xyz=True, contact_details=details)
+        self._wait_still()
+        stopped_z = stopped_pose[2]
+        if status != 'contact':
+            raise RuntimeError(f'배치 접촉 없음: 예상 Z={contact_z:.1f}, 정지 Z={stopped_z:.1f}; 파지 유지')
+        detected_z = details['z']
+        force_note = f", ΔFz={details['dfz']:.1f} N" if 'dfz' in details else ''
+        note = f'예상 Z={contact_z:.1f}, 접촉 Z={detected_z:.1f}, 정지 Z={stopped_z:.1f}{force_note}'
+        if not (stop_z <= detected_z <= upper_z and stop_z <= stopped_z <= upper_z):
+            raise RuntimeError(f'배치 접촉이 허용 높이 밖: {note}; 파지 유지')
+        if not self._holding():
+            raise RuntimeError(f'개방 직전 파지 실패: {self._hold_why}; {note}')
+        report.log(f'배치 접촉 및 정지 확인: {note}')
 
     # ==================================================================
     # 에뮬레이터 가상 박스 (sim_boxes)
