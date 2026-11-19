@@ -1,3 +1,4 @@
+```python
 #!/usr/bin/env python3
 """
 place_algorithm.py — 적재 알고리즘 (담당: 정수현)
@@ -487,11 +488,23 @@ class PlaceAlgorithm:
             if abs(fz) >= c['abs_force_limit_n'] or abs(change) >= c['abort_force_n']:
                 raise RuntimeError(f'외력 상한 초과: Fz={fz:.2f}, delta={change:.2f}')
             if c['contact_sign'] * change >= c['contact_force_n']:
-                robot.stop()                            # 힘·순응제어 해제 후 멈춤 확인
+                contact_fz, contact_delta = fz, change
+                robot.stop()                            # 추가 조회/로그보다 정지를 먼저 수행
                 time.sleep(0.2)
                 z, fz = robot.pose()[2], robot.force_z()
-                if abs(fz) >= c['abs_force_limit_n'] or abs(fz - baseline) >= c['abort_force_n']:
-                    raise RuntimeError('정지 후 외력 상한 초과')
+                delta_after = fz - baseline
+                abs_limit_hit = abs(fz) >= c['abs_force_limit_n']
+                delta_limit_hit = abs(delta_after) >= c['abort_force_n']
+                detail = (
+                    f'Z={z:.2f}mm, baseline={baseline:.2f}N, '
+                    f'정지전 Fz={contact_fz:.2f}N/dFz={contact_delta:.2f}N, '
+                    f'정지후 Fz={fz:.2f}N/dFz={delta_after:.2f}N, '
+                    f'절대상한={c["abs_force_limit_n"]:.2f}N(초과={abs_limit_hit}), '
+                    f'변화량상한={c["abort_force_n"]:.2f}N(초과={delta_limit_hit})'
+                )
+                self.log.info(f'[CONTACT AFTER STOP] {detail}')
+                if abs_limit_hit or delta_limit_hit:
+                    raise RuntimeError(f'정지 후 외력 상한 초과: {detail}')
                 if c['contact_sign'] * (fz - baseline) < c['contact_force_n']:
                     raise RuntimeError('정지 후 접촉이 유지되지 않음')
                 if not lo < z <= approach[2] + 2.0:
