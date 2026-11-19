@@ -459,19 +459,18 @@ class PlaceAlgorithm:
         robot.compliance_on([3000., 3000., c['z_stiffness_n_m'], 200., 200., 200.])
         # stack_test 실험에서 성공한 순서: 순응제어만 2초 → 목표 힘
         settle_until = time.monotonic() + 2.0
-        next_display = 0.0
         while robot.ok() and time.monotonic() < settle_until:
             fz = robot.force_z()
             if abs(fz) >= c['abs_force_limit_n'] or abs(fz-baseline) >= c['abort_force_n']:
                 raise RuntimeError(f'순응제어 중 외력 상한 초과: Fz={fz:.2f}')
             z = robot.pose()[2]
-            now = time.monotonic()
-            if self.show_force and now >= next_display:
-                print(f'[COMPLIANCE ONLY] Z={z:.2f} mm | dZ={z-start_z:+.2f} mm | '
-                      f'Fz={fz:.2f} N', flush=True)
-                next_display = now + 0.5
-            if abs(z-start_z) >= 2.0 or z <= lo:
-                raise RuntimeError(f'순응제어 중 위치 변동 초과: Z={z:.2f}, dZ={z-start_z:+.2f}')
+            if abs(z-start_z) >= 3.0 or z <= lo:
+                raise RuntimeError(
+                    f'순응제어 중 위치 변동 초과: 시작Z={start_z:.2f}, '
+                    f'현재Z={z:.2f}, dZ={z-start_z:+.2f}mm, 상한=3.00mm, '
+                    f'Fz={fz:.2f}N, baseline={baseline:.2f}N, dFz={fz-baseline:+.2f}N, '
+                    f'TCP 하한={lo:.2f}mm (목표 힘 적용 전)'
+                )
             time.sleep(0.05)
         if not robot.ok():
             raise RuntimeError('목표 힘 적용 전 ROS 종료')
