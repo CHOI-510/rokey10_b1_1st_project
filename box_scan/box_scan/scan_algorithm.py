@@ -9,14 +9,14 @@ GRASP_FAILED는 탐색 커서를 유지해 관제 재요청 시 같은 경로에
 
 - space_scan: 닫힌 RG2로 Y 방향 지그재그 탐색. 경로별 Fy 기준값을 뺀
   변화량의 절댓값이 FORCE_LIMIT 이상이면 정지한다. 보정표 범위 밖에서는
-  판정하지 않는다. 재개 시 정지점에서 진행 방향 뒤쪽 60 mm로 돌아가고,
+  판정하지 않는다. 재개 시 멈춘 줄의 원래 시작점으로 돌아가고,
   재출발 후 40 mm 구간은 감지에서 제외한다.
 - picking: 정지점 앞 부채꼴 후보를 최대 4곳 탐침한다. 닫힌 RG2를 힘 제어로
   내려 윗면을 찾으며 하강 하한은 TCP Z 40 mm다. 유효한 첫 윗면에서
   핑거 끝 목표를 윗면 아래 15 mm로 계산하되 실측 작업대 +2.6 mm를 하한으로 쓴다.
   열린 RG2를 힘 제어로 내려 조기 접촉 또는 정지 후 Z 오차가 있으면
-  다음 자세로 재시도한다(0°, +45°, +90°). 접근에 성공하면 동기 닫기,
-  재조임, 시험 상승 순으로 파지를 확인한다. 네 후보 모두 높이 탐지에
+  다음 자세로 재시도한다(0°, +90°, +45°). 접근에 성공하면 동기 닫기,
+  재조임 후 이송 높이까지 상승해 최종 파지를 확인한다. 네 후보 모두 높이 탐지에
   실패하면 탐색을 재개하고, 같은 위치에서 반복되면 SCAN_FAILED를 반환한다.
 - moving: 수직 상승 후 파지를 확인하고 측정존까지 수평 직선 이동한다.
   +45°에서 집은 경우는 이송 높이에서 최초 집기 자세로 회전하고 파지를 다시 확인한다.
@@ -37,7 +37,6 @@ from datetime import datetime
 from pathlib import Path
 
 from box_comm.common import GRIP_RETRY, GRIPPER, PartError
-from box_comm.gripper import check_grip, holding
 from box_comm.sync_grip import GripMissed, make_sync_gripper, tip_h_mm
 from box_comm.common import SYNC_GRIP, TCP
 
@@ -87,6 +86,10 @@ def validate_config():
         raise ValueError('PROBE_START_Z는 SCAN_Z보다 높아야 함')
     if not PROBE_POINTS or any(r <= 0 or abs(a) >= 90 for r, a in PROBE_POINTS):
         raise ValueError('높이 탐지점: 반지름 > 0, -90 < 각도 < 90')
+    if not math.isfinite(GRIP_WIDTH_RANGE_MARGIN_MM) or GRIP_WIDTH_RANGE_MARGIN_MM < 0:
+        raise ValueError('쥠 폭 범위 여유는 0 이상의 유한한 값이어야 함')
+    if not math.isfinite(GRIP_HOLD_WIDTH_TOL_MM) or GRIP_HOLD_WIDTH_TOL_MM <= 0:
+        raise ValueError('쥠 폭 변화 허용은 양의 유한한 값이어야 함')
     if not GRIP_RETRY_ANGLES:
         raise ValueError('집기 각도가 비어 있음')
 
@@ -261,7 +264,7 @@ class ScanAlgorithm:
 
         if self.resume is not None:
             self._go_resume(self.resume, orient)
-            report.log(f'{self.lane+1}번 선 이어서 탐색 (지난 접촉점 뒤 {abs(SCAN_RESUME_Y_OFFSET_MM):g}mm 기준)')
+            report.log(f'{self.lane+1}번 선 시작점부터 다시 탐색')
             ignore = RESUME_IGNORE_MM
         else:
             x = X_LANES[self.lane]
@@ -289,12 +292,12 @@ class ScanAlgorithm:
                 self.resume = contact                       # 현재 경로의 재개 기준점 저장
                 report('picking')
                 grip = self._find_and_grip(contact, reference, report)
-                if grip is not None:
-                    self._carry_and_place(grip, zone, home_z, report)
+                if grip is not None and self._carry_and_place(grip, zone, home_z, report):
                     r.movej(home, vel=ANGULAR_VEL, acc=ANGULAR_ACC)
                     report.log('물품 1개 측정존 배치 완료, HOME 복귀')
                     return True
-                # 낮은 물체는 재개 후 다시 감지될 수 있으므로 같은 위치의 실패 횟수를 제한함
+                failure = '높이 탐지 4점 모두 유효 높이 없음' if grip is None else '이송 높이에서 파지 확인 실패'
+                # 같은 위치에서 재탐지와 실패가 반복되는 횟수를 제한한다.
                 if (self._last_miss and self._last_miss[0] == lane
                         and abs(self._last_miss[1] - sp[1]) < HEIGHT_MISS_SAME_SPOT_MM):
                     misses = self._last_miss[2] + 1
@@ -302,8 +305,8 @@ class ScanAlgorithm:
                     misses = 1
                 self._last_miss = (lane, sp[1], misses)
                 if misses >= HEIGHT_MISS_LIMIT:
-                    self._on_scan_blocked(contact, misses, report)
-                report.log(f'높이 탐지 4점 모두 유효 높이 없음 ({misses}/{HEIGHT_MISS_LIMIT}) → 탐색 계속', 'WARN')
+                    self._on_scan_blocked(contact, misses, report, failure)
+                report.log(f'{failure} ({misses}/{HEIGHT_MISS_LIMIT}) → 탐색 계속', 'WARN')
                 report('space_scan')
                 self._go_resume(contact, orient)
                 ignore = RESUME_IGNORE_MM
@@ -320,13 +323,13 @@ class ScanAlgorithm:
         report.log('작업공간 전체 탐색 완료: 물품 없음')
         return False
 
-    def _on_scan_blocked(self, contact, misses, report):
-        """같은 자리에서 높이 탐지가 HEIGHT_MISS_LIMIT번 실패 = 스캔공간 막힘 (낮거나 집을 수 없는 물체 추정).
+    def _on_scan_blocked(self, contact, misses, report, failure):
+        """같은 자리에서 높이 탐지 또는 상승 후 파지 확인이 HEIGHT_MISS_LIMIT번 실패 = 스캔공간 막힘 (낮거나 집을 수 없는 물체 추정).
         TODO(팀 결정): 지금은 임시로 높은 곳으로 올라가 멈춤(SCAN_FAILED → 관제 ERROR, 사람이 치움).
           후보: 그 물체를 건너뛰고 다음 선부터 계속 / 관제에 별도 코드(예: SCAN_BLOCKED)로 알림"""
         sp = contact['stopped_pose']
         msg = (f'스캔공간 막힘: {contact["lane"]}번 선 x={sp[0]:.0f}, y={sp[1]:.0f}에서 '
-               f'높이 탐지 {misses}회 실패 (낮거나 집을 수 없는 물체) → 사람이 확인')
+               f'{failure} {misses}회 → 사람이 확인')
         report.log(msg, 'ERROR')
         self._move_z(max(PROBE_START_Z, self.robot.pose()[2]))   # 물체 위에서 벗어나 멈춤
         raise PartError('SCAN_FAILED', msg)
@@ -368,17 +371,40 @@ class ScanAlgorithm:
         self._grip_width = None
         return raw
 
+    def _check_grip(self, width_mm, grip_bit, ref_width_mm=None):
+        """탐색 전용: 잡힘/빈손은 검사하고, 폭 범위·변화량만 여유를 둔다."""
+        if not math.isfinite(width_mm):
+            return False, '유효하지 않은 그리퍼 폭'
+        if not grip_bit:
+            return False, f'잡힘 신호 없음 (폭 {width_mm:.1f} mm)'
+        if width_mm <= GRIPPER['empty_width_mm']:
+            return False, f'빈손으로 닫힘 (폭 {width_mm:.1f} mm)'
+        lo, hi = GRIPPER['box_width_range_mm']
+        margin = GRIP_WIDTH_RANGE_MARGIN_MM
+        if not lo - margin <= width_mm <= hi + margin:
+            return False, f'폭 {width_mm:.1f} mm가 탐색 허용 범위 {lo-margin:g}~{hi+margin:g} mm 밖'
+        tolerance = max(GRIP_HOLD_WIDTH_TOL_MM, GRIPPER['hold_width_tol_mm'])
+        if ref_width_mm is not None:
+            if not math.isfinite(ref_width_mm):
+                return False, '유효하지 않은 기준 파지 폭'
+            if abs(width_mm - ref_width_mm) > tolerance:
+                return False, f'폭이 {ref_width_mm:.1f} → {width_mm:.1f} mm로 변함 (허용 {tolerance:g} mm 초과)'
+        return True, ''
+
     def _holding(self) -> bool:
-        """쥐고 있는지: 잡힘 비트 + 폭이 박스 범위 안 + 닫았을 때 폭에서 안 변함 (box_comm.gripper.holding, 11/18)"""
-        ok, self._hold_why, _w = holding(self.robot.gripper, getattr(self, '_grip_width', None))
+        """닫기/재조임과 같은 탐색 전용 기준으로 이송 중 파지 확인."""
+        st = self.robot.gripper.status()
+        width = self.robot.gripper.calibrated(st['width_raw_mm'])
+        ok, self._hold_why = self._check_grip(
+            width, st['grip'], getattr(self, '_grip_width', None))
         return ok
 
     def _go_resume(self, contact, orient):
-        """기존 진행 방향을 유지하며 접촉점 뒤쪽에서 탐색을 재개한다."""
+        """멈춘 선의 원래 시작점에서 같은 방향으로 그 줄 전체를 다시 훑는다."""
         lane, d = contact['lane'], contact['direction']
-        direction_sign = 1.0 if d == '+Y' else -1.0
-        y = contact['stopped_pose'][1] - direction_sign * abs(SCAN_RESUME_Y_OFFSET_MM)
-        y = max(min(Y_START, Y_END), min(max(Y_START, Y_END), y))
+        if not 1 <= lane <= len(X_LANES) or d != lane_direction(lane-1):
+            raise ValueError('재개할 탐색 선 또는 방향이 잘못됨')
+        y = Y_START if d == '-Y' else Y_END
         x = X_LANES[lane-1]
         self._move_z(max(PROBE_START_Z, self.robot.pose()[2]))
         self.robot.movejx([x, y, PROBE_START_Z, *orient[d]], vel=ANGULAR_VEL, acc=ANGULAR_ACC)
@@ -579,10 +605,10 @@ class ScanAlgorithm:
                 ok, why = False, str(e)
             else:
                 width = res['width_mm']
-                ok, why = check_grip(width, 1)             # 폭 범위 (한쪽 핑거만 걸린 경우 거름)
+                ok, why = self._check_grip(width, 1)             # 폭 범위 (한쪽 핑거만 걸린 경우 거름)
                 if ok and force > SYNC_GRIP['close_force_n']:
                     tight = r.grip_close(force)            # 같은 자리에서 40N으로 다시 조임
-                    ok, why = (check_grip(tight.width_mm, 1, width) if tight.grabbed
+                    ok, why = (self._check_grip(tight.width_mm, 1, width) if tight.grabbed
                                else (False, '다시 조이다 놓침'))
                     width = tight.width_mm if tight.grabbed else width
             if ok:
@@ -595,18 +621,12 @@ class ScanAlgorithm:
                 p[2] = hold[2] + min(GRIPPER['lift_slow_mm'], PICK_LIFT_MM)
                 slow = GRIPPER['lift_slow_vel']
                 r.movel(p, vel=[slow, 20.0], acc=[slow * 3, 40.0], tol=1.0)
-                self._move_z(hold[2] + PICK_LIFT_MM)
-                time.sleep(PICK_HOLD_SECONDS)
-                if self._holding():
-                    self._sim_take()
-                    note = ', 얇아서 작업대 바닥 + 2.6 기준' if on_floor else ''
-                    report.log(f'집기 성공 ({n}/{len(angles)}번째, {angle:+g}도, 폭 {width:.1f} mm, '
-                               f'핑거 끝 윗면 − {depth:.0f} mm{note})')
-                    return {'grip_z': hold[2], 'top_z': top[2],
-                            'transfer_alignment': initial if angle == 45.0 else None,
-                            # 쥔 상태의 핑거 끝 − TCP (측정존 내려놓기 하한을 핑거 끝 기준으로)
-                            'tip_off': TCP['pos'][2] - tip_h_mm(raw_hold)}
-                why = f'들어 올리다 놓침: {self._hold_why}'
+                note = ', 얇아서 작업대 바닥 + 2.6 기준' if on_floor else ''
+                return {'grip_z': hold[2], 'top_z': top[2],
+                        'transfer_alignment': initial if angle == 45.0 else None,
+                        'tip_off': TCP['pos'][2] - tip_h_mm(raw_hold),
+                        'grasp_summary': (f'{n}/{len(angles)}번째, {angle:+g}도, 폭 {width:.1f} mm, '
+                                          f'핑거 끝 윗면 − {depth:.0f} mm{note}')}
             self._open()
             nxt = f'다음 {angles[n]:+g}도' if n < len(angles) else '포기'
             report.log(f'집기 실패 {n}/{len(angles)} ({angle:+g}도): {why} → {nxt}', 'WARN')
@@ -626,8 +646,14 @@ class ScanAlgorithm:
         report('moving')
         # 파지 위치에서 수직으로 이탈한 뒤 도달한 높이와 자세로 수평 이송한다.
         self._move_z(max(transfer_z, r.pose()[2]))
+        time.sleep(PICK_HOLD_SECONDS)
         if not self._holding():
-            raise RuntimeError(f'이송 높이까지 상승 중 박스를 놓침 ({self._hold_why})')
+            report.log(f'이송 높이에서 파지 실패: {self._hold_why}', 'WARN')
+            self._open()
+            self._close()
+            return False
+        self._sim_take()
+        report.log(f"집기 성공 ({grip['grasp_summary']})")
         alignment = grip.get('transfer_alignment')
         if alignment is not None:
             self._orient(alignment)
@@ -648,6 +674,7 @@ class ScanAlgorithm:
             report.log(f'측정존 바닥 접촉 없이 하한 도달 (Z={z:.1f}) → 그 자리에서 놓음', 'WARN')
         self._open()
         self._move_z(transfer_z)
+        return True
 
     def _descend_until_contact(self, z_target, expected_z=None):
         """판별 _pos_descent 방식: 비동기로 천천히 내려가며 Fz 증가를 보다 닿으면 빠른 정지.

@@ -20,12 +20,15 @@ FORCE_LIMIT = 2.0            # 보정 외력 |Fy - 기준| [N]. 한 샘플이 �
 SAMPLE_PERIOD = 0.05         # 기준 데이터 측정 주기와 동일
 BACKWARD_TILT_DEG = 15.0
 
-# 탐색 재개 · 대기
-SCAN_RESUME_Y_OFFSET_MM = -60.0   # 정지점에서 진행 방향 뒤로 이동할 거리(절댓값 사용)
+# 탐색 재개 · 대기 (해당 줄의 원래 시작점부터 같은 방향으로 다시 탐색)
 RESUME_IGNORE_MM = 40.0           # 재출발 첫 40mm는 접촉 판정 제외
 
 BETWEEN_LINES_WAIT = 0.2
 SETTLE_SECONDS = 0.2
+
+# 탐색 파트 쥠 판정 여유 (공통/판별/적재 설정은 변경하지 않음)
+GRIP_WIDTH_RANGE_MARGIN_MM = 5.0  # 공통 박스 폭 범위의 양 끝에 추가할 여유
+GRIP_HOLD_WIDTH_TOL_MM = 5.0     # 기준 폭 대비 허용 변화. 공통값이 더 크면 공통값 유지
 
 # 집기 높이 · 재시도
 Z0 = 0.0                     # 탐색 작업대 바닥 TCP Z (원본 값, 높이 로그·검증·sim에만 씀 — 실제 바닥은 TABLE_Z)
@@ -37,7 +40,7 @@ GRIP_RETRY_ANGLES = (0.0, 45.0, 90.0)    # 원본 실로봇 시험값 (11/17 팀
 GRIP_RETRY_LIFT_MM = 20.0
 PICK_LIFT_MM = 20.0
 PICK_HOLD_SECONDS = 0.2
-GRIP_FORCE_N = None          # 잡는 힘 [N]. None = common.GRIPPER['grip_force_n'] (40 N, 원본 WebLogic 값과 같음). 탐지만 다르게 하려면 숫자로 (11/18 공용값으로)
+GRIP_FORCE_N = 40.0          # 잡는 힘 [N]. 원본 WebLogic 설정값 40 N (RG2 최대). None이면 common GRIPPER grip_force_n(40 N) (11/18)
 OPEN_WIDTH_MM = None         # None이면 common.GRIPPER['open_width_mm']
 
 # 높이 탐지 실패 반복 (부채꼴 4점 모두 높이 없음)
