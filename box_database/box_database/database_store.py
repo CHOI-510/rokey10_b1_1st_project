@@ -2,22 +2,18 @@
 """
 database_store.py — 저장소 두 가지 (같은 함수 4개)
 ================================================================
-  SupabaseStore : 실제 Supabase (product, loc, state 테이블)
-  FileStore     : Supabase 대신 JSON 파일 (DB 연동 전 시험·확인용)
-                  폴더(기본 ~/box_logs/fake_db/)에 테이블마다 파일 하나:
-                    product.json        A~D 4행    ← 처음엔 database_config 값으로 만들어짐, 직접 고쳐도 됨
-                    loc.json            위치 5행   ← 같음 (작업 시작 때마다 다시 읽음)
-                    state.json          1행        ← DB 노드가 씀 (Supabase state 행과 같은 모양)
-                    state_updates.jsonl state에 쓴 내용 기록 (한 줄 = update 한 번: 시각, 누가, 바뀐 열)
-                                        by: service = 관제 서비스(재고·작업 결과), control_status = 관제 단계·로봇
-                                        → Supabase에 무엇이 언제 올라가는지 그대로 보임
-                                        (2초마다 도는 heartbeat·control_seen_at만 바뀐 줄은 빼고 기록)
-                  Supabase로 옮길 때: product.json·loc.json 값을 테이블에 넣고 store를 supabase로 바꾸면 끝.
+  SupabaseStore : 실제 Supabase (product, loc, inventory 테이블)
+  FileStore     : Supabase 대신 JSON 파일 (DB 연동 전 시험·확인용, 기본 ~/box_logs/fake_db/)
+                    product.json    A~D 4행   ← 처음엔 database_config 값으로 만들어짐, 직접 고쳐도 됨
+                    loc.json        위치 5행  ← 같음 (작업 시작 때마다 다시 읽음)
+                    inventory.json  재고 1행  ← DB 노드가 씀
+                    inventory_updates.jsonl   재고를 쓴 기록 (한 줄 = 한 번: 시각, 바뀐 값) — 확인용
+                  Supabase로 옮길 때: python3 scripts/db_to_sql.py 출력을 SQL Editor에 넣고 store를 바꾸면 끝.
 
-  products()          -> [{'class_id', 'name', 'width_mm', 'depth_mm', 'height_mm', 'weight_g'}, ...]  A→D 순
-  locs()              -> [{'name', 'x', 'y', 'z'}, ...]
-  get_state()         -> state 행 dict
-  update_state(patch) -> None   바꿀 열만 (행 전체를 덮어쓰지 않음)
+  products()             -> [{'class_id', 'name', 'width_mm', 'depth_mm', 'height_mm', 'weight_g'}, ...]  A→D 순
+  locs()                 -> [{'name', 'x', 'y', 'z'}, ...]
+  get_inventory()        -> {'a', 'b', 'c', 'd', 'u', 'updated_at'}
+  set_inventory(values)  -> None   {'a': .., 'b': .., 'c': .., 'd': .., 'u': ..} 최종값
 ================================================================
 """
 import json
@@ -26,6 +22,12 @@ import threading
 from datetime import datetime, timezone
 
 from box_database import database_config as cfg
+
+INV_COLS = ('a', 'b', 'c', 'd', 'u')
+
+
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat()
 
 
 class SupabaseStore:
@@ -50,23 +52,22 @@ class SupabaseStore:
     def locs(self):
         return self.sb.table(cfg.TABLE_LOC).select('name,x,y,z').execute().data
 
-    def get_state(self):
-        rows = (self.sb.table(cfg.TABLE_STATE).select('*')
-                .eq('id', cfg.STATE_ID).limit(1).execute().data)
+    def get_inventory(self):
+        rows = (self.sb.table(cfg.TABLE_INVENTORY).select('a,b,c,d,u,updated_at')
+                .eq('id', cfg.INVENTORY_ID).limit(1).execute().data)
         if not rows:
-            raise RuntimeError(f'{cfg.TABLE_STATE} 테이블에 id={cfg.STATE_ID} 행이 없음 '
-                               f'(insert into {cfg.TABLE_STATE} (id) values (1))')
+            raise RuntimeError(f'{cfg.TABLE_INVENTORY} 테이블에 id={cfg.INVENTORY_ID} 행이 없음 '
+                               f'(insert into {cfg.TABLE_INVENTORY} (id) values (1))')
         return rows[0]
 
-    def update_state(self, patch):
-        rows = (self.sb.table(cfg.TABLE_STATE).update(patch)
-                .eq('id', cfg.STATE_ID).execute().data)
+    def set_inventory(self, values):
+        patch = {k: int(values[k]) for k in INV_COLS}
+        patch['updated_at'] = _now_iso()
+        rows = (self.sb.table(cfg.TABLE_INVENTORY).update(patch)
+                .eq('id', cfg.INVENTORY_ID).execute().data)
         if not rows:
-            raise RuntimeError(f'{cfg.TABLE_STATE} id={cfg.STATE_ID} 행이 없거나 쓰기 권한 없음 '
+            raise RuntimeError(f'{cfg.TABLE_INVENTORY} id={cfg.INVENTORY_ID} 행이 없거나 쓰기 권한 없음 '
                                '(service_role 키인지 확인)')
-
-
-_WRITER = {'MainThread': 'service', 'db_sync': 'control_status'}   # 누가 썼나: 관제 서비스 응답 / 관제 상태 동기화
 
 
 class FileStore:
@@ -79,19 +80,12 @@ class FileStore:
         self._lock = threading.Lock()
         self.p_product = os.path.join(folder, f'{cfg.TABLE_PRODUCT}.json')
         self.p_loc = os.path.join(folder, f'{cfg.TABLE_LOC}.json')
-        self.p_state = os.path.join(folder, f'{cfg.TABLE_STATE}.json')
-        self.p_updates = os.path.join(folder, f'{cfg.TABLE_STATE}_updates.jsonl')
-        if not os.path.exists(self.p_product):
-            self._write(self.p_product, cfg.FILE_PRODUCT)
-        if not os.path.exists(self.p_loc):
-            self._write(self.p_loc, cfg.FILE_LOC)
-        state = dict(cfg.FILE_STATE)
-        try:
-            state.update(self._read(self.p_state))
-        except FileNotFoundError:
-            pass
-        self._state = state
-        self._write(self.p_state, state)
+        self.p_inv = os.path.join(folder, f'{cfg.TABLE_INVENTORY}.json')
+        self.p_updates = os.path.join(folder, f'{cfg.TABLE_INVENTORY}_updates.jsonl')
+        for path, default in ((self.p_product, cfg.FILE_PRODUCT), (self.p_loc, cfg.FILE_LOC),
+                              (self.p_inv, cfg.FILE_INVENTORY)):
+            if not os.path.exists(path):
+                self._write(path, default)
 
     @staticmethod
     def _read(path):
@@ -111,7 +105,7 @@ class FileStore:
         with self._lock:
             if not os.path.exists(path):
                 self._write(path, default)
-        return self._read(path)
+            return self._read(path)
 
     def products(self):
         return sorted(self._read_table(self.p_product, cfg.FILE_PRODUCT), key=lambda r: r['class_id'])
@@ -119,25 +113,27 @@ class FileStore:
     def locs(self):
         return self._read_table(self.p_loc, cfg.FILE_LOC)
 
-    def get_state(self):
-        with self._lock:
-            return dict(self._state)
+    def get_inventory(self):
+        row = dict(cfg.FILE_INVENTORY)
+        row.update(self._read_table(self.p_inv, cfg.FILE_INVENTORY))
+        return row
 
-    def update_state(self, patch):
+    def set_inventory(self, values):
+        new = {k: int(values[k]) for k in INV_COLS}
         with self._lock:
-            changed = {k: v for k, v in patch.items() if self._state.get(k) != v}
-            self._state.update(patch)
-            self._write(self.p_state, self._state)
-            if set(changed) - set(cfg.SYNC_ONLY_COLUMNS):          # heartbeat만 바뀐 줄은 기록 안 함
-                line = {'at': datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
-                        'by': _WRITER.get(threading.current_thread().name, threading.current_thread().name),
-                        'set': changed}
+            try:
+                old = self._read(self.p_inv)
+            except FileNotFoundError:
+                old = dict(cfg.FILE_INVENTORY)
+            self._write(self.p_inv, dict(old, **new, updated_at=_now_iso()))
+            changed = {k: v for k, v in new.items() if old.get(k) != v}
+            if changed:
+                line = {'at': datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3], 'set': changed}
                 with open(self.p_updates, 'a', encoding='utf-8') as f:
                     f.write(json.dumps(line, ensure_ascii=False) + '\n')
 
 
-def make_stores(mode, fake_dir, log):
-    """(서비스용 저장소, 동기화 스레드용 저장소). Supabase는 연결을 따로, 파일은 같은 객체."""
+def make_store(mode, fake_dir, log):
     mode = 'file' if mode == 'memory' else mode          # 예전 이름
     want = mode
     if mode == 'auto':
@@ -146,8 +142,7 @@ def make_stores(mode, fake_dir, log):
         if not (cfg.SUPABASE_URL and cfg.SUPABASE_KEY):
             raise RuntimeError('store=supabase인데 SUPABASE_URL / SUPABASE_SERVICE_KEY가 없음')
         try:
-            return (SupabaseStore(cfg.SUPABASE_URL, cfg.SUPABASE_KEY),
-                    SupabaseStore(cfg.SUPABASE_URL, cfg.SUPABASE_KEY))
+            return SupabaseStore(cfg.SUPABASE_URL, cfg.SUPABASE_KEY)
         except ImportError:
             if mode == 'supabase':
                 raise RuntimeError('supabase 패키지 없음 (pip install supabase --break-system-packages)')
@@ -156,6 +151,5 @@ def make_stores(mode, fake_dir, log):
         raise RuntimeError(f"store='{mode}' 알 수 없음 (auto / supabase / file)")
     folder = os.path.expanduser(fake_dir or cfg.DEFAULT_FAKE_DIR)
     if mode == 'auto':
-        log.warn(f'[database] Supabase 키 없음 → 파일 모드 ({folder}) — 웹 화면에는 안 보임')
-    store = FileStore(folder)
-    return store, store
+        log.warn(f'[database] Supabase 키 없음 → 파일 모드 ({folder})')
+    return FileStore(folder)

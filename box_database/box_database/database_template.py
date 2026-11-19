@@ -4,7 +4,8 @@ database_template.py — DB 노드 약속 예시 (관제 관리, 참고용)
 ================================================================
   실제 DB 노드는 database_main.py (+ database_work / database_store / database_config).
   이 파일은 'database_interface가 무엇을 부르고 무엇을 돌려받는지'만 보여 주는 가장 짧은 예시다.
-  값은 메모리에만 있고, Supabase·로그 파일·버튼 창구는 없다.
+  값은 메모리에만 있고, Supabase·로그 파일·웹 창구는 없다.
+  실제 DB 노드가 DB에 쓰는 것은 재고뿐이고 (product·loc는 읽기만), 작업·로봇 상태는 메모리에만 둔다 (11/19).
   실행 비교: ros2 run box_database database_template   (database_main과 동시에 켜지 말 것 — 같은 서버 이름)
 
 약속 (database_interface가 부름)
@@ -15,9 +16,9 @@ database_template.py — DB 노드 약속 예시 (관제 관리, 참고용)
       {'measure_zone': [x, y, z], 'place_zones': {'A': [x, y], ..., 'D': [x, y]}}
       'home_j'는 넣지 않아도 됨 (common.FIXED_POSES['home_j']를 interface가 채움)
   update_inventory(box_id, inventory) -> None     재고 최종값 (증감 아님). 같은 box_id는 interface가 거름
-  set_job_status(status, reason) -> None          BEFORE / RUNNING / DONE / ERROR / STOPPED (+ 이유)
+  set_job_status(status, reason) -> None          BEFORE / RUNNING / DONE / ERROR / STOPPED (+ 이유) — 메모리에만
   on_event(event) -> None          (선택) /event_log 한 줄. seq로 중복 거르기 (재시작하면 최근 100개 다시 옴)
-  on_state(state) -> None          (선택) /control_status JSON. 관제 단계·박스·로봇 상태. 2초마다 다시 옴
+  on_state(state) -> None          (선택) /control_status JSON. 관제 단계·로봇 상태. 2초마다 다시 옴 — 메모리에만
 
 DB 노드가 부르는 것 (UI 버튼)
   self.node.request_emergency_stop('ui')          -> bool (False = 관제 없음)
@@ -63,7 +64,7 @@ class DatabaseWork:
         return {'measure_zone': list(POSES['measure_zone']),
                 'place_zones': {c: list(xy) for c, xy in POSES['place_zones'].items()}}
 
-    def update_inventory(self, box_id, inventory):
+    def update_inventory(self, box_id, inventory):       # 실제 DB 노드: Supabase inventory 행에 씀
         self.inventory = dict(inventory)
         self.log.info(f'[db_template] {box_id} 재고 {inventory} | 적재 그림 '
                       + ' '.join(f'{c}{stack_layout(n)}' for c, n in inventory.items() if c != 'U'))

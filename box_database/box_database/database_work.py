@@ -5,23 +5,28 @@ database_work.py — DB 노드가 하는 일 (관제·DB: 정쓰)
 ROS 통신은 box_comm/database_interface.py가 하고, 이 클래스의 함수를 부른다.
 저장소(Supabase / 파일)는 database_store.py, 설정은 database_config.py.
 
+무엇을 어디에 두나 (11/19)
+  DB(Supabase)   product · loc · inventory(재고 1행)  ← 기록할 것만. 재고가 바뀔 때만 씀
+  메모리         작업 상태 · 로봇 · 연결              ← GET /state 로 보여 주기만 (휘발)
+  로그 파일      ~/box_logs/{job_id}.jsonl            ← 이벤트 전부 (작업 이력 = JOB_* 줄)
+
   관제 → DB 노드 (ROS)                      DB 노드가 하는 일
   -----------------------------------------------------------------------------
-  get_job_data()        작업 시작 때          product(분류 기준) + state(재고) 읽기
+  get_job_data()        작업 시작 때          product(분류 기준) + inventory(재고) 읽기
   get_fixed_poses()     작업 시작 때          loc(측정존·적재 구역) 읽기, HOME은 코드 값
-  update_inventory()    박스 하나 끝날 때     state 재고 열 쓰기 (관제가 응답을 기다림)
-  set_job_status()      RUNNING·DONE 등      state 작업 결과 열 쓰기 (관제가 응답을 기다림)
-  on_state()            /control_status      바뀐 열만 모아 두고 동기화 스레드가 씀 (관제를 안 막음)
-  on_event()            /event_log           ~/box_logs/{job_id}.jsonl에 한 줄 (DB에는 안 올림)
+  update_inventory()    박스 하나 끝날 때     inventory 쓰기 (실패하면 모아 두고 다시 보냄)
+  set_job_status()      RUNNING·DONE 등      메모리에만 (/state의 status·reason)
+  on_state()            /control_status      메모리에만 (/state의 status·로봇·연결)
+  on_event()            /event_log           로그 파일에 한 줄
 
-  웹 UI 버튼 → DB 노드 (같은 노트북, HTTP 127.0.0.1:8765)
-    POST /estop   → 관제 /emergency_stop     (언제든, 인터넷 없어도 동작)
-    POST /start   → 관제 /job_command start  (관제 단계가 READY일 때만)
-    POST /cancel  → 관제 /job_command cancel (카운트다운 중 취소, 관제가 판단)
-    POST /inventory {a,b,c,d,u[,source]} → 시작 전 재고 설정 (관제 READY일 때만, 11/19) → 관제에 알림
-    GET  /inventory → 지금 재고 {a,b,c,d,u, capacity}
-    GET  /health  → {ok, stage, store}
-    GET  /state   → 지금 state 행 (시험·디버그용)
+  웹 → DB 노드 (같은 노트북, HTTP 127.0.0.1:8765)
+    GET  /state      → 화면 한 장에 필요한 것 전부 (웹이 1초마다)
+    POST /estop      → 관제 /emergency_stop     (언제든, 인터넷 없어도 동작)
+    POST /start      → 관제 /job_command start  (관제가 READY일 때만)
+    POST /cancel     → 관제 /job_command cancel (카운트다운 중 취소, 관제가 판단)
+    POST /inventory  {a,b,c,d,u[,source]} → 시작 전 재고 설정 (관제 READY일 때만)
+    GET  /inventory  → {a,b,c,d,u, capacity}
+    GET  /health     → {ok, stage, store}  (시험·디버그용)
 ================================================================
 """
 import json
@@ -31,13 +36,18 @@ import time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from box_comm.common import FIXED_POSES, INVENTORY_KEYS, REMOTE_JOB_COMMANDS, VALID_CLASSES, stack_capacity
+from box_comm.common import (FIXED_POSES, INVENTORY_KEYS, JOB_COMMANDS, REMOTE_JOB_COMMANDS, VALID_CLASSES,
+                             stack_capacity)
 from box_database import database_config as cfg
-from box_database.database_store import make_stores
+from box_database.database_store import make_store
 
 
 def now_iso(offset_sec=0.0):
     return (datetime.now(timezone.utc) + timedelta(seconds=offset_sec)).isoformat()
+
+
+def _iso_from_epoch(t):
+    return datetime.fromtimestamp(float(t), timezone.utc).isoformat()
 
 
 class DatabaseWork:
@@ -47,39 +57,39 @@ class DatabaseWork:
         mode = str(node.declare_parameter('store', 'auto').value).lower()
         fake_dir = str(node.declare_parameter('fake_dir', cfg.DEFAULT_FAKE_DIR).value)
         os.makedirs(cfg.LOG_DIR, exist_ok=True)
-        self.store, self._sync_store = make_stores(mode, fake_dir, self.log)
+        self.store = make_store(mode, fake_dir, self.log)
 
         self._lock = threading.Lock()
-        self._wake = threading.Event()   # 단계가 바뀌면 0.5초 주기를 기다리지 않고 바로 씀
-        self._pending = {}           # 아직 안 쓴 관제 상태 열
-        self._written = {}           # 마지막으로 쓴 관제 상태 열 (같은 값 다시 쓰지 않게)
-        self._seen_wall = None       # 관제 상태를 마지막으로 받은 시각 (ISO)
-        self._seen_mono = 0.0
-        self._last_seen_write = 0.0
-        self.stage = ''              # 지금 관제 단계 (/start 판단용)
+        # 재고: DB가 원본, 메모리는 마지막으로 알고 있는 값. 저장 실패 중이면 메모리 값이 최신
+        self._inv = {c: 0 for c in INVENTORY_KEYS}
+        self._inv_unsaved = False
+        self._inv_wake = threading.Event()
+        # 실시간 상태 (휘발) — /state
+        self.stage = ''                  # 관제 단계 (/start·/inventory 판단용)
+        self._result = {'status': 'BEFORE', 'reason': '', 'started_at': None, 'finished_at': None}
+        self._robot = {'robot_ok': False, 'robot_hint': ''}
+        self._start_at = None
+        self._seen = 0.0                 # 관제 상태를 마지막으로 받은 시각 (monotonic)
 
-        self._log_job = None         # 로그 파일 중복 거르기 (작업별 마지막 seq)
+        self._log_job = None             # 로그 파일 중복 거르기 (작업별 마지막 seq)
         self._log_seq = 0
         self._log_lock = threading.Lock()
+        self._inv_updates = 0            # 받은 재고 반영 횟수 (시험용 estop_at)
 
-        self._inv_updates = 0        # 이 노드가 받은 재고 반영 횟수 (시험용 estop_at)
-        self._db_down = False        # 저장소 쓰기 실패 중 (재고·상태를 모아 두고 다시 보내는 중)
+        self._load_inventory()
         self._setup_test_params(node)
-
-        threading.Thread(target=self._sync_loop, name='db_sync', daemon=True).start()
+        threading.Thread(target=self._retry_loop, name='db_retry', daemon=True).start()
         self._start_http()
-        where = (f'파일 {self.store.folder}' if self.store.kind == 'file'
-                 else f'Supabase {cfg.SUPABASE_URL}')
-        self.log.info(f'[database] 저장소: {where} | 로그 {cfg.LOG_DIR} | '
-                      f'버튼 창구 http://{cfg.HTTP_HOST}:{cfg.HTTP_PORT}'
-                      + (' (start 토큰 사용)' if cfg.START_TOKEN else ''))
+        where = f'파일 {self.store.folder}' if self.store.kind == 'file' else f'Supabase {cfg.SUPABASE_URL}'
+        self.log.info(f'[database] 저장소: {where} (product·loc·inventory) | 로그 {cfg.LOG_DIR} | '
+                      f'창구 http://{cfg.HTTP_HOST}:{cfg.HTTP_PORT}' + (' (토큰 사용)' if cfg.START_TOKEN else ''))
 
     # ------------------------------------------------------------------
-    # 시험용 파라미터 (파일 모드 전용, 11/18 — 예전 box_control/fake_database 기능을 옮김)
+    # 시험용 파라미터 (파일 모드 전용)
     # ------------------------------------------------------------------
     def _setup_test_params(self, node):
         """start_inventory: [A, B, C, D(, U)] 이 값으로 재고를 덮어쓰고 시작 (기본 [-1] = 안 건드림)
-        estop_at        : N번째 재고 반영 직후 UI 비상정지 버튼을 누른 것처럼 관제 /emergency_stop (0 = 끔)
+        estop_at        : N번째 재고 반영 직후 UI 비상정지를 누른 것처럼 관제 /emergency_stop (0 = 끔)
         Supabase(실제 데이터)에서는 둘 다 무시한다."""
         start_inv = [int(n) for n in node.declare_parameter('start_inventory', [-1]).value]
         self.estop_at = int(node.declare_parameter('estop_at', 0).value)
@@ -89,11 +99,68 @@ class DatabaseWork:
             self.estop_at = 0
             return
         if start_inv and start_inv[0] >= 0:
-            patch = {c.lower(): (start_inv[i] if i < len(start_inv) else 0) for i, c in enumerate(INVENTORY_KEYS)}
-            self.store.update_state(patch)
-            self.log.warn(f'[database] (시험) 재고를 {patch}로 시작')
+            inv = {c: (start_inv[i] if i < len(start_inv) else 0) for i, c in enumerate(INVENTORY_KEYS)}
+            self._save_inventory(inv, '시험 시작값')
+            self.log.warn(f'[database] (시험) 재고를 {inv}로 시작')
         if self.estop_at:
             self.log.warn(f'[database] (시험) {self.estop_at}번째 재고 반영 직후 비상정지 요청')
+
+    # ------------------------------------------------------------------
+    # 재고 (DB에 기록하는 유일한 가변 값)
+    # ------------------------------------------------------------------
+    def _load_inventory(self):
+        try:
+            row = self.store.get_inventory()
+            with self._lock:
+                self._inv = {c: int(row.get(c.lower()) or 0) for c in INVENTORY_KEYS}
+        except Exception as e:
+            self.log.error(f'[database] 재고 읽기 실패: {type(e).__name__}: {e}')
+            raise
+
+    def _current_inventory(self):
+        """작업 시작·화면용 재고. 못 올린 값이 있으면 메모리, 아니면 DB를 다시 읽음 (사람이 DB를 고친 경우 반영)"""
+        with self._lock:
+            if self._inv_unsaved:
+                return dict(self._inv)
+        try:
+            self._load_inventory()
+        except Exception:
+            pass                                  # DB가 안 되면 마지막으로 알던 값
+        with self._lock:
+            return dict(self._inv)
+
+    def _save_inventory(self, inv, what):
+        """재고 쓰기. 실패해도 관제에 실패로 돌려주지 않고 모아 두었다가 다시 보낸다 (작업이 멈추지 않게).
+        재고는 적재가 매번 실제로 재므로, 늦게 올라가도 값이 틀어지지 않는다."""
+        with self._lock:
+            self._inv = {c: int(inv.get(c, 0)) for c in INVENTORY_KEYS}
+            values = {c.lower(): n for c, n in self._inv.items()}
+        try:
+            self.store.set_inventory(values)
+            with self._lock:
+                recovered, self._inv_unsaved = self._inv_unsaved, False
+            if recovered:
+                self._log_db_event('INFO', 'DB 다시 연결됨 → 모아 둔 재고를 올림')
+            return
+        except Exception as e:
+            err = f'{type(e).__name__}: {e}'
+        with self._lock:
+            first, self._inv_unsaved = not self._inv_unsaved, True
+        self._inv_wake.set()
+        self.log.warn(f'[database] {what} 저장 실패 → 다시 보냄: {err}')
+        if first:
+            self._log_db_event('WARN', f'DB 저장 실패 → 연결되면 다시 보냄 (작업은 계속): {err}')
+
+    def _retry_loop(self):
+        while True:
+            self._inv_wake.wait(cfg.RETRY_SEC)
+            self._inv_wake.clear()
+            with self._lock:
+                if not self._inv_unsaved:
+                    continue
+                inv = dict(self._inv)
+            time.sleep(cfg.RETRY_SEC)
+            self._save_inventory(inv, '재고 다시 보내기')
 
     # ------------------------------------------------------------------
     # 관제가 부르는 함수 (응답을 기다림 → 짧게)
@@ -110,31 +177,24 @@ class DatabaseWork:
         missing = set(VALID_CLASSES) - {s['class_id'] for s in specs}
         if missing:
             raise ValueError(f'{cfg.TABLE_PRODUCT}에 클래스 {sorted(missing)} 행이 없음')
-        st = self.store.get_state()
-        with self._lock:                        # 아직 못 올린 재고가 있으면 그 값이 최신
-            st.update({k: v for k, v in self._pending.items() if k in {c.lower() for c in INVENTORY_KEYS}})
-        inventory = {c: int(st.get(c.lower()) or 0) for c in INVENTORY_KEYS}
-        return specs, inventory
+        return specs, self._current_inventory()
 
     def get_fixed_poses(self):
         locs = {r['name']: r for r in self.store.locs()}
         mz = locs.get(cfg.LOC_MEASURE_ZONE)
         if mz is None or mz.get('z') is None:
-            self.log.error(f'[database] {cfg.TABLE_LOC}에 {cfg.LOC_MEASURE_ZONE}(x, y, z) 없음 '
-                           '→ 관제 사전 점검 FAIL')
+            self.log.error(f'[database] {cfg.TABLE_LOC}에 {cfg.LOC_MEASURE_ZONE}(x, y, z) 없음 → 관제 사전 점검 FAIL')
             return None
         zones = {}
         for c in VALID_CLASSES:
             r = locs.get(c)
             zones[c] = [float(r['x']), float(r['y'])] if r else None      # 빠지면 관제가 사전 점검 FAIL
-        return {'home_j': list(FIXED_POSES['home_j']),                     # HOME은 코드가 원본 (11/18)
+        return {'home_j': list(FIXED_POSES['home_j']),                     # HOME은 코드가 원본
                 'measure_zone': [float(mz['x']), float(mz['y']), float(mz['z'])],
                 'place_zones': zones}
 
     def update_inventory(self, box_id, inventory):
-        patch = {c.lower(): int(inventory.get(c, 0)) for c in INVENTORY_KEYS}
-        patch['updated_at'] = now_iso()
-        self._write_or_queue(patch, f'재고 {box_id}')
+        self._save_inventory(inventory, f'재고 {box_id}')
         self.log.info(f'[database] 재고 ← {box_id}: {inventory}')
         self._inv_updates += 1
         if self.estop_at and self._inv_updates == self.estop_at:
@@ -142,121 +202,72 @@ class DatabaseWork:
             self.node.request_emergency_stop('test')
 
     def set_job_status(self, status, reason):
-        patch = {'status': status, 'reason': reason or '', 'updated_at': now_iso()}
-        if status == 'RUNNING':
-            patch.update(started_at=now_iso(), finished_at=None)
-        elif status == 'BEFORE':                 # 시작 취소 (사전 점검 실패·카운트다운 취소) → 지난 작업 시각 비움
-            patch.update(started_at=None, finished_at=None)
-        elif status in cfg.FINISHED_STATUS:
-            patch['finished_at'] = now_iso()
-        self._write_or_queue(patch, f'작업 상태 {status}')
-
-    def _write_or_queue(self, patch, what):
-        """재고·작업 상태 쓰기 (11/18). 저장소(Supabase)가 안 되면 실패로 돌려주지 않고 모아 두었다가
-        동기화 스레드가 다시 쓴다 (새 값이 옛 값을 이김). 와이파이가 잠깐 끊겨도 작업이 멈추지 않게.
-        재고는 적재가 매번 실제로 재므로, 늦게 올라가도 값이 틀어지지 않는다."""
-        try:
-            self.store.update_state(patch)
-            return
-        except Exception as e:
-            err = f'{type(e).__name__}: {e}'
+        """작업 결과 — 메모리에만 (기록은 로그 파일의 JOB_* 줄)"""
         with self._lock:
-            self._pending.update(patch)
-            first = not self._db_down
-            self._db_down = True
-        self._wake.set()
-        self.log.warn(f'[database] {what} 저장 실패 → 모아 두고 다시 보냄: {err}')
-        if first:
-            self._log_db_event('WARN', f'DB 저장 실패 → 연결되면 다시 보냄 (작업은 계속): {err}')
-
-    def _log_db_event(self, level, message):
-        """DB 노드 자신의 사건을 로그 파일에 (seq 0, source 'db')"""
-        event = {'seq': 0, 'stamp': time.strftime('%Y-%m-%d %H:%M:%S'), 'job_id': self._log_job or '',
-                 'source': 'db', 'stage': self.stage, 'level': level, 'code': 'DB_RETRY',
-                 'box_id': '', 'class_id': '', 'expected': -1, 'measured': -1, 'message': message}
-        try:
-            with self._log_lock:
-                self._append_log(self._log_job or 'no_job', event)
-        except Exception:
-            pass
+            r = self._result
+            r['status'], r['reason'] = status, reason or ''
+            if status == 'RUNNING':
+                r['started_at'], r['finished_at'] = now_iso(), None
+            elif status == 'BEFORE':               # 시작 안 함 (사전 점검 실패·취소)
+                r['started_at'], r['finished_at'] = None, None
+            elif status in cfg.FINISHED_STATUS:
+                r['finished_at'] = now_iso()
+        self.log.info(f'[database] 작업 {status}' + (f' : {reason}' if reason else ''))
 
     # ------------------------------------------------------------------
-    # 관제 상태 (/control_status) — 모아 두기만 하고 쓰기는 동기화 스레드
+    # 관제 상태 (/control_status, 2초마다 + 바뀌면 즉시) — 메모리에만
     # ------------------------------------------------------------------
     def on_state(self, st):
-        cols = {}
-        for key, col in cfg.STATUS_TO_COLUMN.items():
-            if key in st:
-                v = st[key]
-                cols[col] = (int(v or 0) if col in cfg.INT_COLUMNS
-                             else bool(v) if col in cfg.BOOL_COLUMNS
-                             else '' if v is None else str(v))
+        stage = str(st.get('state') or '')
         with self._lock:
-            stage = cols.get('stage', self.stage)
-            ready_again = stage == 'READY' and self.stage != 'READY'
-            if stage != self.stage:             # 카운트다운 시작·끝 → UI 팝업 남은 시간용
-                sec = float(st.get('standby_sec') or 0)
-                cols['start_at'] = now_iso(sec) if stage == 'STANDBY' and sec > 0 else None
-                self.log.info(f'[database] 관제 단계 {self.stage or "-"} → {stage}')
-                self._wake.set()
-            self.stage = stage
-            known = {**self._written, **self._pending}
-            self._pending.update({k: v for k, v in cols.items() if known.get(k, object()) != v})
-            self._seen_wall = now_iso()
-            self._seen_mono = time.monotonic()
-        if ready_again:
-            self._close_orphan_job()
+            prev, self.stage = self.stage, stage
+            self._seen = time.monotonic()
+            if 'robot_ok' in st:
+                self._robot['robot_ok'] = bool(st['robot_ok'])
+            if 'robot_hint' in st:
+                self._robot['robot_hint'] = str(st.get('robot_hint') or '')
+            if stage == 'STANDBY':
+                end = st.get('start_at')               # 관제가 보낸 카운트다운 끝 (epoch) — 관리자 GUI와 같은 값
+                if end:
+                    self._start_at = _iso_from_epoch(end)
+                elif prev != 'STANDBY':
+                    self._start_at = now_iso(float(st.get('standby_sec') or 0))
+            else:
+                self._start_at = None
+            orphan = stage == 'READY' and self._result['status'] == 'RUNNING'
+        if stage != prev:
+            self.log.info(f'[database] 관제 단계 {prev or "-"} → {stage}')
+        if orphan:                                  # 관제가 작업 중에 죽었다가 다시 켜진 경우
+            self.set_job_status('ERROR', '작업 결과 없이 대기로 돌아옴 (관제가 작업 중 종료·재시작됨)')
 
-    def _close_orphan_job(self):
-        """관제가 READY인데 DB에 RUNNING이 남아 있으면 정리 (관제가 작업 중에 죽고 다시 켜진 경우).
-        정상 흐름에서는 관제가 결과(DONE/ERROR/STOPPED)를 쓴 뒤에 READY가 되므로 걸리지 않는다."""
-        try:
-            if self.store.get_state().get('status') == 'RUNNING':
-                why = '작업 결과가 기록되지 않은 채 대기로 돌아옴 (관제가 작업 중 종료·재시작됨)'
-                self.set_job_status('ERROR', why)
-                self.log.warn(f'[database] RUNNING으로 남은 작업 정리 → ERROR : {why}')
-        except Exception as e:
-            self.log.warn(f'[database] 남은 작업 확인 실패: {type(e).__name__}: {e}')
+    def _status_now(self):
+        """화면 status: 점검·카운트다운 STARTING, 작업 중 RUNNING, 그 밖은 마지막 결과"""
+        if self.stage in cfg.STARTING_STAGES:
+            return 'STARTING'
+        if self.stage in cfg.RUNNING_STAGES:
+            return 'RUNNING'
+        return self._result['status']
 
-    def _sync_loop(self):
-        last_hb, warned = 0.0, 0.0
-        while True:
-            self._wake.wait(cfg.SYNC_PERIOD_SEC)
-            self._wake.clear()
-            t = time.monotonic()
-            with self._lock:
-                patch, self._pending = self._pending, {}
-                fresh = self._seen_mono > self._last_seen_write
-                if self._seen_wall and (patch or (fresh and t - self._last_seen_write >= cfg.SEEN_WRITE_SEC)):
-                    patch['control_seen_at'] = self._seen_wall
-            if t - last_hb >= cfg.HEARTBEAT_SEC:
-                patch['heartbeat_at'] = now_iso()
-            if not patch:
-                continue
-            try:
-                self._sync_store.update_state(patch)
-                if self._db_down:
-                    with self._lock:
-                        self._db_down = False
-                    self.log.info('[database] 저장소 다시 연결됨 → 모아 둔 재고·상태 반영')
-                    self._log_db_event('INFO', 'DB 다시 연결됨 → 모아 둔 재고·상태를 올림')
-                if 'heartbeat_at' in patch:
-                    last_hb = t
-                if 'control_seen_at' in patch:
-                    self._last_seen_write = t
-                with self._lock:
-                    self._written.update({k: v for k, v in patch.items() if k not in cfg.SYNC_ONLY_COLUMNS})
-            except Exception as e:      # 끊김 → 다음 주기에 최신값으로 다시 (오래된 값이 새 값을 덮지 않게)
-                with self._lock:
-                    for k, v in patch.items():
-                        if k not in cfg.SYNC_ONLY_COLUMNS:
-                            self._pending.setdefault(k, v)
-                if t - warned > 10.0:
-                    self.log.warn(f'[database] state 동기화 실패 (재시도 중): {type(e).__name__}: {e}')
-                    warned = t
+    def live_state(self):
+        with self._lock:
+            control_ok = self._seen > 0 and time.monotonic() - self._seen < cfg.CONTROL_ALIVE_SEC
+            out = {'status': self._status_now(),
+                   'reason': self._result['reason'],
+                   'start_at': self._start_at,
+                   'started_at': self._result['started_at'],
+                   'finished_at': self._result['finished_at'],
+                   'robot_ok': self._robot['robot_ok'] and control_ok,
+                   'robot_hint': self._robot['robot_hint'] if control_ok else '',
+                   'control_ok': control_ok,
+                   'db_ok': not self._inv_unsaved,
+                   # 재고는 메모리 값 (웹이 1초마다 물어도 DB를 읽지 않음. 바뀔 때마다 메모리와 DB를 같이 씀)
+                   'inventory': {c.lower(): n for c, n in self._inv.items()}}
+        out['capacity'] = stack_capacity()
+        out['at'] = now_iso()
+        return out
 
     # ------------------------------------------------------------------
-    # 이벤트 로그 (/event_log) → 파일 (UI는 Next.js API가 최근 N줄을 읽음)
+    # 이벤트 로그 (/event_log) → 파일 (웹은 Next.js가 최근 N줄을 읽음)
     # ------------------------------------------------------------------
     def on_event(self, event):
         job = event.get('job_id') or 'no_job'
@@ -295,29 +306,30 @@ class DatabaseWork:
         with open(self._log_path(job), 'a', encoding='utf-8') as f:
             f.write(json.dumps(line, ensure_ascii=False) + '\n')
 
-    def _log_ui_command(self, command, ok, message):
-        """UI 버튼 기록 (seq 0 = 관제가 보낸 줄이 아님)"""
-        event = {'seq': 0, 'stamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-                 'job_id': self._log_job or '', 'source': 'ui', 'stage': self.stage,
-                 'level': 'WARN' if command == 'estop' else 'INFO', 'code': 'UI_COMMAND',
-                 'box_id': '', 'class_id': '', 'expected': -1, 'measured': -1,
-                 'message': f'UI {command} → {"OK" if ok else "거절"} {message}'.strip()}
-        with self._log_lock:
-            self._append_log(self._log_job or 'no_job', event)
+    def _write_own_log(self, source, level, code, message):
+        """DB 노드 자신이 남기는 줄 (seq 0 = 관제가 보낸 줄이 아님)"""
+        event = {'seq': 0, 'stamp': time.strftime('%Y-%m-%d %H:%M:%S'), 'job_id': self._log_job or '',
+                 'source': source, 'stage': self.stage, 'level': level, 'code': code,
+                 'box_id': '', 'class_id': '', 'expected': -1, 'measured': -1, 'message': message}
+        try:
+            with self._log_lock:
+                self._append_log(self._log_job or 'no_job', event)
+        except Exception:
+            pass
+
+    def _log_db_event(self, level, message):
+        self._write_own_log('db', level, 'DB_RETRY', message)
 
     # ------------------------------------------------------------------
-    # UI 버튼 창구 (HTTP, 127.0.0.1 전용)
-    # ------------------------------------------------------------------
-    # ------------------------------------------------------------------
-    # 시작 전 재고 설정 (11/19) — UI 시작 팝업의 −/+ · [전부 0], 관리자 GUI 시작 확인창
-    #   관제가 READY일 때만 (작업 중에 바뀌면 관제가 들고 있는 재고와 어긋남)
-    #   A~D는 0 ~ 구역 정원, U는 0 이상. 적재가 실제로 재면 그 값으로 덮어써지고, 다르면 COUNT_MISMATCH로 남음
+    # 시작 전 재고 설정 — UI 시작 팝업의 −/+ · [전부 0]
+    #   관제가 READY일 때만. A~D는 0 ~ 구역 정원, U는 0 이상
     # ------------------------------------------------------------------
     def set_inventory(self, body, headers):
         if cfg.START_TOKEN and headers.get('X-Box-Token', '') != cfg.START_TOKEN:
             return 403, {'ok': False, 'message': '권한 없음'}
         if self.stage != 'READY':
-            return 200, {'ok': False, 'message': f'대기(READY)일 때만 재고를 바꿀 수 있음 (지금 관제 단계: {self.stage or "알 수 없음"})'}
+            return 200, {'ok': False,
+                         'message': f'대기(READY)일 때만 재고를 바꿀 수 있음 (지금 관제 단계: {self.stage or "알 수 없음"})'}
         try:
             data = json.loads(body or b'{}')
             source = str(data.get('source') or 'ui')
@@ -335,37 +347,28 @@ class DatabaseWork:
                 new[c] = v
         except (ValueError, TypeError) as e:
             return 400, {'ok': False, 'message': f'잘못된 값: {e}'}
-        st = self.store.get_state()
-        with self._lock:
-            st.update({k: v for k, v in self._pending.items() if k in {c.lower() for c in INVENTORY_KEYS}})
-        old = {c: int(st.get(c.lower()) or 0) for c in INVENTORY_KEYS}
+        old = self._current_inventory()
         changed = [f'{c} {old[c]}→{new[c]}' for c in INVENTORY_KEYS if old[c] != new[c]]
         if changed:
-            patch = {c.lower(): new[c] for c in INVENTORY_KEYS}
-            patch['updated_at'] = now_iso()
-            self._write_or_queue(patch, f'재고 설정 ({source})')
+            self._save_inventory(new, f'재고 설정 ({source})')
         msg = f'재고 설정 ({source}): ' + (', '.join(changed) if changed else '바뀐 값 없음')
         self.log.warn(f'[database] {msg}')
-        event = {'seq': 0, 'stamp': time.strftime('%Y-%m-%d %H:%M:%S'), 'job_id': self._log_job or '',
-                 'source': source if source in ('ui', 'monitor_gui') else 'ui', 'stage': self.stage,
-                 'level': 'WARN' if changed else 'INFO', 'code': 'INVENTORY_SET', 'box_id': '', 'class_id': '',
-                 'expected': -1, 'measured': -1, 'message': msg}
-        with self._log_lock:
-            self._append_log(self._log_job or 'no_job', event)
-        if changed:                              # 관제가 READY 화면·상태에 새 재고를 바로 보이게
+        self._write_own_log(source if source in ('ui', 'monitor_gui') else 'ui',
+                            'WARN' if changed else 'INFO', 'INVENTORY_SET', msg)
+        if changed and 'inventory_changed' in JOB_COMMANDS:     # 관제가 이 알림을 받는 경우에만
             ok, why = self.node.request_job_command('inventory_changed', 'db')
             if not ok:
                 self.log.warn(f'[database] 관제에 재고 변경 알림 실패: {why} (다음 시작 때 DB 값을 읽으므로 작업에는 영향 없음)')
         return 200, {'ok': True, 'message': msg, 'inventory': new}
 
     def get_inventory(self):
-        st = self.store.get_state()
-        with self._lock:
-            st.update({k: v for k, v in self._pending.items() if k in {c.lower() for c in INVENTORY_KEYS}})
-        out = {c.lower(): int(st.get(c.lower()) or 0) for c in INVENTORY_KEYS}
+        out = {c.lower(): n for c, n in self._current_inventory().items()}
         out['capacity'] = stack_capacity()
         return out
 
+    # ------------------------------------------------------------------
+    # 웹 창구 (HTTP, 127.0.0.1 전용)
+    # ------------------------------------------------------------------
     def handle_command(self, command, headers):
         if command == 'estop':
             ok = self.node.request_emergency_stop('ui')
@@ -380,23 +383,21 @@ class DatabaseWork:
         else:
             return 404, {'ok': False, 'message': f'알 수 없는 명령: {command}'}
         self.log.warn(f'[database] UI {command} → {"OK" if ok else "거절"} {msg}')
-        self._log_ui_command(command, ok, msg)
+        self._write_own_log('ui', 'WARN' if command == 'estop' else 'INFO', 'UI_COMMAND',
+                            f'UI {command} → {"OK" if ok else "거절"} {msg}'.strip())
         return 200, {'ok': bool(ok), 'message': msg}
 
     def handle_get(self, path):
-        if path == '/health':
-            return 200, {'ok': True, 'stage': self.stage, 'store': self.store.kind,
-                         'folder': getattr(self.store, 'folder', ''), 'log_dir': cfg.LOG_DIR}
-        if path == '/inventory':
-            try:
+        try:
+            if path == '/state':
+                return 200, self.live_state()
+            if path == '/inventory':
                 return 200, self.get_inventory()
-            except Exception as e:
-                return 500, {'ok': False, 'message': f'{type(e).__name__}: {e}'}
-        if path == '/state':
-            try:
-                return 200, self.store.get_state()
-            except Exception as e:
-                return 500, {'ok': False, 'message': f'{type(e).__name__}: {e}'}
+            if path == '/health':
+                return 200, {'ok': True, 'stage': self.stage, 'store': self.store.kind,
+                             'folder': getattr(self.store, 'folder', ''), 'log_dir': cfg.LOG_DIR}
+        except Exception as e:
+            return 500, {'ok': False, 'message': f'{type(e).__name__}: {e}'}
         return 404, {'ok': False, 'message': 'not found'}
 
     def _start_http(self):
@@ -412,7 +413,7 @@ class DatabaseWork:
                 self.wfile.write(data)
 
             def do_GET(self):
-                self._send(*work.handle_get(self.path))
+                self._send(*work.handle_get(self.path.split('?')[0]))
 
             def do_POST(self):
                 n = int(self.headers.get('Content-Length') or 0)
@@ -428,7 +429,7 @@ class DatabaseWork:
         try:
             server = ThreadingHTTPServer((cfg.HTTP_HOST, cfg.HTTP_PORT), Handler)
         except OSError as e:
-            self.log.error(f'[database] 버튼 창구를 못 엶 ({cfg.HTTP_HOST}:{cfg.HTTP_PORT}): {e} '
+            self.log.error(f'[database] 창구를 못 엶 ({cfg.HTTP_HOST}:{cfg.HTTP_PORT}): {e} '
                            '— 다른 DB 노드가 이미 떠 있는지 확인')
             return
         threading.Thread(target=server.serve_forever, name='db_http', daemon=True).start()

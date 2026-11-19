@@ -7,7 +7,7 @@ ROS 통신: box_comm/database_interface.py
 테이블·화면·버튼 약속: docs/DB_UI_CONTRACT.md
 
 실행
-  # Supabase 없이 (파일 모드: ~/box_logs/fake_db/product.json, loc.json, state.json, state_updates.jsonl)
+  # Supabase 없이 (파일 모드: ~/box_logs/fake_db/product.json, loc.json, inventory.json)
   ros2 run box_database database_main --ros-args -p store:=file
   # Supabase
   export SUPABASE_URL=https://kdvbiivjrdqvfwzomflj.supabase.co

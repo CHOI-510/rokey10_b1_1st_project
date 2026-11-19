@@ -174,7 +174,7 @@ start_bg() {      # start_bg 이름 실행파일 [인자...]
     echo "[fake_run] $name 시작 (pid $pid, 로그 $LOG_DIR/$name.log)"
 }
 
-# DB 노드 (실제 코드). 기본 파일 모드 → ~/box_logs/fake_db/state.json, state_updates.jsonl
+# DB 노드 (실제 코드). 기본 파일 모드 → ~/box_logs/fake_db/inventory.json(재고만), inventory_updates.jsonl
 #   시험마다 재고 0으로 시작 (DB_ARGS의 start_inventory가 있으면 그게 우선 — 뒤에 온 값이 이김)
 echo "[fake_run] DB 노드 database_main (store=${DB_STORE:-file})"
 # shellcheck disable=SC2086
