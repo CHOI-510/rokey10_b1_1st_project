@@ -14,12 +14,13 @@ LINEAR_VEL, LINEAR_ACC = 80.0, 100.0    # 일반 직선 이동과 탐색 줄 사
 # 탐색 경로 · 외력 보정 조건 (보정표와 한 세트 — 바꾸면 보정표 다시 측정)
 X_LANES = tuple(270.0 + 30.0*i for i in range(11))
 Y_START, Y_END = 265.0, -115.0  # 왕복 편도 380mm, 양 끝 40mm는 보정표 범위 밖
-SCAN_Z = 35.0
+SCAN_Z = 40.0
 SCAN_VEL, SCAN_ACC = 80.0, 150.0  # mm/s, mm/s²
 FORCE_LIMIT = 2.0            # 보정 외력 |Fy - 기준| [N]. 한 샘플이 한계 이상이면 즉시 정지
 SAMPLE_PERIOD = 0.05         # 기준 데이터 측정 주기와 동일
 # BACKWARD_TILT_DEG = 15.0
 BACKWARD_TILT_DEG = 25.0    # 261119 각도 더 기울이기 // jeong 대신 수정
+SCAN_GRIPPER_ROTATE_DEG = 90.0  # 기존 기울어진 탐색 자세에서 툴 로컬 Z축으로 추가 회전
 
 # 탐색 재개 · 대기 (해당 줄의 원래 시작점부터 같은 방향으로 다시 탐색)
 RESUME_IGNORE_MM = 40.0           # 재출발 첫 40mm는 접촉 판정 제외
@@ -29,7 +30,7 @@ SETTLE_SECONDS = 0.2
 
 # 탐색 파트 쥠 판정 여유 (공통/판별/적재 설정은 변경하지 않음)
 GRIP_WIDTH_RANGE_MARGIN_MM = 5.0  # 공통 박스 폭 범위의 양 끝에 추가할 여유
-GRIP_HOLD_WIDTH_TOL_MM = 5.0     # 기준 폭 대비 허용 변화. 공통값이 더 크면 공통값 유지
+GRIP_HOLD_WIDTH_TOL_MM = 5.0     # 상승/이송 중 재조임 후 기준 폭 대비 허용 변화. 재조임 전후 비교에는 미사용
 
 # 집기 높이 · 재시도
 Z0 = 0.0                     # 탐색 작업대 바닥 TCP Z (원본 값, 높이 로그·검증·sim에만 씀 — 실제 바닥은 TABLE_Z)

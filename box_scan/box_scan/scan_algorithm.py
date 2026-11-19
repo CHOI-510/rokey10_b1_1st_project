@@ -7,7 +7,7 @@ scan(poses, report)는 Goal마다 물품 한 개를 측정존에 배치하고 HO
 GRASP_FAILED는 탐색 커서를 유지해 관제 재요청 시 같은 경로에서 이어서 탐색한다.
 다른 오류가 발생하거나 남은 경로를 모두 훑으면 커서를 초기화한다.
 
-- space_scan: 닫힌 RG2로 Y 방향 지그재그 탐색. 경로별 Fy 기준값을 뺀
+- space_scan: 툴 Z축 기준 90도 회전한 닫힌 RG2로 Y 방향 지그재그 탐색. 경로별 Fy 기준값을 뺀
   변화량의 절댓값이 FORCE_LIMIT 이상이면 정지한다. 보정표 범위 밖에서는
   판정하지 않는다. 재개 시 멈춘 줄의 원래 시작점으로 돌아가고,
   재출발 후 40 mm 구간은 감지에서 제외한다.
@@ -90,6 +90,8 @@ def validate_config():
         raise ValueError('쥠 폭 범위 여유는 0 이상의 유한한 값이어야 함')
     if not math.isfinite(GRIP_HOLD_WIDTH_TOL_MM) or GRIP_HOLD_WIDTH_TOL_MM <= 0:
         raise ValueError('쥠 폭 변화 허용은 양의 유한한 값이어야 함')
+    if not math.isfinite(SCAN_GRIPPER_ROTATE_DEG):
+        raise ValueError('탐색 그리퍼 회전각은 유한한 값이어야 함')
     if not GRIP_RETRY_ANGLES:
         raise ValueError('집기 각도가 비어 있음')
 
@@ -124,6 +126,17 @@ def backward_orientation(reference, direction):
         return [math.degrees(a), math.degrees(b), 0.0]
     return [math.degrees(math.atan2(q[1][2], q[0][2])), math.degrees(b),
             math.degrees(math.atan2(q[2][1], -q[2][0]))]
+
+
+def scan_orientation(reference, direction):
+    """Y 탐색 자세: 기존 후방 기울기 유지 + 툴 로컬 Z축 회전.
+
+    ZYZ 마지막 각도에 더하면 툴 Z 방향(기울기)은 그대로이고 핑거 방향만 바뀐다.
+    높이 탐지/집기에서 쓰는 HOME 기준 reference는 변경하지 않는다.
+    """
+    angles = backward_orientation(reference, direction)
+    angles[2] += SCAN_GRIPPER_ROTATE_DEG
+    return angles
 
 
 def sector_probe_points(contact):
@@ -259,7 +272,7 @@ class ScanAlgorithm:
         r.movej(home, vel=ANGULAR_VEL, acc=ANGULAR_ACC)
         here = r.pose()
         reference, home_z = here[3:6], here[2]           # HOME 자세의 ABC가 기준 자세
-        orient = {d: backward_orientation(reference, d) for d in ('-Y', '+Y')}
+        orient = {d: scan_orientation(reference, d) for d in ('-Y', '+Y')}
         self._close()                                    # 탐색·높이 탐지는 닫힌 핑거로
 
         if self.resume is not None:
@@ -608,8 +621,9 @@ class ScanAlgorithm:
                 ok, why = self._check_grip(width, 1)             # 폭 범위 (한쪽 핑거만 걸린 경우 거름)
                 if ok and force > SYNC_GRIP['close_force_n']:
                     tight = r.grip_close(force)            # 같은 자리에서 40N으로 다시 조임
-                    ok, why = (self._check_grip(tight.width_mm, 1, width) if tight.grabbed
+                    ok, why = (self._check_grip(tight.width_mm, 1) if tight.grabbed
                                else (False, '다시 조이다 놓침'))
+                    # 재조임 전후 폭 변화는 판정하지 않음. 재조임 후 폭을 이송 감시 기준으로 저장.
                     width = tight.width_mm if tight.grabbed else width
             if ok:
                 self._grip_width = width
