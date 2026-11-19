@@ -18,7 +18,8 @@ SCAN_Z = 35.0
 SCAN_VEL, SCAN_ACC = 80.0, 150.0  # mm/s, mm/s²
 FORCE_LIMIT = 2.0            # 보정 외력 |Fy - 기준| [N]. 한 샘플이 한계 이상이면 즉시 정지
 SAMPLE_PERIOD = 0.05         # 기준 데이터 측정 주기와 동일
-BACKWARD_TILT_DEG = 15.0
+# BACKWARD_TILT_DEG = 15.0
+BACKWARD_TILT_DEG = 25.0    # 261119 각도 더 기울이기 // jeong 대신 수정
 
 # 탐색 재개 · 대기 (해당 줄의 원래 시작점부터 같은 방향으로 다시 탐색)
 RESUME_IGNORE_MM = 40.0           # 재출발 첫 40mm는 접촉 판정 제외
