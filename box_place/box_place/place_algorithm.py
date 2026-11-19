@@ -50,7 +50,9 @@ v0.4 적재
   - 잡힘 판정: box_comm.gripper.check_grip/holding — 잡힘 비트 + 폭이 박스 범위 안 + 들어 올린 뒤 폭이 안 변함
   - 층 수·자리 수는 설정에 적지 않는다. box_comm/common.py STACK(levels / max_tiers)을 그대로 쓴다
     (관제·DB·UI가 같은 규칙으로 수량을 해석하는 공용 규칙. 바꿀 때는 관제와 합의 + 자리별 첫 접촉 Z 재측정)
-  - slot_dx_mm: 다음 자리 위치 = 1자리 x + (자리-1) * slot_dx_mm, y는 같음
+  - 자리 이동: A/B=[dx0, dy-45], C/D=[dx0, dy-30] (CLASS_LAYOUT 우선 적용)
+  - A/B는 집기·적재를 90도 회전 전 자세로 복구. C/D/U는 현재 JSON 자세 유지
+  - slot_dx_mm은 기존 JSON 호환을 위해 읽지만, 자리 계산에는 분류별 slot_offset_mm을 사용
   - classes: 설정된 클래스만 적재 (지금 A/B/C. D는 설정 시 추가)
 
 상태 파일 (~/.ros/place_real_v04_state.json, sim이면 place_sim_state.json)
@@ -106,7 +108,30 @@ def finite_vector(values, length):
             all(type(v) in (int, float) and math.isfinite(v) for v in values))
 
 
+# 이번 배치 변경값. 아래 항목은 읽어 온 JSON의 기존 값보다 우선한다.
+# slot_offset_mm: 다음 자리까지의 [dx, dy], 첫 자리는 관제가 보낸 DB XY를 그대로 사용.
+# pick_orientation은 분류별 판별존 집기 자세. U는 기존 공통 pick_orientation을 사용한다.
+CLASS_LAYOUT = {
+    'A': {'slot_offset_mm': [0.0, -45.0],
+          'pick_orientation': [148.0, -180.0, 148.0],
+          'orientation': [120.0, 180.0, 120.0]},
+    'B': {'slot_offset_mm': [0.0, -45.0],
+          'pick_orientation': [148.0, -180.0, 148.0],
+          'orientation': [120.0, -180.0, 120.0]},
+    'C': {'slot_offset_mm': [0.0, -30.0]},
+    'D': {'slot_offset_mm': [0.0, -30.0]},
+}
+
+
+def apply_class_layout(c):
+    for category, fields in CLASS_LAYOUT.items():
+        if category in c['classes']:
+            c['classes'][category].update({key: list(value) for key, value in fields.items()})
+    return c
+
+
 def validate_config(c):
+    c = apply_class_layout(c)
     for k in ('travel_z', 'search_timeout_s', 'contact_force_n', 'desired_force_n',
               'abort_force_n', 'abs_force_limit_n', 'speed_mm_s', 'acc_mm_s2',
               'gripper_wait_s', 'baseline_duration_s', 'baseline_max_span_n',
@@ -155,6 +180,10 @@ def validate_config(c):
             raise ValueError(f'{key}: 높이/층 허용 오차 오류')
         if not finite_vector(spec['orientation'], 3):
             raise ValueError(f'{key}: 적재 자세 오류')
+        if not finite_vector(spec.get('slot_offset_mm'), 2):
+            raise ValueError(f'{key}: 자리 간격 [dx, dy] 오류')
+        if not finite_vector(spec.get('pick_orientation', c['pick_orientation']), 3):
+            raise ValueError(f'{key}: 분류별 파지 자세 오류')
         refs = spec['first_contact_z_mm']
         if len(refs) != c['slot_count']:
             raise ValueError(f"{key}: 자리별 첫 접촉 Z {c['slot_count']}개 필요")
@@ -242,8 +271,11 @@ class PlaceAlgorithm:
             self.log.info(f"[place] 미분류(U) 투하: {u['release_pose']}, 접근 Z {u['approach_z']}")
         else:
             self.log.warn('[place] 미분류(U) 투하 꺼짐 (place_config.json unclassified.enabled) — U Goal은 실패')
-        self.log.info(f"[place] 적재 규칙 {self.c['max_layers']}층 x {self.c['slot_count']}자리, "
-                      f"자리 간격 x {self.c['slot_dx_mm']:+.0f}mm, 클래스 {sorted(self.c['classes'])}")
+        self.log.info(f"[place] 적재 규칙 {self.c['max_layers']}층 x {self.c['slot_count']}자리")
+        for category, spec in self.c['classes'].items():
+            self.log.info(f"[LAYOUT] {category}: 자리 간격={spec['slot_offset_mm']}, "
+                          f"집기={spec.get('pick_orientation', self.c['pick_orientation'])}, "
+                          f"적재={spec['orientation']}")
 
     # ------------------------------------------------------------------
     # 동작 단위 (robot 명령을 설정값과 묶음)
@@ -300,7 +332,9 @@ class PlaceAlgorithm:
         """측정존에서 sync 집기 (11/18, 판별과 같은 공용 설정). 못 잡거나 들다가 놓치면 같은 자리·자세로 다시
         (최대 grip_retry번). 다 실패하면 그리퍼 열고 이송 높이에서 GRASP_FAILED (관제가 측정존을 비우고 재스캔)."""
         c = self.c
-        orient = list(c['pick_orientation'])
+        spec = c['classes'].get(category, {})
+        orient = list(spec.get('pick_orientation', c['pick_orientation']))
+        report.log(f'[PICK ORIENTATION] {category or UNCLASSIFIED}: {orient}')
         above = [zone[0], zone[1], c['travel_z'], *orient]
         grip_force = c.get('grip_force_n') or GRIPPER['grip_force_n']
         sg = make_sync_gripper(self.robot, zone[2], log=lambda m: self.log.info(f'[place] {m}'))
@@ -356,6 +390,11 @@ class PlaceAlgorithm:
         self._raise()
         self._pending_done()          # 아무것도 안 쥐고 끝남 → 다음 Goal(재스캔 뒤)을 막지 않게 미완료 기록 지움
         raise PartError('GRASP_FAILED', f'{tries}회 시도 모두 실패 ({why}). 그리퍼 열고 이송 높이에서 중단')
+
+    def _slot_xy(self, category, tier, first_xy):
+        dx, dy = self.c['classes'][category]['slot_offset_mm']
+        return [first_xy[0] + (tier - 1) * dx,
+                first_xy[1] + (tier - 1) * dy]
 
     def move_above(self, category, x, y):
         # 박스를 쥔 채라도 옆으로 가기 전에 항상 수직으로 올라간다.
@@ -651,7 +690,7 @@ class PlaceAlgorithm:
                              f'(지원: {sorted(c["classes"])})')
 
         home, zone, xy = self._goal_poses(poses, result_class)
-        references = [self._reference(result_class, tier, xy[0]+(tier-1)*c['slot_dx_mm'], xy[1])
+        references = [self._reference(result_class, tier, *self._slot_xy(result_class, tier, xy))
                       for tier in range(1, c['slot_count']+1)]
 
         self._pending(**{'class': result_class, 'phase': 'picking'})
@@ -664,7 +703,7 @@ class PlaceAlgorithm:
         report('placing')
         # v0.4: 매 Goal마다 1자리부터 확인 (이미 찼어도 실제로 닿아 봄)
         for tier in range(1, c['slot_count']+1):
-            x, y = xy[0]+(tier-1)*c['slot_dx_mm'], xy[1]
+            x, y = self._slot_xy(result_class, tier, xy)
             if tier > 1:
                 approach = self.move_above(result_class, x, y)
             self._pending(phase='placing', tier=tier)
