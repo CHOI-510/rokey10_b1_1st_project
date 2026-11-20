@@ -16,7 +16,7 @@ GRASP_FAILED는 탐색 커서를 유지해 관제 재요청 시 같은 경로에
   측면 정지점과 경계의 중간에서 첫 윗면 높이를 사용하고, 0°, +90°, +45° 순으로 집기한다.
   동기 닫기, 재조임 및 파지 판별은 기존 통합 방식에 따른다.
 - moving: 수직 상승 후 파지를 확인하고 측정존까지 수평 직선 이동한다.
-  +45°에서 집은 경우는 이송 높이에서 최초 집기 자세로 회전하고 파지를 다시 확인한다.
+  성공 각도와 무관하게 이송 높이에서 HOME 기준 0도 자세로 정렬하고 파지를 다시 확인한다.
 - placing: 예상 접촉점 위 20 mm에서 순응·힘 제어로 하강한다.
   허용 높이에서 Fz 접촉과 정지를 확인한 뒤에만 놓는다.
 
@@ -741,7 +741,7 @@ class ScanAlgorithm:
                 r.movel(p, vel=[slow, 20.0], acc=[slow * 3, 40.0], tol=1.0)
                 note = ', 얇아서 작업대 바닥 + 2.6 기준' if on_floor else ''
                 return {'grip_z': hold[2], 'top_z': top[2],
-                        'transfer_alignment': initial if angle == 45.0 else None,
+                        'transfer_alignment': list(reference),  # 성공 각도와 무관하게 HOME 기준 0도로 복원
                         'tip_off': TCP['pos'][2] - tip_h_mm(raw_hold),
                         'grasp_summary': (f'{n}/{len(angles)}번째, {angle:+g}도, 폭 {width:.1f} mm, '
                                           f'핑거 끝 윗면 − {depth:.0f} mm{note}')}
@@ -777,7 +777,7 @@ class ScanAlgorithm:
             self._orient(alignment)
             if not self._holding():
                 raise RuntimeError(f'0도 정렬 중 박스를 놓침 ({self._hold_why})')
-            report.log('45도 파지 후 0도 기준 자세로 정렬 완료')
+            report.log('파지 각도와 무관하게 HOME 기준 0도 자세로 정렬 완료')
         transfer_pose = r.pose()
         transfer_pose[:2] = zone[:2]
         self._move(transfer_pose)
@@ -877,4 +877,5 @@ class ScanAlgorithm:
         if zone is None or len(zone) != 3 or all(abs(v) < 1e-6 for v in zone):
             raise ValueError('Goal에 측정존 좌표가 없음 (0,0,0은 미설정)')
         return list(home), list(zone)
+
 
