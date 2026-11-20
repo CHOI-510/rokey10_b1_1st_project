@@ -66,6 +66,10 @@ def validate_config():
         raise ValueError('배치: 0 < 접촉 < 목표 < 안전 힘')
     if not 0 < PLACE_CONTACT_Z_TOL_MM < PLACE_SLOW_FROM_MM:
         raise ValueError('배치 접촉 Z 허용차는 시작 여유보다 작아야 함')
+    if not math.isfinite(PLACE_MAX_BELOW_EXPECTED_MM) or PLACE_MAX_BELOW_EXPECTED_MM <= 0:
+        raise ValueError('배치 예상 아래 탐색 거리는 양수여야 함')
+    if not math.isfinite(PLACE_STOP_Z_TOL_MM) or PLACE_STOP_Z_TOL_MM < 0:
+        raise ValueError('배치 정지 Z 확인 여유는 0 이상이어야 함')
     if set(BASELINE_N) != set(range(1, len(X_LANES)+1)):
         raise ValueError('보정표가 모든 선을 덮지 않음')
     for lane, x in enumerate(X_LANES, 1):
@@ -778,8 +782,7 @@ class ScanAlgorithm:
         transfer_pose[:2] = zone[:2]
         self._move(transfer_pose)
         report('placing')
-        if not self._holding():
-            raise RuntimeError(f'측정존 도착 전 박스를 놓침 ({self._hold_why}) — 떨어진 위치 확인 필요')
+        # 파지는 _place_with_force에서 Force 하강 직전에 한 번 확인한다.
         # 핑거 끝이 측정존 바닥 아래로 가지 않도록 동기 집기의 오프셋을 반영한다.
         floor_tcp = zone[2] + PLACE_MIN_ABOVE_FLOOR_MM - grip.get('tip_off', 0.0)
         self._place_with_force(contact_z, floor_tcp, report)
@@ -788,14 +791,17 @@ class ScanAlgorithm:
         return True
 
     def _place_with_force(self, contact_z, floor_tcp, report):
-        """예상 높이에서의 접촉과 정지를 확인한 경우에만 반환한다."""
+        """배치 전 파지 1회 확인 → Force 접촉 → 하한/조기 접촉 확인 후 개방 허용.
+        _move_z는 동기 이동, _force_down은 stop으로 정지 확인까지 하므로 중복 대기를 하지 않는다.
+        """
+        if not math.isfinite(contact_z) or not math.isfinite(floor_tcp):
+            raise RuntimeError('배치 높이가 유효하지 않음; 파지 유지')
         upper_z = contact_z + PLACE_CONTACT_Z_TOL_MM
-        stop_z = max(floor_tcp, contact_z - PLACE_CONTACT_Z_TOL_MM)
-        if not math.isfinite(upper_z) or not math.isfinite(floor_tcp) or stop_z >= upper_z:
+        stop_z = max(floor_tcp, contact_z - PLACE_MAX_BELOW_EXPECTED_MM)
+        if stop_z >= upper_z:
             raise RuntimeError('배치 하한과 예상 접촉 구간이 맞지 않음; 파지 유지')
 
         self._move_z(contact_z + PLACE_SLOW_FROM_MM)
-        self._wait_still()
         if not self._holding():
             raise RuntimeError(f'배치 하강 전 파지 실패: {self._hold_why}')
 
@@ -808,17 +814,19 @@ class ScanAlgorithm:
             status, stopped_pose = self._force_down(
                 stop_z, PLACE_FORCE_TARGET_N, PLACE_CONTACT_N, PLACE_SAFETY_N,
                 check_xyz=True, contact_details=details)
-        self._wait_still()
         stopped_z = stopped_pose[2]
         if status != 'contact':
             raise RuntimeError(f'배치 접촉 없음: 예상 Z={contact_z:.1f}, 정지 Z={stopped_z:.1f}; 파지 유지')
         detected_z = details['z']
         force_note = f", ΔFz={details['dfz']:.1f} N" if 'dfz' in details else ''
         note = f'예상 Z={contact_z:.1f}, 접촉 Z={detected_z:.1f}, 정지 Z={stopped_z:.1f}{force_note}'
-        if not (stop_z <= detected_z <= upper_z and stop_z <= stopped_z <= upper_z):
-            raise RuntimeError(f'배치 접촉이 허용 높이 밖: {note}; 파지 유지')
-        if not self._holding():
-            raise RuntimeError(f'개방 직전 파지 실패: {self._hold_why}; {note}')
+        if not math.isfinite(detected_z) or not math.isfinite(stopped_z):
+            raise RuntimeError('배치 접촉/정지 높이가 유효하지 않음; 파지 유지')
+        if detected_z > upper_z:
+            raise RuntimeError(f'배치 조기 접촉: {note}; 파지 유지')
+        if min(detected_z, stopped_z) < floor_tcp - PLACE_STOP_Z_TOL_MM:
+            raise RuntimeError(f'배치 바닥 보호 하한 초과: {note}; 파지 유지')
+        # 접촉 후 하중이 바닥으로 옮겨지며 폭/잡힘 신호가 바뀔 수 있어 개방 직전 쥠 재검사는 생략.
         report.log(f'배치 접촉 및 정지 확인: {note}')
 
     # ==================================================================
@@ -869,3 +877,4 @@ class ScanAlgorithm:
         if zone is None or len(zone) != 3 or all(abs(v) < 1e-6 for v in zone):
             raise ValueError('Goal에 측정존 좌표가 없음 (0,0,0은 미설정)')
         return list(home), list(zone)
+
