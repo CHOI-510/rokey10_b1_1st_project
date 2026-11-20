@@ -3,11 +3,12 @@
 scan_algorithm.py — box_scan 탐색·집기·이송 (담당: 김창균)
 
 scan(poses, report)는 Goal마다 물품 한 개를 측정존에 배치하고 HOME으로 복귀한다.
-성공 시 True, 남은 경로를 모두 훑고 물품을 발견하지 못하면 False를 반환한다.
+성공 시 True, Y 본탐색과 X 확인탐색을 모두 마친 경우에만 False를 반환한다.
+단계·경로·재개 커서는 Goal 사이에 유지한다. 탐침/그립/배치는 축 공통으로 사용한다.
 GRASP_FAILED는 탐색 커서를 유지해 관제 재요청 시 같은 경로에서 이어서 탐색한다.
 다른 오류가 발생하거나 남은 경로를 모두 훑으면 커서를 초기화한다.
 
-- space_scan: 툴 Z축 기준 90도 회전한 닫힌 RG2로 Y 방향 지그재그 탐색. 경로별 Fy 기준값을 뺀
+- space_scan: 닫힌 RG2로 Y → X 지그재그 탐색. 단계별 자세·외력 축·경로별 기준값을 뺀
   변화량의 절댓값이 FORCE_LIMIT 이상이면 정지한다. 보정표 범위 밖에서는
   판정하지 않는다. 재개 시 멈춘 줄의 원래 시작점으로 돌아가고,
   재출발 후 40 mm 구간은 감지에서 제외한다.
@@ -56,9 +57,32 @@ def rotation_error(a, b):
     return max(abs(ra[i][j]-rb[i][j]) for i in range(3) for j in range(3))
 
 
-def lane_direction(index):
-    """index 0부터: 짝수 선은 -Y, 홀수 선은 +Y"""
-    return '-Y' if index % 2 == 0 else '+Y'
+def scan_axis(direction):
+    if direction not in ('-Y', '+Y', '-X', '+X'):
+        raise ValueError(f'탐색 방향 오류: {direction}')
+    return 0 if direction[-1] == 'X' else 1
+
+
+def scan_settings(direction):
+    axis = 'X' if scan_axis(direction) == 0 else 'Y'
+    return next(p for p in SCAN_PASSES if p['axis'] == axis)
+
+
+def scan_point(profile, lane_index, end=False):
+    axis = 0 if profile['axis'] == 'X' else 1
+    forward = lane_index % 2 == 0
+    value = profile['end'] if forward == end else profile['start']
+    xyz = [0.0, 0.0, profile['z']]
+    xyz[axis], xyz[1-axis] = value, profile['lanes'][lane_index]
+    return xyz
+
+
+def lane_direction(index, profile=None):
+    p = SCAN_PASSES[0] if profile is None else profile
+    sign = 1 if p['end'] > p['start'] else -1
+    if index % 2:
+        sign = -sign
+    return ('+' if sign > 0 else '-') + p['axis']
 
 
 def validate_config():
@@ -70,15 +94,32 @@ def validate_config():
         raise ValueError('배치 예상 아래 탐색 거리는 양수여야 함')
     if not math.isfinite(PLACE_STOP_Z_TOL_MM) or PLACE_STOP_Z_TOL_MM < 0:
         raise ValueError('배치 정지 Z 확인 여유는 0 이상이어야 함')
-    if set(BASELINE_N) != set(range(1, len(X_LANES)+1)):
-        raise ValueError('보정표가 모든 선을 덮지 않음')
-    for lane, x in enumerate(X_LANES, 1):
-        entry = BASELINE_N[lane]
-        if entry['x_mm'] != x or entry['direction'] != lane_direction(lane-1):
-            raise ValueError(f'{lane}번 선 보정표 X/방향 불일치')
-        values = entry['values']
-        if len(values) != len(Y_MM) or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in values):
-            raise ValueError(f'{lane}번 선 보정값 {len(Y_MM)}개 필요')
+    if tuple(p['axis'] for p in SCAN_PASSES) != ('Y', 'X'):
+        raise ValueError('탐색 단계는 Y 다음 X여야 함')
+    for p in SCAN_PASSES:
+        if not p['lanes'] or set(p['baseline']) != set(range(1, len(p['lanes'])+1)):
+            raise ValueError('단계별 보정표가 모든 경로를 덮어야 함')
+        if len(p['limits']) != len(p['lanes']) or not all(math.isfinite(v) and v > 0 for v in p['limits']):
+            raise ValueError('경로별 외력 한계는 경로 수와 일치하는 양수여야 함')
+        nodes = p['nodes']
+        if len(nodes) < 2 or not all(math.isfinite(v) for v in nodes) or any(b<=a for a,b in zip(nodes,nodes[1:])):
+            raise ValueError('보간 노드는 유한한 오름차순이어야 함')
+        if not min(p['start'],p['end']) <= nodes[0] < nodes[-1] <= max(p['start'],p['end']):
+            raise ValueError('보정 범위가 이동 범위 밖임')
+        if not all(math.isfinite(p[k]) and p[k]>0 for k in ('vel','acc','limit','tilt_vel','tilt_acc','transfer_vel','transfer_acc')):
+            raise ValueError('단계별 속도·가속도·임계값 오류')
+        if not all(math.isfinite(p[k]) for k in ('start','end','z','tilt','roll','wait')) or p['wait']<0 or p['start']==p['end']:
+            raise ValueError('단계별 경로·자세·대기 설정 오류')
+        if p['z'] >= PROBE_START_Z:
+            raise ValueError('탐색 높이는 탐침 시작 높이보다 낮아야 함')
+        cross_key = 'y_mm' if p['axis']=='X' else 'x_mm'
+        for lane, cross in enumerate(p['lanes'],1):
+            entry=p['baseline'][lane]
+            if entry[cross_key]!=cross or entry['direction']!=lane_direction(lane-1,p):
+                raise ValueError(f"{p['axis']} {lane}번 경로 보정표 위치/방향 불일치")
+            values=entry['values']
+            if len(values)!=len(nodes) or not all(isinstance(v,(int,float)) and math.isfinite(v) for v in values):
+                raise ValueError('보정표 값 오류')
     if not 0 < GRIP_DEPTH_FROM_TOP_MM < MAX_OBJECT_HEIGHT_MM:
         raise ValueError('0 < GRIP_DEPTH_FROM_TOP_MM < MAX_OBJECT_HEIGHT_MM')
     if not 0 < GRIP_APPROACH_CONTACT_N < GRIP_APPROACH_FORCE_TARGET_N < GRIP_APPROACH_SAFETY_N:
@@ -104,29 +145,40 @@ def validate_config():
         raise ValueError('집기 각도가 비어 있음')
 
 
-def baseline_fy(y_mm, direction, lane):
-    entry = BASELINE_N.get(lane)
+def baseline_force(position_mm, direction, lane, profile=None):
+    p = scan_settings(direction) if profile is None else profile
+    if direction[-1] != p['axis']:
+        raise ValueError('외력 축과 탐색 단계가 다름')
+    entry = p['baseline'].get(lane)
     if entry is None or entry['direction'] != direction:
         raise ValueError(f'보정표 없음: lane={lane}, direction={direction}')
-    y = float(y_mm)
-    if not Y_MM[0] <= y <= Y_MM[-1]:
-        return None                        # 보정 범위 밖은 판정 안 함
-    values = entry['values']
-    i = min(bisect_right(Y_MM, y)-1, len(Y_MM)-2)
-    fraction = (y-Y_MM[i])/(Y_MM[i+1]-Y_MM[i])
+    position = float(position_mm)
+    if not math.isfinite(position):
+        raise ValueError('보간 위치는 유한해야 함')
+    nodes, values = p['nodes'], entry['values']
+    if not nodes[0] <= position <= nodes[-1]:
+        return None
+    i = min(bisect_right(nodes, position)-1, len(nodes)-2)
+    fraction = (position-nodes[i])/(nodes[i+1]-nodes[i])
     return values[i] + fraction*(values[i+1]-values[i])
 
 
-def backward_orientation(reference, direction):
+baseline_fy = baseline_force  # 기존 Y 보간 함수 호출 호환
+
+
+def backward_orientation(reference, direction, profile=None):
     """진행 방향 반대로 BACKWARD_TILT_DEG만큼 기울인 ZYZ 자세"""
-    if BACKWARD_TILT_DEG == 0:
+    p = scan_settings(direction) if profile is None else profile
+    tilt = p['tilt']
+    if tilt == 0:
         return list(reference)
     r = zyz_rotation(reference)
     if r[2][2] > -0.98:
         raise RuntimeError('기울기 계산에는 툴 Z가 거의 아래를 향한 HOME 자세가 필요')
-    angle = math.radians(BACKWARD_TILT_DEG if direction == '-Y' else -BACKWARD_TILT_DEG)
+    angle = math.radians(tilt if direction in ('-Y', '+X') else -tilt)
     c, t = math.cos(angle), math.sin(angle)
-    rx = [[1, 0, 0], [0, c, -t], [0, t, c]]
+    rx = ([[1, 0, 0], [0, c, -t], [0, t, c]] if scan_axis(direction)==1
+          else [[c, 0, t], [0, 1, 0], [-t, 0, c]])
     q = [[sum(rx[i][k]*r[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
     b = math.acos(max(-1.0, min(1.0, q[2][2])))
     if abs(math.sin(b)) < 1e-8:
@@ -136,22 +188,22 @@ def backward_orientation(reference, direction):
             math.degrees(math.atan2(q[2][1], -q[2][0]))]
 
 
-def scan_orientation(reference, direction):
-    """Y 탐색 자세: 기존 후방 기울기 유지 + 툴 로컬 Z축 회전.
-
-    ZYZ 마지막 각도에 더하면 툴 Z 방향(기울기)은 그대로이고 핑거 방향만 바뀐다.
-    높이 탐지/집기에서 쓰는 HOME 기준 reference는 변경하지 않는다.
-    """
-    angles = backward_orientation(reference, direction)
-    angles[2] += SCAN_GRIPPER_ROTATE_DEG
+def scan_orientation(reference, direction, profile=None):
+    """단계별 후방 기울임과 툴 로컬 Z 회전. 집기 HOME 기준은 변경하지 않음."""
+    p = scan_settings(direction) if profile is None else profile
+    angles = backward_orientation(reference, direction, p)
+    angles[2] += p['roll']
     return angles
 
 
 def probe_direction(scan_direction, angle):
-    """탐색 방향과 반원 각도를 BASE XY 단위벡터로 변환한다."""
-    sign = -1 if scan_direction == '-Y' else 1
+    """진행 방향 앞쪽 반원을 BASE XY 단위벡터로 변환한다."""
+    axis = scan_axis(scan_direction)
+    forward = [0.0, 0.0]
+    forward[axis] = 1.0 if scan_direction[0]=='+' else -1.0
     radians = math.radians(angle)
-    return -sign * math.sin(radians), sign * math.cos(radians)
+    c,t = math.cos(radians),math.sin(radians)
+    return forward[0]*c-forward[1]*t, forward[0]*t+forward[1]*c
 
 
 def locate_probe_edge(distance_limit, sample_top):
@@ -215,17 +267,17 @@ class DifferentProbeObject(Exception):
 class Recorder:
     """CSV 기록 (원본 그대로, 보정표 재측정용). csv_dir 파라미터를 줄 때만 만든다."""
     FIELDS = ('elapsed_s', 'segment_elapsed_s', 'actual_interval_s', 'lane', 'phase', 'direction',
-              'x_mm', 'y_mm', 'z_mm', 'fy_raw_n', 'fy_baseline_n', 'fy_corrected_n', 'motion_state',
-              'detection_enabled', 'contact', 'speed_mm_s', 'acc_mm_s2', 'baseline_loaded')
+              'x_mm', 'y_mm', 'z_mm', 'force_raw_n', 'force_baseline_n', 'force_corrected_n', 'motion_state',
+              'detection_enabled', 'contact', 'speed_mm_s', 'acc_mm_s2', 'baseline_loaded', 'force_axis', 'scan_stage')
 
     def __init__(self, root):
         self.directory = Path(root).expanduser() / (
-            f'raster_v{SCAN_VEL:g}_a{SCAN_ACC:g}_' + datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
+            'raster_y_then_x_' + datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
         self.directory.mkdir(parents=True, exist_ok=False)
         self.rows, self.index = [], 0
         self.origin = self.segment_origin = self.previous = None
 
-    def add(self, stamp, lane, phase, direction, pose, fy, baseline, residual, status, enabled, contact, speed, acceleration):
+    def add(self, stamp, lane, phase, direction, pose, fy, baseline, residual, status, enabled, contact, speed, acceleration, force_axis='Fy', scan_stage='Y'):
         if self.origin is None:
             self.origin = stamp
         if self.segment_origin is None:
@@ -234,7 +286,7 @@ class Recorder:
         self.rows.append((stamp-self.origin, stamp-self.segment_origin, interval, lane, phase, direction,
                           *pose[:3], fy, '' if baseline is None else baseline,
                           '' if residual is None else residual, status, int(enabled), int(contact),
-                          speed, acceleration, 1))
+                          speed, acceleration, int(baseline is not None), force_axis, scan_stage))
         self.previous = stamp
 
     def flush(self):
@@ -273,13 +325,17 @@ class ScanAlgorithm:
         if self.recorder:
             self.log.info(f'[scan] CSV 기록: {self.recorder.directory}')
         self._reset_cursor()
-        self.log.info(f'[scan] 탐색 X={X_LANES[0]}..{X_LANES[-1]} ({len(X_LANES)}선), Y={Y_START}..{Y_END}, '
-                      f'Z={SCAN_Z}, 접촉 |dFy|>={FORCE_LIMIT} N, 집기 각도 {GRIP_RETRY_ANGLES}')
+        self.log.info('[scan] Y 본탐색 → X 확인탐색. 단계·경로 커서는 Goal 사이에 유지.')
 
     # ---- 탐색 커서 (Goal 사이에 유지) ----
     def _reset_cursor(self):
-        self.lane = 0            # 지금 훑는 선 index
+        self.scan_pass = 0       # 0=Y 본탐색, 1=X 확인탐색
+        self.lane = 0            # 현재 단계의 선 index
         self.resume = None       # 다음 Goal에서 이어 훑을 접촉 정보 (None이면 선 시작점부터)
+
+    @property
+    def settings(self):
+        return SCAN_PASSES[self.scan_pass]
 
     # ==================================================================
     # 약속된 함수
@@ -304,72 +360,79 @@ class ScanAlgorithm:
     def _scan(self, home, zone, report):
         r = self.robot
         report('space_scan')
-        self._last_miss = None                           # 높이 없음 반복 감지 (Goal 안에서만)
+        self._last_miss = None
         r.movej(home, vel=ANGULAR_VEL, acc=ANGULAR_ACC)
         here = r.pose()
-        reference, home_z = here[3:6], here[2]           # HOME 자세의 ABC가 기준 자세
-        orient = {d: scan_orientation(reference, d) for d in ('-Y', '+Y')}
-        self._close()                                    # 탐색·높이 탐지는 닫힌 핑거로
-
-        if self.resume is not None:
-            self._go_resume(self.resume, orient)
-            report.log(f'{self.lane+1}번 선 시작점부터 다시 탐색')
-            ignore = RESUME_IGNORE_MM
-        else:
-            x = X_LANES[self.lane]
-            d = lane_direction(self.lane)
-            start_y = Y_START if d == '-Y' else Y_END
-            r.movejx([x, start_y, SCAN_Z, *orient[d]], vel=ANGULAR_VEL, acc=ANGULAR_ACC)
-            r.wait(SETTLE_SECONDS)
-            ignore = 0.0
-
-        while self.lane < len(X_LANES):
-            lane = self.lane + 1
-            x = X_LANES[self.lane]
-            d = lane_direction(self.lane)
-            end_y = Y_END if d == '-Y' else Y_START
-            o = orient[d]
-            self._orient(o)
-            r.wait(BETWEEN_LINES_WAIT)
-            while abs(r.pose()[1] - end_y) > 1.0:            # 재개점이 선 끝이면 바로 다음 선
-                contact = self._scan_line([x, end_y, SCAN_Z, *o], d, lane, ignore)
-                if contact is None:
-                    break
-                sp = contact['stopped_pose']
-                report.log(f'물품 접촉: {lane}번 선 {d}, x={sp[0]:.0f}, y={sp[1]:.0f}, '
-                           f'dFy={contact["residual_n"]:+.2f} N')
-                self.resume = contact                       # 현재 경로의 재개 기준점 저장
-                report('picking')
-                grip = self._find_and_grip(contact, reference, report)
-                if grip is not None and self._carry_and_place(grip, zone, home_z, report):
-                    r.movej(home, vel=ANGULAR_VEL, acc=ANGULAR_ACC)
-                    report.log('물품 1개 측정존 배치 완료, HOME 복귀')
-                    return True
-                failure = '반원·직선 중심 탐지 실패' if grip is None else '이송 높이에서 파지 확인 실패'
-                # 같은 위치에서 재탐지와 실패가 반복되는 횟수를 제한한다.
-                if (self._last_miss and self._last_miss[0] == lane
-                        and abs(self._last_miss[1] - sp[1]) < HEIGHT_MISS_SAME_SPOT_MM):
-                    misses = self._last_miss[2] + 1
-                else:
-                    misses = 1
-                self._last_miss = (lane, sp[1], misses)
-                if misses >= HEIGHT_MISS_LIMIT:
-                    self._on_scan_blocked(contact, misses, report, failure)
-                report.log(f'{failure} ({misses}/{HEIGHT_MISS_LIMIT}) → 탐색 계속', 'WARN')
-                report('space_scan')
-                self._go_resume(contact, orient)
+        reference, home_z = here[3:6], here[2]
+        self._close()
+        while self.scan_pass < len(SCAN_PASSES):
+            p = self.settings
+            axis = 0 if p['axis']=='X' else 1
+            directions = (lane_direction(0,p), lane_direction(1,p))
+            orient = {d: scan_orientation(reference,d,p) for d in directions}
+            report.log(f"{p['axis']}축 탐색 {self.lane+1}/{len(p['lanes'])}선, v{p['vel']:g}/a{p['acc']:g}, 한계{p['limit']:g}N")
+            if self.resume is not None:
+                self._go_resume(self.resume, orient)
                 ignore = RESUME_IGNORE_MM
-            self.lane += 1
-            self.resume = None
-            ignore = 0.0
-            if self.lane < len(X_LANES):                    # 다음 선으로 +X 이동 (판정 없이 기록만)
-                r.wait(BETWEEN_LINES_WAIT)
-                self._scan_line([X_LANES[self.lane], end_y, SCAN_Z, *o], '+X', lane, phase='transfer')
-                r.wait(BETWEEN_LINES_WAIT)
-
-        r.movej(home, vel=ANGULAR_VEL, acc=ANGULAR_ACC)
+            else:
+                d = lane_direction(self.lane,p)
+                xyz = scan_point(p,self.lane)
+                safe_z = max(PROBE_START_Z,r.pose()[2])
+                self._move_z(safe_z)
+                r.movejx([xyz[0],xyz[1],safe_z,*orient[d]],vel=ANGULAR_VEL,acc=ANGULAR_ACC)
+                self._move_z(p['z'])
+                r.wait(SETTLE_SECONDS)
+                ignore = 0.0
+            while self.lane < len(p['lanes']):
+                lane = self.lane+1
+                d = lane_direction(self.lane,p)
+                target = scan_point(p,self.lane,end=True)
+                o = orient[d]
+                self._orient(o, scanning=True)
+                r.wait(p['wait'])
+                while abs(r.pose()[axis]-target[axis]) > 1.0:
+                    contact = self._scan_line([*target,*o],d,lane,ignore)
+                    if contact is None:
+                        break
+                    sp = contact['stopped_pose']
+                    report.log(f"물품 접촉: {p['axis']} {lane}번 {d}, X={sp[0]:.0f}, Y={sp[1]:.0f}, dF{p['axis']}={contact['residual_n']:+.2f}N")
+                    self.resume = contact
+                    report('picking')
+                    grip = self._find_and_grip(contact,reference,report)
+                    if grip is not None and self._carry_and_place(grip,zone,home_z,report):
+                        r.movej(home,vel=ANGULAR_VEL,acc=ANGULAR_ACC)
+                        report.log('물품 1개 배치 완료, HOME 복귀. 다음 요청에서 현재 단계·경로 재개')
+                        return True
+                    failure = '반원·직선 중심 탐지 실패' if grip is None else '이송 높이에서 파지 확인 실패'
+                    if self._last_miss and self._last_miss[0]==lane and abs(self._last_miss[1]-sp[axis])<HEIGHT_MISS_SAME_SPOT_MM:
+                        misses=self._last_miss[2]+1
+                    else:
+                        misses=1
+                    self._last_miss=(lane,sp[axis],misses)
+                    if misses>=HEIGHT_MISS_LIMIT:
+                        self._on_scan_blocked(contact,misses,report,failure)
+                    report.log(f'{failure} ({misses}/{HEIGHT_MISS_LIMIT}) → 탐색 계속','WARN')
+                    report('space_scan')
+                    self._go_resume(contact,orient)
+                    ignore=RESUME_IGNORE_MM
+                self.lane+=1
+                self.resume=None
+                ignore=0.0
+                if self.lane<len(p['lanes']):
+                    r.wait(p['wait'])
+                    next_xyz=scan_point(p,self.lane)
+                    previous_cross=p['lanes'][self.lane-1]
+                    transfer_sign='+' if next_xyz[1-axis]>previous_cross else '-'
+                    self._scan_line([*next_xyz,*o],transfer_sign+('Y' if axis==0 else 'X'),lane,phase='transfer')
+                    r.wait(p['wait'])
+            report.log(f"{p['axis']}축 전체 경로 완료" + (' → X축 마지막 확인 시작' if self.scan_pass==0 else ''))
+            self.scan_pass+=1
+            self.lane=0
+            self.resume=None
+            self._last_miss=None
+        r.movej(home,vel=ANGULAR_VEL,acc=ANGULAR_ACC)
         self._reset_cursor()
-        report.log('작업공간 전체 탐색 완료: 물품 없음')
+        report.log('Y 본탐색 및 X 확인탐색 완료: 물품 없음')
         return False
 
     def _on_scan_blocked(self, contact, misses, report, failure):
@@ -395,12 +458,14 @@ class ScanAlgorithm:
             p[2] = float(z)
             self._move(p)
 
-    def _orient(self, abc):
+    def _orient(self, abc, scanning=False):
         """제자리에서 자세만 바꾸기 (원본 set_scan_orientation)"""
         p = self.robot.pose()
         if rotation_error(p[3:6], abc) <= 1e-6:
             return
-        self.robot.movel([*p[:3], *abc], vel=[5.0, ANGULAR_VEL], acc=[10.0, ANGULAR_ACC], tol=1.0)
+        vel = self.settings['tilt_vel'] if scanning else ANGULAR_VEL
+        acc = self.settings['tilt_acc'] if scanning else ANGULAR_ACC
+        self.robot.movel([*p[:3], *abc], vel=[5.0,vel], acc=[10.0,acc], tol=1.0)
         if rotation_error(self.robot.pose()[3:6], abc) > 0.005:
             raise RuntimeError('자세 회전 완료 확인 실패')
 
@@ -449,27 +514,31 @@ class ScanAlgorithm:
         return ok
 
     def _go_resume(self, contact, orient):
-        """멈춘 선의 원래 시작점에서 같은 방향으로 그 줄 전체를 다시 훑는다."""
-        lane, d = contact['lane'], contact['direction']
-        if not 1 <= lane <= len(X_LANES) or d != lane_direction(lane-1):
-            raise ValueError('재개할 탐색 선 또는 방향이 잘못됨')
-        y = Y_START if d == '-Y' else Y_END
-        x = X_LANES[lane-1]
-        self._move_z(max(PROBE_START_Z, self.robot.pose()[2]))
-        self.robot.movejx([x, y, PROBE_START_Z, *orient[d]], vel=ANGULAR_VEL, acc=ANGULAR_ACC)
-        self._move_z(SCAN_Z)
+        """현재 단계의 원래 선 시작점으로 상승 복귀한 뒤 같은 방향으로 재개한다."""
+        lane,d = contact['lane'],contact['direction']
+        p=self.settings
+        if (contact.get('scan_pass',self.scan_pass)!=self.scan_pass or not 1<=lane<=len(p['lanes'])
+                or d!=lane_direction(lane-1,p)):
+            raise ValueError('재개할 단계·경로·방향 오류')
+        xyz=scan_point(p,lane-1)
+        safe_z=max(PROBE_START_Z,self.robot.pose()[2])
+        self._move_z(safe_z)
+        self.robot.movejx([xyz[0],xyz[1],safe_z,*orient[d]],vel=ANGULAR_VEL,acc=ANGULAR_ACC)
+        self._move_z(p['z'])
         self.robot.wait(SETTLE_SECONDS)
 
     # ==================================================================
     # 탐색 한 줄 (원본 Robot.scan_line)
     # ==================================================================
     def _scan_line(self, target, direction, lane, ignore_mm=0.0, phase='scan'):
-        """Y 탐색에서는 접촉을 판정하고, X 경로 전환에서는 일반 직선 속도로 이동하며 기록한다."""
+        """활성 축의 외력을 보정해 판정한다. 경로 연결 이동에는 판정을 적용하지 않는다."""
         r = self.robot
-        start_y = r.pose()[1]
-        sign = 1.0 if direction == '+Y' else -1.0
+        p = self.settings
+        axis = scan_axis(direction)
+        start_position = r.pose()[axis]
+        sign = 1.0 if direction[0] == '+' else -1.0
         scanning = phase == 'scan'
-        speed, acceleration = (SCAN_VEL, SCAN_ACC) if scanning else (LINEAR_VEL, LINEAR_ACC)
+        speed, acceleration = (p['vel'],p['acc']) if scanning else (p['transfer_vel'],p['transfer_acc'])
         r.amovel(target, vel=[speed, 10.0], acc=[acceleration, 20.0])
         started = next_sample = time.monotonic()
         try:
@@ -477,23 +546,24 @@ class ScanAlgorithm:
                 status = r.motion_state()
                 now = time.monotonic()
                 if now >= next_sample:
-                    fy = r.force('base')[1]                  # 정지 확인 + 1초마다 진행 알림 포함
+                    fy = r.force('base')[axis]                  # 정지 확인 + 1초마다 진행 알림 포함
                     pose = r.pose()
-                    offset = baseline_fy(pose[1], direction, lane) if scanning else None
+                    offset = baseline_force(pose[axis],direction,lane,p) if scanning else None
                     if self.sim_boxes is not None:
                         fy = self._sim_fy(pose, offset)
                     residual = None if offset is None else fy - offset
-                    enabled = status != 0 and residual is not None and sign*(pose[1]-start_y) >= ignore_mm
-                    contact = enabled and abs(residual) >= FORCE_LIMIT
+                    enabled = status != 0 and residual is not None and sign*(pose[axis]-start_position) >= ignore_mm
+                    contact = enabled and abs(residual) >= p['limits'][lane-1]
                     if self.recorder:
                         self.recorder.add(now, lane, phase, direction, pose, fy, offset, residual,
-                                          status, enabled, contact, speed, acceleration)
+                                          status, enabled, contact, speed, acceleration, 'Fx' if axis==0 else 'Fy', p['axis'])
                     if contact:
                         if not r.move_stop(1):
                             raise RuntimeError('접촉 후 빠른 정지 요청 실패')
                         self._wait_still()
-                        return {'lane': lane, 'direction': direction, 'sample_pose': pose,
-                                'stopped_pose': r.pose(), 'fy_n': fy, 'baseline_n': offset,
+                        return {'lane': lane, 'direction': direction, 'scan_pass': self.scan_pass,
+                                'force_axis': p['axis'], 'sample_pose': pose,
+                                'stopped_pose': r.pose(), 'force_n': fy, 'baseline_n': offset,
                                 'residual_n': residual}
                     next_sample = now + SAMPLE_PERIOD
                 if status == 0:
@@ -599,14 +669,18 @@ class ScanAlgorithm:
         direction = contact['direction']
         if origin[2] >= PROBE_START_Z:
             raise RuntimeError('접촉 Z가 높이 탐지 시작 높이보다 높음')
-        if direction not in ('-Y', '+Y'):
+        if direction not in ('-Y', '+Y', '-X', '+X'):
             raise ValueError(f'높이 탐침 방향 오류: {direction}')
         self._move_z(PROBE_START_Z)
         probe_orientation = list(reference)
-        probe_orientation[2] += PROBE_TOOL_Z_ROTATION_DEG
+        axis = scan_axis(direction)
+        probe_orientation[2] += PROBE_TOOL_Z_ROTATION_DEG - (90.0 if axis==0 else 0.0)
         self._orient(probe_orientation)
-        x_min, x_max = min(X_LANES), max(X_LANES)
-        y_min, y_max = sorted((Y_START, Y_END))
+        p=self.settings
+        travel_min,travel_max=sorted((p['start'],p['end']))
+        cross_min,cross_max=min(p['lanes']),max(p['lanes'])
+        x_min,x_max=(travel_min,travel_max) if axis==0 else (cross_min,cross_max)
+        y_min,y_max=(cross_min,cross_max) if axis==0 else (travel_min,travel_max)
 
         def xy(ux, uy, distance):
             return origin[0] + ux * distance, origin[1] + uy * distance
@@ -630,7 +704,7 @@ class ScanAlgorithm:
         angles = []
         first_z = None
         try:
-            fan_angles = (PROBE_FAN_ANGLES_DEG if direction == '-Y'
+            fan_angles = (PROBE_FAN_ANGLES_DEG if direction in ('-Y','+X')
                           else reversed(PROBE_FAN_ANGLES_DEG))
             for angle in fan_angles:
                 x, y = xy(*probe_direction(direction, angle), PROBE_FAN_RADIUS_MM)
@@ -675,7 +749,7 @@ class ScanAlgorithm:
 
         center_x, center_y = xy(ux, uy, edge / 2.0)
         # 직선 탐침 기울기로 정렬한다. 평행 핑거의 180도 대칭을 이용한다.
-        ray_angle = math.degrees(math.atan2(ux, -uy))
+        ray_angle = math.degrees(math.atan2(ux, -uy)) - (90.0 if axis==0 else 0.0)
         ray_angle = (ray_angle + 90.0) % 180.0 - 90.0
         grip_orientation = probe_orientation[:]
         grip_orientation[2] -= ray_angle
@@ -840,7 +914,7 @@ class ScanAlgorithm:
 
     def _sim_fy(self, pose, offset):
         fy = offset or 0.0
-        if abs(pose[2] - SCAN_Z) < 5.0 and self._sim_box_at(pose[0], pose[1], SIM_TOUCH_MM):
+        if abs(pose[2] - self.settings['z']) < 5.0 and self._sim_box_at(pose[0], pose[1], SIM_TOUCH_MM):
             fy += SIM_CONTACT_FY
         return fy
 
