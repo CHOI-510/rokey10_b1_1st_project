@@ -117,6 +117,7 @@ def validate(c):
     c.setdefault('inventory_force_start_tcp_z', 120.0)
     c.setdefault('estimated_empty_contact_tcp_z', 29.85)
     c.setdefault('probe_clearance_mm', 15.0)
+    c.setdefault('compliance_settle_max_drift_mm', 5.0)
     if type(c['baseline_attempts']) is not int or c['baseline_attempts'] < 1:
         raise ValueError('baseline_attempts는 1 이상의 정수 필요')
     for name, overrides in CLASS_LAYOUT.items():
@@ -128,7 +129,7 @@ def validate(c):
                 'contact_force_n', 'desired_force_n', 'abort_force_n', 'abs_force_limit_n',
                 'z_stiffness_n_m', 'baseline_duration_s', 'baseline_max_span_n', 'search_timeout_s',
                 'contact_hold_s', 'contact_z_span_mm', 'layer_tolerance_mm', 'max_probe_travel_mm',
-                'baseline_settle_s', 'probe_clearance_mm'):
+                'baseline_settle_s', 'probe_clearance_mm', 'compliance_settle_max_drift_mm'):
         if type(c.get(key)) not in (int, float) or not math.isfinite(c[key]) or c[key] <= 0:
             raise ValueError(f'유한한 양수 필요: {key}')
     if not 0 < c['contact_force_n'] < c['desired_force_n'] < c['abort_force_n']:
@@ -287,17 +288,24 @@ class InventoryCheckAlgorithm:
     def _contact(self):
         """교정/점검별 선행 movel 하강 후 기준 외력을 측정하고 힘제어로 접촉 탐색한다."""
         r, c = self.robot, self.c
-        start_z = r.pose()[2]
         baseline = self._measure_baseline()
+        start_z = r.pose()[2]  # 기준 외력 측정 직후, 순응제어를 켜기 직전 높이
         r.compliance_on([3000., 3000., c['z_stiffness_n_m'], 200., 200., 200.])
         # 기존 적재와 같은 순응제어 정착 순서.
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
             f, z = r.force_z(), r.pose()[2]
             self._force_limit(f, baseline)
-            if abs(z-start_z) >= 2.0:
-                raise PartError('PLACE_FAILED', '순응제어 정착 중 위치 변동 초과')
+            if abs(z-start_z) >= c['compliance_settle_max_drift_mm']:
+                raise PartError(
+                    'PLACE_FAILED',
+                    f'순응제어 정착 중 위치 변동 초과: 시작Z={start_z:.2f}mm, '
+                    f'현재Z={z:.2f}mm, dZ={z-start_z:+.2f}mm, '
+                    f'상한={c["compliance_settle_max_drift_mm"]:.2f}mm, '
+                    f'Fz={f:.2f}N, baseline={baseline:.2f}N, dFz={f-baseline:+.2f}N'
+                )
             r.wait(0.05)
+        force_start_z = r.pose()[2]  # 힘제어 구간의 상승 검사 기준은 이 시점에서 다시 잡는다.
         r.force_on([0., 0., -c['desired_force_n'], 0., 0., 0.], [0, 0, 1, 0, 0, 0], 0.5)
         deadline = time.monotonic() + c['search_timeout_s']
         candidate_since = None
@@ -305,7 +313,7 @@ class InventoryCheckAlgorithm:
         while r.ok():
             f, z = r.force_z(), r.pose()[2]
             self._force_limit(f, baseline)
-            if z < c['min_probe_tcp_z'] or z > start_z+2.0 or start_z-z > c['max_probe_travel_mm']:
+            if z < c['min_probe_tcp_z'] or z > force_start_z+2.0 or start_z-z > c['max_probe_travel_mm']:
                 raise PartError('PLACE_FAILED', f'점검 TCP 탐색 범위 초과 Z={z:.2f}')
             now = time.monotonic()
             if c['contact_sign'] * (f-baseline) >= c['contact_force_n']:
