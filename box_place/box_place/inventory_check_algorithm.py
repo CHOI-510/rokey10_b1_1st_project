@@ -14,17 +14,15 @@
 완료 후 두 파라미터가 false인 일반 모드로 서버를 재시작한다.
 각 자리의 빈 그리퍼 바닥 접촉 TCP Z를 별도로 저장한다. 기존 적재용 기준 Z는 사용하지 않는다.
 위치·자세가 달라진 기존 기준은 거부하며 자동으로 새 좌표의 기준으로 바꾸지 않는다.
-기준값은 ~/.ros/inventory_check_state.json에 저장되어 재시작 뒤에도 재사용한다. 좌표·자세·박스 높이·TCP/TOOL·접촉 설정이 바뀌면 서명이 달라져 해당 자리를 다시 교정해야 한다.
 
 첫 자리 0~2개: 그 수량만 반환, 둘째 자리 생략.
 첫 자리 3개: 둘째 자리 0~3개를 추가 측정, 합계 3~6개 반환.
 따라서 첫 자리에서 사람이 물체를 빼고 둘째 자리에 남긴 상황은 이 조건부 점검으로는 합산되지 않는다.
 두 번째 자리 측정 실패 시 첫 자리만의 부분 수량을 반환하지 않는다.
 
-관제는 ControlInterface에서 /inventory_check Goal을 A/B/C/D 순서로 보내고
-각 결과가 모두 0~6 범위인지 확인한 뒤에만 재고 기준값으로 사용한다.
+기존 inventory_check_interface.py / inventory_check_client.py도 함께 교체해야 0~6을 처리한다.
 실행 진입점 inventory_check_main.py와 공용 part_server.py/Place Action 정의는 기존과 같다.
-common.STAGES의 inventory_check 등록은 필요하다. Recovery에는 연결하지 않는다.
+common.STAGES의 inventory_check 등록은 기존대로 필요하다. Recovery에는 연결하지 않는다.
 """
 from copy import deepcopy
 import json
@@ -43,7 +41,7 @@ DEFAULT_CONFIG = {'travel_z': 160.0,
  'home_speed_deg_s': 10.0,
  'home_acc_deg_s2': 10.0,
  'baseline_duration_s': 1.5,
- 'baseline_max_span_n': 1.0,
+ 'baseline_max_span_n': 3.0,
  'z_stiffness_n_m': 500.0,
  'contact_sign': 1,
  'min_probe_tcp_z': 0.0,
@@ -68,6 +66,9 @@ DEFAULT_CONFIG = {'travel_z': 160.0,
              'D': {'height_mm': 20.0,
                    'orientation': [3.5, 180.0, 4.0],
                    'slot_offset_mm': [0.0, -30.0]}}}
+
+# 외부 JSON에 이전 1N 값이 남아 있어도 이번 시험은 3N을 적용한다.
+BASELINE_MAX_SPAN_N = 3.0
 
 CLASS_LAYOUT = {
     'A': {'slot_offset_mm': [0.0, -45.0], 'orientation': [120.0, 180.0, 120.0]},
@@ -109,6 +110,15 @@ def count_from_contact(z, empty_z, height, tolerance, levels):
 
 
 def validate(c):
+    c['baseline_max_span_n'] = BASELINE_MAX_SPAN_N
+    c.setdefault('baseline_settle_s', 1.0)
+    c.setdefault('baseline_attempts', 3)
+    c.setdefault('calibration_force_start_tcp_z', 50.0)
+    c.setdefault('inventory_force_start_tcp_z', 120.0)
+    c.setdefault('estimated_empty_contact_tcp_z', 29.85)
+    c.setdefault('probe_clearance_mm', 15.0)
+    if type(c['baseline_attempts']) is not int or c['baseline_attempts'] < 1:
+        raise ValueError('baseline_attempts는 1 이상의 정수 필요')
     for name, overrides in CLASS_LAYOUT.items():
         if name in c.get('classes', {}):
             c['classes'][name].update(deepcopy(overrides))
@@ -117,7 +127,8 @@ def validate(c):
     for key in ('travel_z', 'speed_mm_s', 'acc_mm_s2', 'home_speed_deg_s', 'home_acc_deg_s2',
                 'contact_force_n', 'desired_force_n', 'abort_force_n', 'abs_force_limit_n',
                 'z_stiffness_n_m', 'baseline_duration_s', 'baseline_max_span_n', 'search_timeout_s',
-                'contact_hold_s', 'contact_z_span_mm', 'layer_tolerance_mm', 'max_probe_travel_mm'):
+                'contact_hold_s', 'contact_z_span_mm', 'layer_tolerance_mm', 'max_probe_travel_mm',
+                'baseline_settle_s', 'probe_clearance_mm'):
         if type(c.get(key)) not in (int, float) or not math.isfinite(c[key]) or c[key] <= 0:
             raise ValueError(f'유한한 양수 필요: {key}')
     if not 0 < c['contact_force_n'] < c['desired_force_n'] < c['abort_force_n']:
@@ -128,6 +139,12 @@ def validate(c):
         raise ValueError('min_probe_tcp_z를 설정하세요')
     if c['min_probe_tcp_z'] >= c['travel_z']:
         raise ValueError('TCP 하한은 상부보다 낮아야 합니다')
+    for key in ('calibration_force_start_tcp_z', 'inventory_force_start_tcp_z',
+                'estimated_empty_contact_tcp_z'):
+        if type(c[key]) not in (int, float) or not math.isfinite(c[key]):
+            raise ValueError(f'유한한 수 필요: {key}')
+        if not c['min_probe_tcp_z'] < c[key] < c['travel_z']:
+            raise ValueError(f'{key}는 TCP 하한과 이송 높이 사이여야 합니다')
     if not c.get('classes') or not set(c['classes']) <= set(VALID_CLASSES):
         raise ValueError('A/B/C/D 점검 분류 설정이 필요합니다')
     for name, spec in c['classes'].items():
@@ -208,20 +225,70 @@ class InventoryCheckAlgorithm:
                 baseline is not None and abs(fz - baseline) >= self.c['abort_force_n']):
             raise PartError('OVER_FORCE', f'점검 외력 상한 초과 Fz={fz:.2f}N')
 
+    def _measure_baseline(self):
+        """이동 후 정착을 기다리고 동일 허용 범위로 최대 3개 측정 창을 확인한다.
+
+        외력 상한 초과·취소·서비스 오류는 재시도하지 않는다. 불안정한 측정값만 다시 샘플링한다.
+        """
+        r, c = self.robot, self.c
+        last_detail = ''
+        for attempt in range(1, c['baseline_attempts'] + 1):
+            r.wait(c['baseline_settle_s'])
+            samples = []
+            deadline = time.monotonic() + c['baseline_duration_s']
+            while time.monotonic() < deadline:
+                f = r.force_z()
+                self._force_limit(f)
+                samples.append(f)
+                r.wait(0.05)
+            span = max(samples) - min(samples) if samples else float('inf')
+            if len(samples) >= 3 and span <= c['baseline_max_span_n']:
+                return sum(samples) / len(samples)
+            force_range = f'{min(samples):.2f}~{max(samples):.2f}N' if samples else '없음'
+            last_detail = (f'시도={attempt}/{c["baseline_attempts"]}, 표본={len(samples)}개, '
+                           f'Fz={force_range}, 변동폭={span:.2f}N, '
+                           f'허용={c["baseline_max_span_n"]:.2f}N')
+            if attempt < c['baseline_attempts']:
+                self.log.warn(f'[BASELINE RETRY] {last_detail} → 정착 후 재측정')
+        raise PartError('PLACE_FAILED', f'점검 기준 외력 불안정: {last_detail}')
+
+    def _move_to_probe_start(self, result_class, tier, xy, orient, empty_z, report):
+        """상부에서 비접촉 여유 높이까지 movel, 이후 기준 외력 측정/순응/힘제어.
+
+        교정은 모든 자리가 비어 있음을 확인한 경우에만 Z50을 사용한다.
+        일반 점검은 등록된 빈 바닥 Z + 최대 적층 높이 + 여유 이상에서 시작한다.
+        """
+        c = self.c
+        if self.calibrate:
+            if not self.empty_confirmed:
+                raise PartError('PLACE_FAILED', '교정 빠른 하강에는 모든 자리 빈 상태 확인이 필요합니다')
+            floor = c['estimated_empty_contact_tcp_z']
+            requested = c['calibration_force_start_tcp_z']
+            lower_contact = floor
+            mode = '빈 자리 교정'
+        else:
+            if type(empty_z) not in (int, float) or not math.isfinite(empty_z):
+                raise PartError('PLACE_FAILED', '일반 점검의 빈 바닥 접촉 기준이 없습니다')
+            floor = empty_z
+            requested = c['inventory_force_start_tcp_z']
+            lower_contact = floor + STACK['levels'] * c['classes'][result_class]['height_mm']
+            mode = '재고 점검'
+        target_z = max(requested, lower_contact + c['probe_clearance_mm'])
+        current_z = self.robot.pose()[2]
+        if current_z <= lower_contact:
+            raise PartError('PLACE_FAILED', '현재 상부 높이가 예상 접촉 높이 이하입니다')
+        if target_z >= current_z:
+            report.log(f'[PROBE APPROACH SKIP] {result_class}/{tier}: 여유 부족 → 상부에서 힘제어')
+            return
+        report.log(f'[PROBE APPROACH] {result_class}/{tier} {mode}: '
+                   f'TCP Z={current_z:.2f} → {target_z:.2f}mm movel 후 순응·힘제어')
+        self._move([*xy, target_z, *orient])
+
     def _contact(self):
-        """재고를 모르는 점검이므로 상부부터 힘제어. 85mm 위치제어 하강은 적용하지 않는다."""
+        """교정/점검별 선행 movel 하강 후 기준 외력을 측정하고 힘제어로 접촉 탐색한다."""
         r, c = self.robot, self.c
         start_z = r.pose()[2]
-        samples = []
-        deadline = time.monotonic() + c['baseline_duration_s']
-        while time.monotonic() < deadline:
-            f = r.force_z()               # 공용 정지 확인·keepalive 포함
-            self._force_limit(f)
-            samples.append(f)
-            r.wait(0.05)
-        if len(samples) < 3 or max(samples)-min(samples) > c['baseline_max_span_n']:
-            raise PartError('PLACE_FAILED', '점검 기준 외력 불안정')
-        baseline = sum(samples) / len(samples)
+        baseline = self._measure_baseline()
         r.compliance_on([3000., 3000., c['z_stiffness_n_m'], 200., 200., 200.])
         # 기존 적재와 같은 순응제어 정착 순서.
         deadline = time.monotonic() + 2.0
@@ -282,6 +349,7 @@ class InventoryCheckAlgorithm:
         self._move([*xy, self.c['travel_z'], *orient])
         report('placing')
         try:
+            self._move_to_probe_start(result_class, tier, xy, orient, empty_z, report)
             z = self._contact()
         except Exception:
             # 자동 후퇴를 하지 않는다. 공용 AlgorithmWork의 실패 정지가 최종 처리한다.
