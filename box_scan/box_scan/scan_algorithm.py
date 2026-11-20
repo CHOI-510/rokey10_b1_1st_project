@@ -15,6 +15,7 @@ GRASP_FAILED는 탐색 커서를 유지해 관제 재요청 시 같은 경로에
 - picking: 측면 정지점을 기준으로 진행 방향 앞쪽 반원에서 윗면을 탐침한다.
   연속 검출 각도의 양 끝 평균 방향으로 직선 탐침해 먼 경계를 좁힌다.
   측면 정지점과 경계의 중간에서 첫 윗면 높이를 사용하고, 0°, +90°, +45° 순으로 집기한다.
+  반원 후보를 모두 실제로 탐침해 미검출이면, 측면 정지점 XY에서 바닥 기준으로 한 번 집는다.
   동기 닫기, 재조임 및 파지 판별은 기존 통합 방식에 따른다.
 - moving: 수직 상승 후 파지를 확인하고 측정존까지 수평 직선 이동한다.
   성공 각도와 무관하게 이송 높이에서 HOME 기준 0도 자세로 정렬하고 파지를 다시 확인한다.
@@ -705,6 +706,7 @@ class ScanAlgorithm:
             return top
 
         angles = []
+        fan_misses = 0
         first_z = None
         try:
             fan_angles = (PROBE_FAN_ANGLES_DEG if direction in ('-Y','+X')
@@ -722,11 +724,18 @@ class ScanAlgorithm:
                 if top is None:
                     if angles:
                         break
+                    fan_misses += 1
                     continue
                 if first_z is None:
                     first_z = top[2]
                 angles.append(angle)
             if not angles:
+                if fan_misses == len(PROBE_FAN_ANGLES_DEG):
+                    self._move_z(PROBE_START_Z)
+                    report.log(f'반원 {fan_misses}회 미검출 → 충돌 정지점 '
+                               f'X={origin[0]:.1f}, Y={origin[1]:.1f}에서 바닥 기준 1회 집기', 'WARN')
+                    return self._grip([origin[0], origin[1], None], reference, report,
+                                      probe_orientation)
                 raise ProbeMiss('반원에 유효 윗면 없음')
 
             angle = (angles[0] + angles[-1]) / 2.0
@@ -768,16 +777,18 @@ class ScanAlgorithm:
         못 잡으면 그리퍼 열고 올라가서 툴 각도를 바꿔(GRIP_RETRY_ANGLES) 다시.
         얇은 박스라 윗면 − GRIP_DEPTH_FROM_TOP_MM 값이 작업대 바닥(TABLE_Z) + 2.6보다 낮으면 TABLE_Z + 2.6에서 집음 (적재의 '바닥 + 2.6'과 같은 기준)."""
         r = self.robot
-        tip_z = calculate_grip_z(top[2])                   # 핑거 끝이 물 높이 = 윗면 − GRIP_DEPTH_FROM_TOP_MM
-        floor_tip = TABLE_Z + SYNC_GRIP['tip_above_floor_mm']   # 핑거 끝 높이 하한
-        on_floor = tip_z < floor_tip
+        top_z = top[2]
+        collision_fallback = top_z is None
+        floor_tip = TABLE_Z + SYNC_GRIP['tip_above_floor_mm']
+        tip_z = floor_tip if collision_fallback else calculate_grip_z(top_z)
+        on_floor = tip_z <= floor_tip
         tip_z = max(tip_z, floor_tip)
         sg = make_sync_gripper(r, tip_z - SYNC_GRIP['tip_above_floor_mm'],
                                log=lambda m: self.log.info(f'[scan] {m}'))
-        retry_z = max(PROBE_START_Z, top[2] + GRIP_RETRY_LIFT_MM)
+        retry_z = PROBE_START_Z if collision_fallback else max(PROBE_START_Z, top_z + GRIP_RETRY_LIFT_MM)
         self._move([top[0], top[1], retry_z, *r.pose()[3:6]])   # 높이 탐지 뒤 위로
         initial = list(grip_orientation)
-        angles = GRIP_RETRY_ANGLES
+        angles = (0.0,) if collision_fallback else GRIP_RETRY_ANGLES
         force = GRIP_FORCE_N or GRIPPER['grip_force_n']
         why = ''
         for n, angle in enumerate(angles, 1):
@@ -810,24 +821,33 @@ class ScanAlgorithm:
                 self._grip_width = width
                 hold = r.pose()
                 raw_hold = r.gripper.status()['width_raw_mm']
-                depth = top[2] - (hold[2] + TCP['pos'][2] - tip_h_mm(raw_hold))   # 실제 문 깊이 (윗면 아래)
+                tip_offset = TCP['pos'][2] - tip_h_mm(raw_hold)
+                if collision_fallback:
+                    height_note = f'충돌 정지점 집기, 핑거 끝 Z={hold[2] + tip_offset:.1f} mm'
+                else:
+                    depth = top_z - (hold[2] + tip_offset)
+                    note = ', 얇아서 작업대 바닥 + 2.6 기준' if on_floor else ''
+                    height_note = f'핑거 끝 윗면 − {depth:.0f} mm{note}'
                 r.wait(GRIPPER['settle_after_grip_s'])     # 40N이 다 걸린 뒤 들기
                 p = hold[:]
                 p[2] = hold[2] + min(GRIPPER['lift_slow_mm'], PICK_LIFT_MM)
                 slow = GRIPPER['lift_slow_vel']
                 r.movel(p, vel=[slow, 20.0], acc=[slow * 3, 40.0], tol=1.0)
-                note = ', 얇아서 작업대 바닥 + 2.6 기준' if on_floor else ''
-                return {'grip_z': hold[2], 'top_z': top[2],
+                return {'grip_z': hold[2], 'top_z': top_z,
                         'transfer_alignment': list(reference),  # 성공 각도와 무관하게 HOME 기준 0도로 복원
-                        'tip_off': TCP['pos'][2] - tip_h_mm(raw_hold),
+                        'tip_off': tip_offset,
                         'grasp_summary': (f'{n}/{len(angles)}번째, {angle:+g}도, 폭 {width:.1f} mm, '
-                                          f'핑거 끝 윗면 − {depth:.0f} mm{note}')}
+                                          f'{height_note}')}
             self._open()
             nxt = f'다음 {angles[n]:+g}도' if n < len(angles) else '포기'
             report.log(f'집기 실패 {n}/{len(angles)} ({angle:+g}도): {why} → {nxt}', 'WARN')
             self._move_z(retry_z)
         self._move_z(retry_z)
         self._orient(reference)   # 누적 회전 방지
+        if collision_fallback:
+            self._close()  # 탐색 재개 자세로 복원
+            report.log(f'충돌 정지점 집기 실패: {why}', 'WARN')
+            return None
         raise PartError('GRASP_FAILED', f'{len(angles)}회 모두 실패 ({why}). 그리퍼 연 채 높이 {retry_z:.0f}mm')
 
     # ==================================================================
@@ -836,7 +856,9 @@ class ScanAlgorithm:
     def _carry_and_place(self, grip, zone, home_z, report):
         r = self.robot
         contact_z = zone[2] + (grip['grip_z'] - TABLE_Z)   # 예상: 박스 바닥이 측정존 바닥(z)에 닿는 TCP Z
-        transfer_z = max(home_z, TRAVEL_Z, grip['top_z'] + PROBE_CLEARANCE_MM,
+        top_z = grip['top_z']
+        clearance_z = PROBE_START_Z if top_z is None else top_z + PROBE_CLEARANCE_MM
+        transfer_z = max(home_z, TRAVEL_Z, clearance_z,
                          contact_z + PLACE_SLOW_FROM_MM + PICK_LIFT_MM)
         report('moving')
         # 파지 위치에서 수직으로 이탈한 뒤 도달한 높이와 자세로 수평 이송한다.
