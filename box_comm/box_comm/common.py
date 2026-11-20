@@ -204,6 +204,9 @@ TOOL = {
 #   다음 단(자리)의 위치는 적재 설정이 정한다 (box_place/config/place_config.json의 slot_dx_mm,
 #   현재 −x 방향 80mm, y는 같음). 단 간격·z·박스 높이는 적재 파트만 가진다.
 # ----------------------------------------------------------------------
+TRAVEL_Z = 160.0                         # 물품을 들고 단순 XY 이동할 때의 최소 TCP Z [mm]
+WAYPOINT = {'z_mm': TRAVEL_Z}             # XY는 Goal의 measure_zone에서 가져옴. 자세는 이동 전 자세 유지
+
 FIXED_POSES = {
     'home_j': [0.0, 0.0, 90.0, 0.0, 90.0, 0.0],   # HOME 관절 각도 [deg]
     'measure_zone': [300.0, -160.0, 30.9],         # 측정존 x, y, z [mm, base 기준]  z = 측정존 바닥 Z (판별 실측 30.9, 11/18 30 → 30.9)
@@ -344,7 +347,7 @@ SYNC_GRIP = {
 # ----------------------------------------------------------------------
 RECOVERY = {
     'push_path': None,           # [[x, y, z, a, b, c], ...] [mm, deg, base] — 판별·적재와 실물 보고 정할 것
-    'safe_z': 160.0,             # 옆으로 움직이기 전 TCP 높이 [mm]
+    'safe_z': TRAVEL_Z,          # 옆으로 움직이기 전 TCP 높이 [mm]
     'speed': 60.0,               # 직선 이동 속도 [mm/s]
     'acc': 100.0,
     'probe_orientation': None,   # 측정존 확인 때 그리퍼 자세 [a, b, c] (None이면 지금 자세 유지)

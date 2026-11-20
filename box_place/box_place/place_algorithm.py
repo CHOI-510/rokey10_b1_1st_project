@@ -75,7 +75,7 @@ import math
 import time
 from pathlib import Path
 
-from box_comm.common import (GRIP_RETRY, GRIPPER, SYNC_GRIP, PartError, RESULT_CLASSES, STACK, TCP,
+from box_comm.common import (GRIP_RETRY, GRIPPER, SYNC_GRIP, PartError, RESULT_CLASSES, STACK, TCP, TRAVEL_Z,
                              UNCLASSIFIED, VALID_CLASSES, count_from_position)
 from box_comm.gripper import check_grip, holding
 from box_comm.sync_grip import GripMissed, make_sync_gripper
@@ -142,6 +142,7 @@ def apply_class_layout(c):
 
 def validate_config(c):
     c = apply_class_layout(c)
+    c['travel_z'] = TRAVEL_Z             # 공통 작업 고도가 Place 설정값보다 우선
     for k in ('travel_z', 'search_timeout_s', 'contact_force_n', 'desired_force_n',
               'abort_force_n', 'abs_force_limit_n', 'speed_mm_s', 'acc_mm_s2',
               'gripper_wait_s', 'baseline_duration_s', 'baseline_max_span_n',
@@ -251,7 +252,6 @@ class PlaceAlgorithm:
         self._grip_width = None             # 집었을 때 폭 (놓침 판정 기준)
         self._hold_off = 0.0                # 집은 TCP Z − 박스 바닥 Z (sync 집기, 집을 때마다 잼)
         self._hold_why = ''
-        self._home_initialized = False      # 첫 Goal에서 한 번만 HOME 자세로
         state_name = 'place_sim_state.json' if self.sim_contact else 'place_real_v04_state.json'
         state_param = node.get_parameter('place_state').value
         self.state_path = Path(state_param or str(Path.home() / '.ros' / state_name)).expanduser()
@@ -318,12 +318,6 @@ class PlaceAlgorithm:
 
     def go_home(self, home):
         self.robot.movej(home, vel=self.c['home_speed_deg_s'], acc=self.c['home_acc_deg_s2'])
-
-    def _home_once(self, home):
-        """첫 Goal에서만 HOME 자세로 (알려진 관절 자세에서 시작)"""
-        if not self._home_initialized:
-            self.go_home(home)
-            self._home_initialized = True
 
     def _side_note(self, category, width):
         """집은 폭이 판별이 정렬해 둔 어느 변인지 (11/18 판별 위상 정렬: L1(가장 긴 변) = 측정존 x,
@@ -654,7 +648,7 @@ class PlaceAlgorithm:
         home, zone, release_pose, approach_z = self._unclassified_poses(poses)
         self._pending(**{'class': UNCLASSIFIED, 'route': 'unclassified', 'phase': 'picking'})
         report('picking')
-        self._home_once(home)
+        self.robot.move_to_waypoint(zone, vel=self.c['speed_mm_s'], acc=self.c['acc_mm_s2'])
         self.pick_from_measure_zone(zone, report)
         self._pending(phase='moving')
         report('moving')
@@ -707,7 +701,7 @@ class PlaceAlgorithm:
 
         self._pending(**{'class': result_class, 'phase': 'picking'})
         report('picking')
-        self._home_once(home)
+        self.robot.move_to_waypoint(zone, vel=self.c['speed_mm_s'], acc=self.c['acc_mm_s2'])
         self.pick_from_measure_zone(zone, report, result_class)
         self._pending(phase='moving')
         report('moving')

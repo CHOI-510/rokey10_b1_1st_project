@@ -244,14 +244,16 @@ class JudgeAlgorithm:
             raise PartError('MEASURE_FAILED', '로봇 객체 없음 (두산 패키지 미설치)')
         self._report = report
         zone = self._measure_zone(poses)
+        waypoint_orientation = self.robot.pose()[3:6]
         table_z = float(zone[2])                      # 측정존 바닥 Z (DB 하나 — 높이 측정·sync 집기 공통, 11/18)
         self._make_sync_gripper(table_z)
         px, py = zone[0], zone[1]
         io, p = self.io, self.p
         H = None
         try:
+            self.robot.move_to_waypoint(zone, orientation=waypoint_orientation,
+                                        vel=p['speed'], acc=p['speed'] * 3)
             io.move_z_to(max(io.cur_z(), self._safe_closed_z(table_z)), p['speed'])
-            io.move_xy_to(px, py, p['speed'])
 
             report('measuring_length1')
             H = self._measure_height(table_z)
@@ -290,7 +292,8 @@ class JudgeAlgorithm:
 
         result = self.classify(specs, lengths, dw)
         report.log(f'판별 결과 {result}')
-        self.robot.movej(poses['home_j'], vel=p['home_vel'], acc=p['home_vel'])
+        self.robot.move_to_waypoint(zone, orientation=waypoint_orientation,
+                                    vel=p['speed'], acc=p['speed'] * 3)
         return result
 
     # ------------------------------------------------------------------ 판별

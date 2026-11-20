@@ -2,7 +2,7 @@
 """
 scan_algorithm.py — box_scan 탐색·집기·이송 (담당: 김창균)
 
-scan(poses, report)는 Goal마다 물품 한 개를 측정존에 배치하고 HOME으로 복귀한다.
+scan(poses, report)는 Goal마다 물품 한 개를 측정존에 배치하고 WAYPOINT로 복귀한다.
 성공 시 True, Y 본탐색과 X 확인탐색을 모두 마친 경우에만 False를 반환한다.
 단계·경로·재개 커서는 Goal 사이에 유지한다. 탐침/그립/배치는 축 공통으로 사용한다.
 GRASP_FAILED는 탐색 커서를 유지해 관제 재요청 시 같은 경로에서 이어서 탐색한다.
@@ -34,7 +34,7 @@ from bisect import bisect_right
 from datetime import datetime
 from pathlib import Path
 
-from box_comm.common import GRIPPER, PartError
+from box_comm.common import GRIPPER, PartError, TRAVEL_Z
 from box_comm.sync_grip import GripMissed, make_sync_gripper, tip_h_mm
 from box_comm.common import SYNC_GRIP, TCP
 
@@ -377,9 +377,9 @@ class ScanAlgorithm:
             else:
                 d = lane_direction(self.lane,p)
                 xyz = scan_point(p,self.lane)
-                safe_z = max(PROBE_START_Z,r.pose()[2])
-                self._move_z(safe_z)
-                r.movejx([xyz[0],xyz[1],safe_z,*orient[d]],vel=ANGULAR_VEL,acc=ANGULAR_ACC)
+                safe_z = max(TRAVEL_Z, r.pose()[2])
+                r.move_via_travel_z([xyz[0], xyz[1], safe_z, *orient[d]],
+                                    vel=LINEAR_VEL, acc=LINEAR_ACC)
                 self._move_z(p['z'])
                 r.wait(SETTLE_SECONDS)
                 ignore = 0.0
@@ -400,8 +400,9 @@ class ScanAlgorithm:
                     report('picking')
                     grip = self._find_and_grip(contact,reference,report)
                     if grip is not None and self._carry_and_place(grip,zone,home_z,report):
-                        r.movej(home,vel=ANGULAR_VEL,acc=ANGULAR_ACC)
-                        report.log('물품 1개 배치 완료, HOME 복귀. 다음 요청에서 현재 단계·경로 재개')
+                        r.move_to_waypoint(zone, orientation=reference,
+                                           vel=LINEAR_VEL, acc=LINEAR_ACC)
+                        report.log('물품 1개 배치 완료, 측정존 WAYPOINT 복귀. 다음 요청에서 현재 단계·경로 재개')
                         return True
                     failure = '반원·직선 중심 탐지 실패' if grip is None else '이송 높이에서 파지 확인 실패'
                     if self._last_miss and self._last_miss[0]==lane and abs(self._last_miss[1]-sp[axis])<HEIGHT_MISS_SAME_SPOT_MM:
@@ -423,6 +424,7 @@ class ScanAlgorithm:
                     next_xyz=scan_point(p,self.lane)
                     previous_cross=p['lanes'][self.lane-1]
                     transfer_sign='+' if next_xyz[1-axis]>previous_cross else '-'
+                    # 라인 간 이동은 작업공간을 훑는 연속 경로이므로 scan Z를 유지한다.
                     self._scan_line([*next_xyz,*o],transfer_sign+('Y' if axis==0 else 'X'),lane,phase='transfer')
                     r.wait(p['wait'])
             report.log(f"{p['axis']}축 전체 경로 완료" + (' → X축 마지막 확인 시작' if self.scan_pass==0 else ''))
@@ -430,9 +432,10 @@ class ScanAlgorithm:
             self.lane=0
             self.resume=None
             self._last_miss=None
-        r.movej(home,vel=ANGULAR_VEL,acc=ANGULAR_ACC)
+        r.move_to_waypoint(zone, orientation=reference,
+                           vel=LINEAR_VEL, acc=LINEAR_ACC)
         self._reset_cursor()
-        report.log('Y 본탐색 및 X 확인탐색 완료: 물품 없음')
+        report.log('Y 본탐색 및 X 확인탐색 완료: 물품 없음, 측정존 WAYPOINT 복귀')
         return False
 
     def _on_scan_blocked(self, contact, misses, report, failure):
@@ -521,9 +524,9 @@ class ScanAlgorithm:
                 or d!=lane_direction(lane-1,p)):
             raise ValueError('재개할 단계·경로·방향 오류')
         xyz=scan_point(p,lane-1)
-        safe_z=max(PROBE_START_Z,self.robot.pose()[2])
-        self._move_z(safe_z)
-        self.robot.movejx([xyz[0],xyz[1],safe_z,*orient[d]],vel=ANGULAR_VEL,acc=ANGULAR_ACC)
+        safe_z=max(TRAVEL_Z, self.robot.pose()[2])
+        self.robot.move_via_travel_z([xyz[0], xyz[1], safe_z, *orient[d]],
+                                     vel=LINEAR_VEL, acc=LINEAR_ACC)
         self._move_z(p['z'])
         self.robot.wait(SETTLE_SECONDS)
 
@@ -833,7 +836,7 @@ class ScanAlgorithm:
     def _carry_and_place(self, grip, zone, home_z, report):
         r = self.robot
         contact_z = zone[2] + (grip['grip_z'] - TABLE_Z)   # 예상: 박스 바닥이 측정존 바닥(z)에 닿는 TCP Z
-        transfer_z = max(home_z, PROBE_START_Z, grip['top_z'] + PROBE_CLEARANCE_MM,
+        transfer_z = max(home_z, TRAVEL_Z, grip['top_z'] + PROBE_CLEARANCE_MM,
                          contact_z + PLACE_SLOW_FROM_MM + PICK_LIFT_MM)
         report('moving')
         # 파지 위치에서 수직으로 이탈한 뒤 도달한 높이와 자세로 수평 이송한다.
