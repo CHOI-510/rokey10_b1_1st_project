@@ -11,7 +11,7 @@ judge_algorithm.py — 판별 파트 메인 로직 (judge_template.py 약속, 11
     weight        : 미측정 (report 만)
     judging       : 세 길이를 크기순으로 기준과 비교 (모두 tol_mm 안) -> 후보
                     위상 정렬: L1 x L2 면이 바닥, L1 = 로봇 x, L2 = 로봇 y, 측정존 중앙 (적재가 그대로 집는다)
-    materiality   : 후보가 여럿일 때만 (C · D 처럼 치수가 같은 물품). 3 -> 40 N 폭 변화로 말랑 / 딱딱
+    materiality   : 후보가 여럿일 때만 (C · D 처럼 치수가 같은 물품). 5 -> 40 N 폭 변화로 말랑 / 딱딱
     결과          : 후보 하나면 그것, 없으면 UNCLASSIFIED('U')
 
   위상 정렬 (rokey1 phase_align_test 실물 검증판을 줄인 것)
@@ -88,7 +88,7 @@ PARAMS = {
     'tol_mm': (2.5, '가로 · 세로 허용 오차 [mm] (11/20 3 -> 2.5, 탐지 방향 정렬 뒤 대각 잡기 없음)'),
     'tol_h_mm': (3.0, '높이 허용 오차 [mm] (바닥 기준이 들어가 여유를 더 둠)'),
     'soft_classes': ('D', '말랑한 물품 class (쉼표). 치수가 같은 후보를 물성으로 가를 때'),
-    'soft_dw': (1.0, '3 -> 40 N 폭 변화가 이 이상이면 말랑 [mm] (알루미늄 0.6~0.7, 지우개 1.3~1.6)'),
+    'soft_dw': (0.8, '5 -> 40 N 폭 변화가 이 이상이면 말랑 [mm] (11/20 1.0 -> 0.8: 알루미늄 0.5, 지우개 3개 1.0 / 1.0 / 1.3)'),
     # 위상 정렬
     'phase_align': (True, '위상 정렬 실행'),
     'tilt': (40.0, '기울여 잡는 각 [deg] (놓을 때 = 이 값 - 90)'),
@@ -113,7 +113,8 @@ PARAMS = {
     'tip_y0': (4.57, '핑거 끝 중심의 툴 y 위치 [mm]'),
     # 물성
     'stiff_settle': (1.0, '40 N 뒤 폭 읽기 전 대기 [s] (말랑한 물체는 기다릴수록 더 눌림)'),
-    'regrip_gap': (6.0, '물성: 폭 + 이만큼 열고 내려가 3 N 으로 잡음 [mm]'),
+    'regrip_gap': (6.0, '물성: 폭 + 이만큼 열고 내려가 시작 힘(stiff_f0)으로 잡음 [mm]'),
+    'stiff_f0': (5.0, '물성 시작 힘 [N] (11/20 3 -> 5: 3 N 은 물체까지 다 안 닫힌 적이 있음, 4 N 부터 매번 닫힘 확인)'),
 }
 
 PLAN_CFG = {'tilt_sign': 1, 'flip_tol': 2.0, 'tip_past': 8.0, 'grip_edge': 6.0, 'grid': 1.0, 'lift_extra': 5.0,
@@ -286,7 +287,7 @@ class JudgeAlgorithm:
             if len(cands) > 1 and aligned:
                 report('measuring_materiality')
                 dw = self._stiffness(L[1], L[2])
-                report.log(f'물성: 3 -> 40 N 폭 변화 {dw:.2f} mm ({"말랑" if dw >= p["soft_dw"] else "딱딱"})')
+                report.log(f'물성: {p["stiff_f0"]:.0f} -> 40 N 폭 변화 {dw:.2f} mm ({"말랑" if dw >= p["soft_dw"] else "딱딱"})')
                 report('judging')
         except _Fail as e:
             raise PartError('MEASURE_FAILED', str(e))
@@ -608,14 +609,14 @@ class JudgeAlgorithm:
 
     # ------------------------------------------------------------------ 물성
     def _stiffness(self, width, obj_h):
-        """길이2(로봇 y) 방향을 3 N 으로 잡고 40 N 으로 눌러 폭 변화 [mm] (양수 = 줄어든 양).
+        """길이2(로봇 y) 방향을 시작 힘(stiff_f0, 5 N)으로 잡고 40 N 으로 눌러 폭 변화 [mm] (양수 = 줄어든 양).
         폭을 이미 알고 축 맞춤으로 중앙이라 폭 + gap 으로만 열고 내려간다 (10 N 폭 찾기 생략)."""
         io, p = self.io, self.p
         g = io.g
         io.move_z_to(max(io.cur_z(), self._safe_z(obj_h)), p['speed'])
         self._turn_to_yaw(90.0)
         raw_open = g.open(p['open_force'], width + p['regrip_gap'])
-        tip = max(self.tip_clearance + 2.0, obj_h - p['body_clear'])   # 3 N 으로 닫히며 핑거 끝이 1~2 mm 내려감
+        tip = max(self.tip_clearance + 2.0, obj_h - p['body_clear'])   # 시작 힘으로 닫히며 핑거 끝이 1~2 mm 내려감
         z_above = self._tcp_open_tip(raw_open, obj_h + p['approach_clear'])
         if io.cur_z() < z_above:
             io.move_z_to(z_above, 30.0)
@@ -624,7 +625,7 @@ class JudgeAlgorithm:
             io.move_z_to(z_above, 30.0)
             raise _Fail(f'물성: 내려가다 {s} (핑거가 물체 위에 얹힘)')
         widths = []
-        for f, settle in ((3.0, 0.3), (40.0, p['stiff_settle'])):
+        for f, settle in ((p['stiff_f0'], 0.3), (40.0, p['stiff_settle'])):
             g.command(f, 0)                           # 목표 폭 0, 힘만 바꿈 (물체에 막혀 그 자리에서 쥔다)
             g.wait_idle()
             time.sleep(settle)
