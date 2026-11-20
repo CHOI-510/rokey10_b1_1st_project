@@ -282,6 +282,8 @@ self.robot.movel(target, vel=60, acc=100)
 | `amovel_rel(delta6, vel, acc, time_s)` / `mwait()` / `move_stop(mode)` | 비동기 상대 이동 / 끝까지 대기 / 그 이동만 멈춤 (1 빠른, 2 부드러운) — 접촉하면 바로 멈추는 하강용 |
 | `amovel(pose6, vel, acc)` / `motion_state()` | 비동기 **절대** 직선 이동(`vel`·`acc`는 숫자 또는 `[직선, 회전]`) / 이동 상태 0 정지·1 가감속·2 이동 중 — 이동하면서 힘을 읽는 탐지 스캔용 (11/17) |
 | `movejx(pose6, vel, acc, tol=2.0)` | TCP 목표로 관절 보간 이동(지금 해 공간 유지) + 도달 확인. 직선이 아니므로 높은 곳에서만 (11/17) |
+| `move_via_travel_z(pose6, travel_z=160, vel=80, acc=100, travel_vel=100)` | 현재 위치에서 수직 상승 → 목표 XY로 수평 이동 → 목표 Z로 하강. 수평 구간만 `travel_vel` 사용. 공정 간 이송에 사용하고, 스캔 선 사이 이동·접촉 접근에는 사용하지 않음 |
+| `move_to_waypoint(measure_zone, orientation=None, vel=80, acc=100, travel_vel=100)` | DB 측정존 XY의 절대 Z=160 WAYPOINT로 이동. 기본 자세는 현재 TCP 자세 유지. XY 이송 속도는 100 mm/s |
 | `compliance_on(stx)` / `force_on(fd, dir, time)` | 순응제어 / 목표 힘 (상대 모드) |
 | `stop(emergency=False)` | 힘·순응제어 해제 (+ `emergency`면 `move_stop`) 후 멈춤 확인 |
 | `ok()` | ROS가 살아 있는지 (긴 루프 조건) |
@@ -392,7 +394,7 @@ def scan(self, poses, report):
 | 최종 실패 | `PartError('GRASP_FAILED')` | 관제가 바로 재스캔 | 관제: 측정존 비우기(지금 fake) → 재스캔 | 같음 |
 | 내려놓기 | — | 닿을 때까지 내려놓기 | 정렬해서 제자리에 | 힘 제어로 층 접촉 → 재고 |
 
-내려가기 접촉 기준(탐지 8N, 판별 6N)은 내려가는 방식(힘 제어 / 위치 하강)이 달라 같은 숫자로 맞추지 않습니다.
+내려가기 접촉 기준은 파트별 하강 방식과 접촉 신호에 맞춰 설정합니다. 재고 점검 접촉 감지는 3N 기준입니다. 공통 이동 고도 `TRAVEL_Z=160 mm`에서의 수평 이송만 `TRAVEL_SPEED_MM_S=100 mm/s`를 쓰며, 탐색 선 사이 이동에는 적용하지 않습니다.
 
 | 단계 | 누가 | 측정존에 남기는 상태 |
 | --- | --- | --- |

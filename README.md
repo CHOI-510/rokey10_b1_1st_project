@@ -213,6 +213,8 @@ BEFORE        GetJobData로 분류 기준(specs), 고정 좌표(poses, DB 기준
 PREFLIGHT     시작 전 점검 (분류 기준, 좌표, 적재 구역, 로봇 상태, 그리퍼, 측정존 비우기) → FAIL이면 시작 안 함
 STANDBY       시작 대기 카운트다운 (기본 10분. UI 취소·q: 취소 / 관리자 GUI·s: 바로 시작)
 RUNNING       SetJobStatus(RUNNING)
+START_SETTING 대기 종료/바로 시작 후 그리퍼 열기 → HOME → 닫기
+INVENTORY_CHECK (옵션) 시작 재고 실측 (`inventory_check:=false`면 생략)
   ┌─ SCANNING    /scan Goal ──▶ found=False(물품 없음)면 관제가 작업완료로 판단
   │  SCAN_DONE
   │  JUDGING     /judge Goal(specs)
@@ -264,7 +266,7 @@ DONE          최종 재고 스냅샷 저장 → SetJobStatus(DONE) → READY
 - `box_id`는 관제가 `<작업 시작 시각>_<순번>` 형식으로 붙입니다. (예: `20261114_130512_001`)
   관제를 다시 실행해도 이전 작업과 겹치지 않으므로, DB 노드를 켜 둔 채 관제만 재실행해도 됩니다.
 
-### 사전 점검 (PREFLIGHT) — `box_control/preflight.py`
+### 사전 점검 (PREFLIGHT) 및 시작 설정 — `box_control/preflight.py`, `control.py`
 
 | 점검 | FAIL (시작 안 함) | WARN (진행) |
 | --- | --- | --- |
@@ -272,12 +274,14 @@ DONE          최종 재고 스냅샷 저장 → SetJobStatus(DONE) → READY
 | 고정 좌표 | DB에 좌표 없음 → "DB에 고정 좌표가 없습니다. DB에 HOME·측정존 좌표를 설정한 뒤 실행해 주세요.", 형식 오류 | 측정존이 (0, 0, 0) |
 | 적재 구역 | A~D 중 1단 x·y가 없는 구역 | 구역 좌표가 (0, 0) |
 | 로봇 상태 | bringup 없음, STANDBY·MOVING이 아님 | `robot_monitor=off` |
-| 그리퍼 (11/17) | RG2 Modbus 접속 실패(OnRobot 드라이버가 잡고 있음 등), 안전 비트 켜짐, **무언가를 쥐고 있음**(11/18, 지난 작업이 쥔 채 멈춤) | `robot_monitor`≠dsr (확인 안 함). `BOX_GRIPPER=fake`면 OK |
+| 그리퍼 | RG2 Modbus 접속 실패(OnRobot 드라이버가 잡고 있음 등), 안전 비트 켜짐 | `robot_monitor`≠dsr (확인 안 함). `BOX_GRIPPER=fake`면 OK. 그리퍼가 물체를 쥐고 있는지는 시작 거부 사유가 아닙니다. |
 | 측정존 비우기 (11/17) | | 밀어내기 경로 미정 |
 
 고정 좌표(HOME, 측정존, 적재 구역 1단 x·y)는 **DB가 기준**입니다(v0.3, 적재 구역은 v0.4). 관제는 `GetJobData`로 받은 DB 값으로 자기 좌표를 **무조건 덮어쓰고**(비교·중단 없음, 로그만 남김), 그 값을 `/scan`, `/judge`, `/place` Goal에 매번 실어 보내고, 각 파트는 그 값(작업 함수의 `poses` 인자, 예전 방식은 `self.poses`)으로 움직입니다. `box_comm/common.py`의 `FIXED_POSES`는 **기본값**으로, Goal에 좌표가 없을 때(팀원이 혼자 `send_goal`로 테스트할 때)만 쓰입니다.
 WARN·FAIL 항목과 통과/실패 요약은 이벤트 로그(`code = PREFLIGHT`)로도 보내서 웹·관리자 GUI 로그 창에 보입니다 (11/18).
 점검을 추가할 때는 `preflight.py`에 함수를 만들고 `CHECKS`에 넣습니다.
+
+사전 점검은 로봇을 움직이지 않습니다. 시작 확인 후 10분 카운트다운이 끝나거나 관리자가 바로 시작을 누르면 `START_SETTING`에서 그리퍼를 최대로 열고 HOME으로 이동한 뒤 닫습니다. 그 다음 `inventory_check:=true`(기본값)이면 재고 실측을, `false`이면 재고 실측을 건너뛰고 스캔을 실행합니다. 즉 `inventory_check:=false`는 시작 시 그리퍼 설정을 건너뛰는 옵션이 아닙니다.
 
 ---
 
@@ -340,7 +344,7 @@ ros2 launch box_bringup system.launch.py mode:=real        # 실제 로봇 (예�
 ros2 launch box_bringup system.launch.py mode:=virtual     # 에뮬레이터 (예전 sodvir). 판별은 fake, 탐지·적재는 가상 박스·가상 접촉
 ros2 launch box_bringup system.launch.py fake:=true db_store:=file start_delay:=10.0   # 로봇 없이 전부 fake
 ros2 launch box_bringup system.launch.py mode:=real bringup:=false   # bringup은 따로 띄운 경우 (sodreal 터미널)
-ros2 launch box_bringup system.launch.py mode:=real inventory_check:=false  # 초기 재고 실측을 건너뛰고 스캔부터 시작 (DB 재고 유지)
+ros2 launch box_bringup system.launch.py mode:=real inventory_check:=false  # 시작 설정 후 초기 재고 실측을 건너뛰고 스캔 (DB 재고 유지)
 ```
 
 | mode | 로봇 bringup | 탐지 | 판별 | 적재 | 그리퍼 |
@@ -370,7 +374,7 @@ ros2 run box_control control                                     # 상주 모드
 
 관제는 **상주 모드**(기본)로 READY에서 시작 명령(UI 시작 버튼 / 관리자 GUI / 터미널 `s`)을 기다리고, 작업이 끝나면 다시 READY로 돌아옵니다. READY에서 `q`는 관제 종료. 예전처럼 바로 한 번 실행하고 끝내려면 `-p auto_start:=true`.
 
-시작 명령을 받으면 사전 점검 뒤 **시작 대기(STANDBY)** 카운트다운을 띄웁니다. GUI 시작 버튼은 “10분 후 작업이 시작됩니다. 작업공간 내 사람 또는 파손 위험이 있는 물품이 없는지 확인해주세요.” 확인창을 띄우며, 확인 시점부터 이 대기가 시작됩니다. 작업 중 사람이 없고 파손 위험 물품이 없는지 확인하는 시간입니다.
+시작 명령을 받으면 사전 점검 뒤 **시작 대기(STANDBY)** 카운트다운을 띄웁니다. GUI 시작 버튼은 “10분 후 작업이 시작됩니다. 작업공간 내 사람 또는 파손 위험이 있는 물품이 없는지 확인해주세요.” 확인창을 띄우며, 확인 시점부터 이 대기가 시작됩니다. 이 시간 동안 로봇은 움직이지 않습니다. 카운트다운 종료 또는 바로 시작 뒤 `START_SETTING`에서 그리퍼를 열고 HOME으로 이동해 닫은 다음, 재고 실측(활성화된 경우)과 스캔을 시작합니다.
 
 ```
   ⚠ 10초 후에 작업을 시작합니다.
@@ -403,7 +407,7 @@ ros2 run box_control control                                     # 상주 모드
 | 연결 상태 | `/emergency_stop`(관제), `/get_job_data`(DB), 파트 Action 서버, 로봇 서비스 |
 
 - **비상정지 버튼**: 확인창 [정지]/[취소] → `/emergency_stop`(source=`monitor_gui`).
-- **시작 / 시작 취소 / 바로 시작**: `/job_command`(source=`monitor_gui`). 시작 확인창에서 안전 문구를 확인하고 확인을 누르면 10분 대기가 시작되며 GUI에 남은 시간이 표시됩니다. 바로 시작(카운트다운 생략)은 현장 전용이라 관리자 GUI·터미널에만 있습니다. 수동 재고 설정은 제거했습니다.
+- **시작 / 시작 취소 / 바로 시작**: `/job_command`(source=`monitor_gui`). 시작 확인창에서 안전 문구를 확인하고 확인을 누르면 10분 대기가 시작되며 GUI에 남은 시간이 표시됩니다. 바로 시작(카운트다운 생략)은 현장 전용이라 관리자 GUI·터미널에만 있습니다. 대기 중에는 로봇이 움직이지 않으며 실제 시작 직전에 그리퍼 열기→HOME→닫기를 수행합니다. 수동 재고 설정은 제거했습니다.
 - 끄기: `ros2 run box_control control --ros-args -p gui:=false`. 화면(`DISPLAY`)이 없으면 자동으로 안 띄웁니다. 관제를 `robot_monitor:=off`/`fake`로 실행하면 GUI도 로봇 상태 조회를 끕니다.
 - GUI만 따로: `ros2 run box_control monitor_gui` (`-p robot_poll:=false`로 로봇 조회 끔).
 - 필요: `sudo apt install python3-tk`
@@ -420,8 +424,8 @@ ros2 run box_scan scan_main --ros-args -p sim_boxes:="420,100,50;510,-20,60"    
 python3 box_scan/test/test_scan_flow.py                                          # ROS 없이 흐름 시험 (저장소 루트에서)
 ```
 
-- **Goal 한 번 = 물품 1개.** HOME → 그리퍼 닫기(핑거가 탐침) → X 270~570 / 30mm 간격 11선을 Y 240↔−90 지그재그로 훑으며 경로별 Fy 보정표와 비교, `|Fy − 기준| ≥ 1.5 N`이면 빠른 정지(접촉) → 접촉점 앞 부채꼴 최대 4점을 Force 하강해 윗면 높이 탐지 → 처음 찾은 점에서 **윗면 − 15mm**(그리퍼 팁 길이) 높이를 그리퍼 0° → 45° → 90°로 최대 3번 집기 → 측정존 위에서 천천히 내려가 닿으면 놓기 → HOME → `True`.
-- **이어서 탐색**: 노드가 켜져 있는 동안 마지막 접촉 선·위치를 기억하고, 다음 Goal은 그 접촉 Y −50mm부터(첫 15mm는 판정 제외) 이어서 훑습니다. 전체를 다 훑으면 `False`(물품 없음)를 보내고 처음으로 돌아갑니다. 노드를 다시 켜면 처음부터.
+- **Goal 한 번 = 물품 1개.** HOME → 그리퍼 닫기(핑거가 탐침) → X 270~570 / 30mm 간격 11선을 Y 265↔−115 지그재그로 훑고, 이어 X 방향 확인 탐색을 합니다. 각 경로의 Fy 보정표와 비교해 접촉점을 찾습니다. 탐색이 끝나면 접촉점 앞 부채꼴 최대 5점을 Force 하강해 윗면 높이를 탐지하고, 충돌 정지점에서도 1회 집기를 시도한 뒤 최초 탐지점에서 **윗면 − 15mm** 높이를 그리퍼 0° → 90° → 45°로 최대 3번 집습니다. 측정존 위에서 내려놓고 공통 WAYPOINT로 이동한 뒤 `True`를 반환합니다.
+- **이어서 탐색**: 노드가 켜져 있는 동안 마지막 접촉 선·위치를 기억하고, 다음 Goal은 그 접촉 위치에서 이어서 훑습니다. 스캔 선 사이 이동은 탐색 높이에서 수행하며 매번 Z=160으로 올라가지 않습니다. 전체 탐색을 마치면 `False`(물품 없음)를 보내고 WAYPOINT에서 끝납니다. 노드를 다시 켜면 처음부터.
 - **집기 실패**: 3번 다 못 잡으면 그리퍼를 열고 높이 100mm 이상에서 `GRASP_FAILED` → 관제가 공간 스캔부터 다시(같은 접촉점 −50mm부터 이어서).
 - **스캔공간 막힘**: 4점 모두 유효 높이가 없으면 Y−50으로 돌아가 계속 훑는데, 같은 자리(같은 선, Y 30mm 안)에서 3번이면 `스캔공간 막힘` ERROR 로그 + `SCAN_FAILED`(임시, 처리 방식 팀 결정 대기 — `scan_algorithm.py` `_on_scan_blocked`).
 - 측정존은 Goal의 `measure_zone`을 씁니다(**z = 측정존 바닥 Z**). 예상 접촉 높이(`z + 집은 높이 − Z0`) 15mm 위부터 10mm/s로 내려가며 Fz +5N이면 멈추고 놓습니다. 하한은 바닥 + 2mm.
@@ -442,10 +446,12 @@ ros2 run box_place place_main --ros-args -p sim_contact:=true        # 에뮬레
 ```
 
 - 지원 클래스는 설정에 있는 것만입니다 (현재 **A/B/C/D**, D는 11/18 실물 확인. 구역 위치는 다시 정할 예정). 설정에 없는 클래스가 오면 `PLACE_FAILED`.
-- **미분류 `U`**: `place_config.json`의 `unclassified`(`enabled`, `release_pose` [x, y, z, rx, ry, rz], `approach_z`) 위치로 가서 힘 제어 없이 놓고 0을 돌려줍니다. 현재 `[670, -43, 144, 160, 180, 162]`, 접근 높이 160.
+- **미분류 `U`**: `place_config.json`의 `unclassified`(`enabled`, `release_pose` [x, y, z, rx, ry, rz], `approach_z`) 위치로 가서 힘 제어 없이 놓고 0을 돌려줍니다. 현재 `[793, -113, 186, 171, -117, -92]`, 접근 높이 186.
 - Goal의 측정존이 `(0,0,0)`이면 움직이지 않고 실패합니다 → DB에 실제 측정존·구역 좌표가 있어야 합니다.
 - 정지: `dsr_io`가 모든 로봇 명령 전과 힘 제어 하강 중(`force_z`)에 관제 정지 요청을 확인합니다 → `CANCELED`로 빠져나오고 `place_interface`가 힘·순응제어 해제 + `move_stop`. 하강 중에는 1초마다 keepalive를 보내 진행 감시가 오인하지 않습니다.
-- **측정존 z = 측정존 바닥 Z** (11/18 세 파트 통일, **`[300, -160, 30.9]`** — 판별이 잰 실제 바닥, 이전 30). 판별 높이 측정·sync 집기, 적재 sync 집기, 탐지 내려놓기, 관제 확인이 모두 이 값 하나를 씁니다.
+- **공정 인계 WAYPOINT / 이동 고도**: `common.TRAVEL_Z = 160 mm`, `WAYPOINT['z_mm']`도 이를 사용합니다. WAYPOINT XY는 DB의 측정존 중앙에서 가져오므로 예를 들어 `[300, -160, 160]`입니다. 스캔은 각 탐색 선 사이에서 이 고도로 올라가지 않고, 탐색 완료 뒤에만 WAYPOINT로 이동합니다. 판별은 WAYPOINT에서 시작해 측정·정렬 후 WAYPOINT로 돌아오고, 적재는 여기서 시작해 완료 후 HOME으로 갑니다. U 투하와 HOME 같은 별도 목적지는 예외입니다.
+- `TRAVEL_Z` 이상에서 XY만 이동할 때 `TRAVEL_SPEED_MM_S = 100 mm/s`를 씁니다. 수직 상승·하강, 접촉 동작, 스캔 선 사이 이동에는 적용하지 않습니다. 따라서 이 값은 공정 전반의 속도 설정이 아니라 안전 고도에서의 수평 이송 속도입니다.
+- **측정존 z = 측정존 바닥 Z** (DB 기준 **`[300, -160, 30.9]`**). 판별 높이 접촉 기준에는 별도 실측 보정 `h_floor_offset = -1.16 mm`를 적용하지만, DB 바닥 좌표와 sync 집기 기준은 바꾸지 않습니다.
 - **측정존 집기 = sync 집기** (11/18 실물 시험 후 변경, `box_comm/sync_grip.py` = 판별 `rg2_sync_grip` 그대로, **판별과 같은 설정** `common.SYNC_GRIP`): RG2는 벌릴수록 핑거 끝이 올라갑니다(완전 열림 ↔ 닫힘 약 39mm, TCP 208.4는 닫힌 핑거 끝). 예전처럼 TCP를 바닥 + 5에 두고 닫으면 A 박스 60mm 면에서 핑거 끝이 바닥 위 약 17mm → 20mm 박스의 위 3mm만 물어 들다가 놓쳤습니다. 이제는 **100mm로 열고** 핑거 끝이 **바닥 + 2.6mm**에 오게 내려가서, 닫는 동안 핑거 끝이 내려가는 만큼 TCP를 올립니다. 10N으로 닫고 40N으로 다시 조입니다. 판별이 측정존 중심에 정해진 위상으로 놓아 주므로 하강 중 얹힘 감시는 하지 않습니다. 못 잡으면 같은 자리에서 3번.
 - 집은 TCP 높이가 폭마다 달라서(TCP − 박스 바닥, A 60mm 면 약 −8mm) 집을 때마다 재고, 층 판단·첫 접촉 Z 학습은 **TCP Z − 그 값(= 박스 바닥)** 으로 계산합니다 → 기존 `first_contact_z_mm`(30.19 등)과 상태 파일을 그대로 씁니다. 로그: `집기 성공 (1/3번째, 폭 60.2 mm, TCP−바닥 -15.2 mm)`.
 - 시험(ROS 없이): `python3 box_place/test/test_place_pick.py`. 가짜 그리퍼는 일정 속도로 닫힌다고 가정해 핑거 끝이 목표보다 2~3mm 낮게 계산됩니다(판별이 실물에서 같은 방식으로 문제없었으므로 모델이 보수적이라고 봄). **실물에서 바닥을 긁으면 `common.SYNC_GRIP` `tip_above_floor_mm` 하나만 올리면** 판별·적재가 같이 바뀝니다.
