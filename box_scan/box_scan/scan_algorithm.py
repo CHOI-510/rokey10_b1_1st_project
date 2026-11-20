@@ -9,7 +9,7 @@ GRASP_FAILED는 탐색 커서를 유지해 관제 재요청 시 같은 경로에
 다른 오류가 발생하거나 남은 경로를 모두 훑으면 커서를 초기화한다.
 
 - space_scan: 닫힌 RG2로 Y → X 지그재그 탐색. 단계별 자세·외력 축·경로별 기준값을 뺀
-  변화량의 절댓값이 FORCE_LIMIT 이상이면 정지한다. 보정표 범위 밖에서는
+  변화량의 절댓값이 단계·경로별 limits 이상이면 정지한다. 보정표 범위 밖에서는
   판정하지 않는다. 재개 시 멈춘 줄의 원래 시작점으로 돌아가고,
   재출발 후 40 mm 구간은 감지에서 제외한다.
 - picking: 측면 정지점을 기준으로 진행 방향 앞쪽 반원에서 윗면을 탐침한다.
@@ -43,7 +43,7 @@ from box_scan.scan_config import *  # noqa: F401,F403  (설정값 이름을 원�
 
 
 # ----------------------------------------------------------------------
-# 계산 (원본 그대로)
+# 좌표·자세·보정 계산
 # ----------------------------------------------------------------------
 def zyz_rotation(angles):
     a, b, c = map(math.radians, angles)
@@ -266,7 +266,7 @@ class DifferentProbeObject(Exception):
 
 
 class Recorder:
-    """CSV 기록 (원본 그대로, 보정표 재측정용). csv_dir 파라미터를 줄 때만 만든다."""
+    """Y/X 단계별 CSV 기록 (보정표 재측정용). csv_dir 파라미터를 줄 때만 만든다."""
     FIELDS = ('elapsed_s', 'segment_elapsed_s', 'actual_interval_s', 'lane', 'phase', 'direction',
               'x_mm', 'y_mm', 'z_mm', 'force_raw_n', 'force_baseline_n', 'force_corrected_n', 'motion_state',
               'detection_enabled', 'contact', 'speed_mm_s', 'acc_mm_s2', 'baseline_loaded', 'force_axis', 'scan_stage')
@@ -465,7 +465,7 @@ class ScanAlgorithm:
             self._move(p)
 
     def _orient(self, abc, scanning=False):
-        """제자리에서 자세만 바꾸기 (원본 set_scan_orientation)"""
+        """제자리에서 자세만 바꾸기 (제자리 회전 및 완료 자세 확인)"""
         p = self.robot.pose()
         if rotation_error(p[3:6], abc) <= 1e-6:
             return
@@ -552,7 +552,7 @@ class ScanAlgorithm:
                 status = r.motion_state()
                 now = time.monotonic()
                 if now >= next_sample:
-                    fy = r.force('base')[axis]                  # 정지 확인 + 1초마다 진행 알림 포함
+                    fy = r.force('base')[axis]                  # 현재 탐색 축 외력
                     pose = r.pose()
                     offset = baseline_force(pose[axis],direction,lane,p) if scanning else None
                     if self.sim_boxes is not None:
@@ -697,11 +697,11 @@ class ScanAlgorithm:
             try:
                 top = self._probe_height()
             except ProbeMiss:
-                self.log.info(f'[scan] 탐침 X={x:.1f}, Y={y:.1f}: 미접촉')
+                self.log.debug(f'[scan] 탐침 X={x:.1f}, Y={y:.1f}: 미접촉')
                 return None
             if math.dist(top[:2], (x, y)) > PROBE_XY_DRIFT_LIMIT_MM:
                 raise RuntimeError('윗면 접촉점이 계획한 탐지점에서 벗어남')
-            self.log.info(f'[scan] 탐침 X={x:.1f}, Y={y:.1f}, Z={top[2]:.1f}')
+            self.log.debug(f'[scan] 탐침 X={x:.1f}, Y={y:.1f}, Z={top[2]:.1f}')
             if reference_top is not None and abs(top[2] - reference_top) > PROBE_TOP_TOL_MM:
                 report.log(f'다른 물체 높이 감지: 기준 Z={reference_top:.1f}, 접촉 Z={top[2]:.1f}', 'WARN')
                 raise DifferentProbeObject()
@@ -773,9 +773,12 @@ class ScanAlgorithm:
         return self._grip([center_x, center_y, first_z], reference, report, grip_orientation)
 
     def _grip(self, top, reference, report, grip_orientation):
-        """sync 집기 (11/18 정쓰, 적재와 같은 방식). 높이 탐지한 윗면 기준:
-        윗면 위로 올라감 → 100mm로 열기 → 핑거 끝이 윗면 − GRIP_DEPTH_FROM_TOP_MM에 오는 TCP 높이까지 하강
-        (순응·힘 제어로 하강하고 조기 접촉 감시) → sync로 닫기(핑거 끝 높이 유지) → 40N 조임 → 0.5초 → 천천히 들기.
+        """Modbus sync 집기. 일반 집기는 탐지 윗면 기준으로 0/90/45도 재시도한다.
+        반원 전부 미검출(top_z=None)은 충돌점에서 핑거 끝 BASE Z=COLLISION_GRIP_TIP_Z로 1회 시도한다.
+        안전 준비 높이까지 수직 이탈 → 중심 XY 이동과 최초 집기 자세 회전 → 개방.
+        일반 집기의 열린 핑거 접근:
+        OPEN_WIDTH_MM(미설정 시 공통 폭)로 열기 → 핑거 끝이 윗면 − GRIP_DEPTH_FROM_TOP_MM에 오는 TCP 높이까지 하강
+        (순응·힘 제어로 하강하고 조기 접촉 감시) → sync로 닫기(핑거 끝 높이 유지) → 설정 힘으로 재조임 → 공통 안정화 대기 → 천천히 들기.
         못 잡으면 그리퍼 열고 올라가서 툴 각도를 바꿔(GRIP_RETRY_ANGLES) 다시.
         얇은 박스라 윗면 − GRIP_DEPTH_FROM_TOP_MM 값이 작업대 바닥(TABLE_Z) + 2.6보다 낮으면 TABLE_Z + 2.6에서 집음 (적재의 '바닥 + 2.6'과 같은 기준)."""
         r = self.robot
@@ -785,10 +788,16 @@ class ScanAlgorithm:
         tip_z = COLLISION_GRIP_TIP_Z if collision_fallback else max(calculate_grip_z(top_z), floor_tip)
         on_floor = not collision_fallback and tip_z == floor_tip
         sg = make_sync_gripper(r, tip_z - SYNC_GRIP['tip_above_floor_mm'],
-                               log=lambda m: self.log.info(f'[scan] {m}'))
+                               log=lambda m: self.log.debug(f'[scan] {m}'))
         retry_z = PROBE_START_Z if collision_fallback else max(PROBE_START_Z, top_z + GRIP_RETRY_LIFT_MM)
-        self._move([top[0], top[1], retry_z, *r.pose()[3:6]])   # 높이 탐지 뒤 위로
         initial = list(grip_orientation)
+        # 빈 그리퍼를 먼저 기존 준비 높이까지 수직 이탈시킨다.
+        # 그 높이에서 중심 XY 이동과 최초 집기 자세 회전을 한 movel로 처리한다.
+        self._move_z(retry_z)
+        r.movel([top[0], top[1], retry_z, *initial],
+                vel=[LINEAR_VEL, ANGULAR_VEL], acc=[LINEAR_ACC, ANGULAR_ACC], tol=1.0)
+        if rotation_error(r.pose()[3:6], initial) > 0.005:
+            raise RuntimeError('집기 준비 이동 후 자세 회전 완료 확인 실패')
         angles = (0.0,) if collision_fallback else GRIP_RETRY_ANGLES
         force = GRIP_FORCE_N or GRIPPER['grip_force_n']
         why = ''
@@ -815,7 +824,7 @@ class ScanAlgorithm:
                 ok, why = False, str(e)
             else:
                 width = res['width_mm']
-                ok, why = self._check_grip(width, 1)             # 폭 범위 (한쪽 핑거만 걸린 경우 거름)
+                ok, why = self._check_grip(width, 1)             # 보정 폭의 허용 범위 확인 (한쪽 걸림을 확정 판별하지는 않음)
                 if ok and force > SYNC_GRIP['close_force_n']:
                     tight = r.grip_close(force)            # 같은 자리에서 40N으로 다시 조임
                     ok, why = (self._check_grip(tight.width_mm, 1) if tight.grabbed
@@ -833,7 +842,7 @@ class ScanAlgorithm:
                     depth = top_z - (hold[2] + tip_offset)
                     note = ', 얇아서 작업대 바닥 + 2.6 기준' if on_floor else ''
                     height_note = f'핑거 끝 윗면 − {depth:.0f} mm{note}'
-                r.wait(GRIPPER['settle_after_grip_s'])     # 40N이 다 걸린 뒤 들기
+                r.wait(GRIPPER['settle_after_grip_s'])     # 재조임 후 안정화 대기
                 p = hold[:]
                 p[2] = hold[2] + min(GRIPPER['lift_slow_mm'], PICK_LIFT_MM)
                 slow = GRIPPER['lift_slow_vel']
@@ -847,7 +856,7 @@ class ScanAlgorithm:
             nxt = f'다음 {angles[n]:+g}도' if n < len(angles) else '포기'
             report.log(f'집기 실패 {n}/{len(angles)} ({angle:+g}도): {why} → {nxt}', 'WARN')
             self._move_z(retry_z)
-        self._move_z(retry_z)
+        # 각 실패 분기에서 이미 retry_z로 상승했다.
         self._orient(reference)   # 누적 회전 방지
         if collision_fallback:
             self._close()  # 탐색 재개 자세로 복원
@@ -931,9 +940,9 @@ class ScanAlgorithm:
         detected_z = details['z']
         force_note = f", ΔFz={details['dfz']:.1f} N" if 'dfz' in details else ''
         note = f'예상 Z={contact_z:.1f}, 접촉 Z={detected_z:.1f}, 정지 Z={stopped_z:.1f}{force_note}'
-        if not math.isfinite(detected_z) or not math.isfinite(stopped_z):
+        if not math.isfinite(detected_z):
             raise RuntimeError('배치 접촉/정지 높이가 유효하지 않음; 파지 유지')
-        if min(detected_z, stopped_z) < floor_tcp - PLACE_STOP_Z_TOL_MM:
+        if detected_z < floor_tcp - PLACE_STOP_Z_TOL_MM:
             raise RuntimeError(f'배치 바닥 보호 하한 초과: {note}; 파지 유지')
         if detected_z > upper_z:
             report.log(f'배치 조기 접촉: {note}; 현재 위치에서 개방', 'WARN')
