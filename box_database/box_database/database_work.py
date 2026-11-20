@@ -9,7 +9,7 @@ ROS 통신은 box_comm/database_interface.py가 하고, 이 클래스의 함수�
   -----------------------------------------------------------------------------
   get_job_data()        작업 시작 때          product(분류 기준) + state(재고) 읽기
   get_fixed_poses()     작업 시작 때          loc(측정존·적재 구역) 읽기, HOME은 코드 값
-  update_inventory()    초기 실측 후·작업 종료 시 state 재고 열 쓰기 (적재 중간 저장 없음)
+  update_inventory()    박스 처리 후           state 재고 열 쓰기
   set_job_status()      RUNNING·DONE 등      state 작업 결과 열 쓰기 (관제가 응답을 기다림)
   on_state()            /control_status      바뀐 열만 모아 두고 동기화 스레드가 씀 (관제를 안 막음)
   on_event()            /event_log           ~/box_logs/{job_id}.jsonl에 한 줄 (DB에는 안 올림)
@@ -18,12 +18,14 @@ ROS 통신은 box_comm/database_interface.py가 하고, 이 클래스의 함수�
     POST /estop   → 관제 /emergency_stop     (언제든, 인터넷 없어도 동작)
     POST /start   → 관제 /job_command start  (관제 단계가 READY일 때만)
     POST /cancel  → 관제 /job_command cancel (카운트다운 중 취소, 관제가 판단)
+    POST /inventory {a,b,c,d,u[,source]} → READY에서 수동 재고 설정
     GET  /inventory → 지금 재고 {a,b,c,d,u, capacity}
     GET  /health  → {ok, stage, store}
     GET  /state   → 지금 state 행 (시험·디버그용)
 ================================================================
 """
 import json
+import math
 import os
 import threading
 import time
@@ -61,8 +63,7 @@ class DatabaseWork:
         self._log_seq = 0
         self._log_lock = threading.Lock()
 
-        self._boxes_done = 0         # 시험용 estop_at: 완료 박스 수
-        self._estop_job = None
+        self._inv_updates = 0        # 이 노드가 받은 재고 반영 횟수 (시험용 estop_at)
         self._db_down = False        # 저장소 쓰기 실패 중 (재고·상태를 모아 두고 다시 보내는 중)
         self._setup_test_params(node)
 
@@ -78,15 +79,43 @@ class DatabaseWork:
     # 시험용 파라미터 (파일 모드 전용, 11/18 — 예전 box_control/fake_database 기능을 옮김)
     # ------------------------------------------------------------------
     def _setup_test_params(self, node):
-        """estop_at: N번째 BOX_DONE 이벤트 뒤 UI 비상정지 버튼을 누른 것처럼 요청 (파일 모드 시험 전용)."""
+        """start_inventory: 파일 모드 재고 초기값. [-1]이면 유지.
+        estop_at: N번째 재고 반영 직후 비상정지 요청 (파일 모드 전용)."""
+        start_inventory = node.declare_parameter('start_inventory', [-1]).value
+        if not isinstance(start_inventory, (list, tuple)):
+            raise ValueError('start_inventory는 [A, B, C, D(, U)] 정수 배열이어야 합니다')
+        start_inventory = list(start_inventory)
         self.estop_at = int(node.declare_parameter('estop_at', 0).value)
         if self.store.kind != 'file':
-            if self.estop_at:
-                self.log.warn('[database] estop_at은 파일 모드 시험 전용 → Supabase에서는 무시')
+            if start_inventory != [-1] or self.estop_at:
+                self.log.warn('[database] start_inventory·estop_at은 파일 모드 시험 전용 → Supabase에서는 무시')
             self.estop_at = 0
             return
+        if start_inventory != [-1]:
+            if len(start_inventory) not in (len(VALID_CLASSES), len(INVENTORY_KEYS)):
+                raise ValueError('start_inventory는 A~D 4개 또는 A~D,U 5개 값이 필요합니다')
+            capacity = stack_capacity()
+            values = {}
+            for index, category in enumerate(INVENTORY_KEYS):
+                value = start_inventory[index] if index < len(start_inventory) else 0
+                if isinstance(value, bool):
+                    raise ValueError(f'start_inventory {category} 값은 정수여야 합니다')
+                try:
+                    number = float(value)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError(f'start_inventory {category} 값은 정수여야 합니다') from exc
+                if not math.isfinite(number) or not number.is_integer():
+                    raise ValueError(f'start_inventory {category} 값은 정수여야 합니다')
+                count = int(number)
+                if count < 0 or (category in VALID_CLASSES and count > capacity):
+                    raise ValueError(f'start_inventory {category}={count} 범위 오류')
+                values[category.lower()] = count
+            self.store.update_state(values)
+            self.log.warn(f'[database] (시험) 재고를 {values}로 시작')
         if self.estop_at:
-            self.log.warn(f'[database] (시험) {self.estop_at}번째 BOX_DONE 뒤 비상정지 요청')
+            if self.estop_at < 0:
+                raise ValueError('estop_at은 0 이상이어야 합니다')
+            self.log.warn(f'[database] (시험) {self.estop_at}번째 재고 반영 직후 비상정지 요청')
 
     # ------------------------------------------------------------------
     # 관제가 부르는 함수 (응답을 기다림 → 짧게)
@@ -129,6 +158,10 @@ class DatabaseWork:
         patch['updated_at'] = now_iso()
         self._write_or_queue(patch, f'재고 {box_id}')
         self.log.info(f'[database] 재고 ← {box_id}: {inventory}')
+        self._inv_updates += 1
+        if self.estop_at and self._inv_updates == self.estop_at:
+            self.log.warn(f'[database] (시험) estop_at={self.estop_at} → UI 비상정지 흉내')
+            self.node.request_emergency_stop('test')
 
     def set_job_status(self, status, reason):
         patch = {'status': status, 'reason': reason or '', 'updated_at': now_iso()}
@@ -143,7 +176,7 @@ class DatabaseWork:
     def _write_or_queue(self, patch, what):
         """재고·작업 상태 쓰기 (11/18). 저장소(Supabase)가 안 되면 실패로 돌려주지 않고 모아 두었다가
         동기화 스레드가 다시 쓴다 (새 값이 옛 값을 이김). 와이파이가 잠깐 끊겨도 작업이 멈추지 않게.
-        재고는 초기 실측 및 작업 종료·중단 스냅샷으로 기록한다."""
+        재고는 각 박스 처리 후와 작업 종료·중단 스냅샷으로 기록한다."""
         try:
             self.store.update_state(patch)
             return
@@ -250,9 +283,6 @@ class DatabaseWork:
     def on_event(self, event):
         job = event.get('job_id') or 'no_job'
         seq = int(event.get('seq') or 0)
-        if job != self._estop_job:
-            self._estop_job = job
-            self._boxes_done = 0
         with self._log_lock:
             if job != self._log_job:
                 self._log_job, self._log_seq = job, self._last_seq_in_file(job)
@@ -261,11 +291,6 @@ class DatabaseWork:
             if seq > 0:
                 self._log_seq = seq
             self._append_log(job, event)
-        if event.get('code') == 'BOX_DONE':
-            self._boxes_done += 1
-            if self.estop_at and self._boxes_done == self.estop_at:
-                self.log.warn(f'[database] (시험) estop_at={self.estop_at} → UI 비상정지 흉내')
-                self.node.request_emergency_stop('test')
 
     def _log_path(self, job):
         return os.path.join(cfg.LOG_DIR, f'{job}.jsonl')
@@ -306,6 +331,65 @@ class DatabaseWork:
     # UI 버튼 창구 (HTTP, 127.0.0.1 전용)
     # ------------------------------------------------------------------
     # ------------------------------------------------------------------
+    def set_inventory(self, body, headers):
+        """READY 상태에서 UI가 입력한 재고 스냅샷을 저장하고 관제에 알린다."""
+        if cfg.START_TOKEN and headers.get('X-Box-Token', '') != cfg.START_TOKEN:
+            return 403, {'ok': False, 'message': '권한 없음'}
+        if self.stage != 'READY':
+            return 200, {'ok': False, 'message': f'대기(READY)일 때만 재고를 바꿀 수 있음 (지금 관제 단계: {self.stage or "알 수 없음"})'}
+        try:
+            data = json.loads(body or b'{}')
+            if not isinstance(data, dict):
+                raise ValueError('요청 본문은 JSON 객체여야 합니다')
+            source = str(data.get('source') or 'ui')
+            capacity = stack_capacity()
+            new = {}
+            for category in INVENTORY_KEYS:
+                value = data.get(category.lower(), data.get(category))
+                if value is None:
+                    raise ValueError(f'{category.lower()} 값이 없음')
+                if isinstance(value, bool):
+                    raise ValueError(f'{category.lower()}={value!r} 정수가 아님')
+                try:
+                    number = float(value)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError(f'{category.lower()}={value!r} 정수가 아님') from exc
+                if not math.isfinite(number) or not number.is_integer():
+                    raise ValueError(f'{category.lower()}={value!r} 정수가 아님')
+                count = int(number)
+                if count < 0 or (category in VALID_CLASSES and count > capacity):
+                    raise ValueError(f'{category.lower()}={count} 범위 밖 (A~D 0~{capacity}, U 0 이상)')
+                new[category] = count
+        except (ValueError, TypeError, OverflowError) as exc:
+            return 400, {'ok': False, 'message': f'잘못된 값: {exc}'}
+
+        st = self.store.get_state()
+        with self._lock:
+            inventory_columns = {category.lower() for category in INVENTORY_KEYS}
+            st.update({key: value for key, value in self._pending.items() if key in inventory_columns})
+        old = {category: int(st.get(category.lower()) or 0) for category in INVENTORY_KEYS}
+        changed = [f'{category} {old[category]}→{new[category]}'
+                   for category in INVENTORY_KEYS if old[category] != new[category]]
+        if changed:
+            patch = {category.lower(): new[category] for category in INVENTORY_KEYS}
+            patch['updated_at'] = now_iso()
+            self._write_or_queue(patch, f'재고 설정 ({source})')
+        message = f'재고 설정 ({source}): ' + (', '.join(changed) if changed else '바뀐 값 없음')
+        self.log.warn(f'[database] {message}')
+        event = {'seq': 0, 'stamp': time.strftime('%Y-%m-%d %H:%M:%S'), 'job_id': self._log_job or '',
+                 'source': source if source in ('ui', 'monitor_gui') else 'ui', 'stage': self.stage,
+                 'level': 'WARN' if changed else 'INFO', 'code': 'INVENTORY_SET', 'box_id': '', 'class_id': '',
+                 'expected': -1, 'measured': -1, 'message': message}
+        with self._log_lock:
+            self._append_log(self._log_job or 'no_job', event)
+        if changed:
+            ok, reason = self.node.request_job_command('inventory_changed', 'db')
+            if not ok:
+                self.log.warn(
+                    f'[database] 관제에 재고 변경 알림 실패: {reason} '
+                    '(다음 시작 때 DB 값을 다시 읽으므로 작업에는 영향 없음)')
+        return 200, {'ok': True, 'message': message, 'inventory': new}
+
     def get_inventory(self):
         st = self.store.get_state()
         with self._lock:
@@ -342,7 +426,17 @@ class DatabaseWork:
                 return 500, {'ok': False, 'message': f'{type(e).__name__}: {e}'}
         if path == '/state':
             try:
-                return 200, self.store.get_state()
+                state = self.store.get_state()
+                with self._lock:
+                    status_columns = (*cfg.STATUS_TO_COLUMN.values(), 'start_at')
+                    state.update({key: value for key, value in self._written.items()
+                                  if key in status_columns})
+                    state.update(self._pending)
+                    state['stage'] = self.stage
+                    state['control_seen_at'] = self._seen_wall
+                    state['control_connected'] = bool(
+                        self._seen_mono and time.monotonic() - self._seen_mono < 10.0)
+                return 200, state
             except Exception as e:
                 return 500, {'ok': False, 'message': f'{type(e).__name__}: {e}'}
         return 404, {'ok': False, 'message': 'not found'}
@@ -366,7 +460,7 @@ class DatabaseWork:
                 n = int(self.headers.get('Content-Length') or 0)
                 body = self.rfile.read(n) if n else b''
                 if self.path.strip('/') == 'inventory':
-                    self._send(405, {'ok': False, 'message': '재고는 로봇 실측 결과만 반영합니다'})
+                    self._send(*work.set_inventory(body, self.headers))
                     return
                 self._send(*work.handle_command(self.path.strip('/'), self.headers))
 

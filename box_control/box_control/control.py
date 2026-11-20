@@ -247,12 +247,14 @@ class Control:
         self.recovery = Recovery(io, self.log)                     # 관제 복구 동작 (측정존 비우기 등)
         self.auto_start = bool(io.declare_parameter('auto_start', False).value)   # True: 바로 한 번 실행 후 종료
         self.inventory_check_enabled = bool(io.declare_parameter('inventory_check_enabled', True).value)
+        self.robot_hardware_mode = str(io.declare_parameter('robot_hardware_mode', 'unknown').value)
         delay = float(io.declare_parameter('start_delay_sec', -1.0).value)     # 시작 대기 시간(초)
         self.start_delay = delay if delay >= 0 else (10.0 if self.auto_start else 600.0)  # 기본: 상주 10분, 시험 10초
         self._boot_id = time.strftime('%Y%m%d_%H%M%S')
         # 원격 명령 (/job_command, executor 스레드에서 들어옴 → 신호만 켜고 바로 응답)
         self._cmd_lock = threading.Lock()
         self._start_req = threading.Event()
+        self._inventory_changed_req = threading.Event()
         self._cancel_req = threading.Event()
         self._now_req = threading.Event()          # 카운트다운 생략 (현장 관리자)
         self._now_source = ''
@@ -382,7 +384,6 @@ class Control:
         if err:
             return self.cancel_start(f'작업 데이터를 받지 못함 ({err})')
         self.inventory = {c: int(db_inventory.get(c, 0)) for c in INVENTORY_KEYS}
-        self.inventory[UNCLASSIFIED] = 0       # 새 작업의 미분류 투하 구역은 0부터 집계
         self._inventory_available = True       # 직전 DB 재고를 기준값으로 보존, 실측 후 A~D 교체
         if self.inventory_check_enabled:
             self.log.info(f'[control] specs {len(self.specs)}개; 시작 재고는 로봇 점검으로 확인합니다')
@@ -492,6 +493,8 @@ class Control:
             self.inventory = inventory_new
             self.publish_status()                  # 재고 바뀜 → GUI 갱신
             self.grasp_retries = 0                 # 박스 하나를 끝까지 처리 → 연속 집기 실패 횟수 초기화
+            if err := self.io.update_inventory(box_id, self.inventory):
+                self.log.error(f'[control] 박스별 재고 DB 기록 실패 ({box_id}): {err}')
             self.log.info(f'[control] {box_id} {done_msg} → inventory={self.inventory}')
             self.io.log_event('INFO', 'BOX_DONE', done_msg)
 
@@ -627,6 +630,19 @@ class Control:
                     if self._start_req.is_set():
                         print(f'  시작 명령 받음 ({self._start_source})', flush=True)
                         return True
+                    with self._cmd_lock:
+                        inventory_changed = self._inventory_changed_req.is_set()
+                        self._inventory_changed_req.clear()
+                    if inventory_changed:
+                        _specs, inventory, _poses, err = self.io.get_job_data()
+                        if err:
+                            self.log.error(f'[control] UI 재고 변경 후 DB 재조회 실패: {err}')
+                        else:
+                            self.inventory = {c: int(inventory.get(c, 0)) for c in INVENTORY_KEYS}
+                            self._inventory_available = True
+                            self._inventory_needs_recheck = False
+                            self.publish_status()
+                            self.log.info(f'[control] UI 재고 변경 반영: {self.inventory}')
                     key = keys.read(0.2)
                     if keys.error and keys.error != warned:
                         warned = keys.error
@@ -682,6 +698,13 @@ class Control:
                 self._cancel_source = source
                 self._cancel_req.set()
                 return True, '카운트다운 취소 수락 — 작업을 시작하지 않고 대기로'
+            if command == 'inventory_changed':
+                if source != 'db':
+                    return False, '재고 변경 알림은 DB 노드에서만 받을 수 있음'
+                if state != State.READY:
+                    return False, f'대기(READY)일 때만 재고 변경을 반영할 수 있음 (관제 단계: {now})'
+                self._inventory_changed_req.set()
+                return True, '재고 변경 알림 수락'
             return False, f'알 수 없는 명령: {command}'
 
     # ------------------------------------------------------------------

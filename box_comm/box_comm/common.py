@@ -58,8 +58,8 @@ VALID_CLASSES = ('A', 'B', 'C', 'D')     # 정상 분류: 분류 기준(specs)·
 #   - 판별은 'U'를 반환할 수 있다. 관제는 적재에 'U'로 Goal을 보낸다.
 #   - 적재는 미분류 투하 위치(place_config.json의 unclassified)에 놓기만 하고 수량을 재지 않는다.
 #     (쌓지 않으므로 높이로 셀 필요가 없음) → Place Result count = 0
-#   - 미분류 수량은 관제가 센다: 새 작업은 U=0, 판별 U 또는 구역 만재 투하 성공 시 U = 이전 + 1
-#   - DB에는 초기 실측 완료 및 작업 종료·중단 시점 스냅샷만 기록
+#   - 미분류 수량은 관제가 센다: DB/UI 재고를 기준으로 판별 U 또는 구역 만재 투하 성공 시 U = 이전 + 1
+#   - DB에는 박스 처리 후와 작업 종료·중단 시점에 재고를 기록
 #   - 미분류 위치는 DB 고정 좌표가 아니라 적재 설정에 있다 (투하 자세까지 포함한 한 점이라서)
 # ----------------------------------------------------------------------
 UNCLASSIFIED = 'U'
@@ -493,7 +493,7 @@ def robot_hint(state, connected=True, monitor='dsr') -> str:
 #   cancel : 작업 시작 전(BEFORE·PREFLIGHT·STANDBY)에만 받음 → 시작하지 않고 READY
 #   start_now : 카운트다운(STANDBY) 생략. 현장 관리자 전용 (관리자 GUI·터미널 s).
 #               웹 UI 경로(DB 노드 HTTP)는 받지 않고, 관제도 source='ui'면 거절한다.
-JOB_COMMANDS = ('start', 'cancel', 'start_now')
+JOB_COMMANDS = ('start', 'cancel', 'start_now', 'inventory_changed')
 REMOTE_JOB_COMMANDS = ('start', 'cancel')     # 웹 UI(DB 노드 HTTP 창구)가 보낼 수 있는 명령
 SRV_JOB_COMMAND = '/job_command'
 

@@ -1,4 +1,4 @@
-# DB·UI 연동 계약 초안 (Supabase 테이블 · 버튼 · 로그) — 웹 UI 미연동
+# DB·UI 연동 계약 (Supabase · DB HTTP API · 로그)
 
 관제: 정쓰 · DB 노드(`database_main` 외): 정쓰 · Supabase 설정·웹 UI: 이승재
 
@@ -7,14 +7,14 @@
 ```
 [관제 노트북]
   ROS: bringup / 탐지·판별·적재 / 관제 control / DB 노드 database
-  웹: Next.js (next start) + cloudflared 터널
+  웹: Next.js API (next start) + cloudflared 터널
                                    
-  관제 ──Service·토픽──▶ DB 노드 ──▶ Supabase state (저장 구현됨) ──Realtime?──▶ 웹 UI (연동 미구현)
-  관제 ──/event_log──▶ DB 노드 ──▶ ~/box_logs/{job_id}.jsonl ──▶ Next.js /api/logs (연동 미구현)
-  브라우저 버튼 ──▶ Next.js API (연동 미구현) ──▶ DB 노드 127.0.0.1:8765 ──▶ 관제
+  관제 ──Service·토픽──▶ DB 노드 ──▶ Supabase state ──Realtime──▶ 웹 UI
+  관제 ──/event_log──▶ DB 노드 ──▶ ~/box_logs/{job_id}.jsonl ──▶ Next.js /api/logs
+  브라우저 버튼 ──▶ Next.js API ──▶ DB 노드 127.0.0.1:8765 ──▶ 관제
 ```
 
-- 위 그림은 목표 연결 구조입니다. 현재는 ROS DB 노드의 파일/Supabase 저장과 관리자 GUI만 구현되어 있고 `my-next-app/` 웹 UI 연동은 진행 전입니다. 이 문서는 웹 UI 연동 시 지킬 계약 초안입니다.
+- ROS DB 노드는 파일/Supabase 저장과 로컬 HTTP API를 제공합니다. Next.js는 브라우저 요청을 이 API로 프록시해야 합니다. 브라우저에서 로봇 노트북의 `127.0.0.1`에 직접 요청하지 않습니다.
 - Supabase는 **보여 주기 전용**이에요. 브라우저는 Supabase에서 읽기만 해요.
 - 버튼은 Supabase를 거치지 않고 노트북 안에서 DB 노드로 바로 가요. 그래서 인터넷이 끊겨도 비상정지는 돼요.
 - 로그는 DB에 쌓지 않고 파일로 남겨요.
@@ -47,7 +47,7 @@
 
 | 묶음 | 열 | 타입 | 언제 바뀌나 |
 |---|---|---|---|
-| 재고 | `a` `b` `c` `d` `u` | int | 시작 `/inventory_check` 실측 후, 작업 종료·중단 시 최종 스냅샷. 박스별 저장은 하지 않음. `u` = 미분류 (구역이 꽉 차서 미분류로 보낸 것 포함) |
+| 재고 | `a` `b` `c` `d` `u` | int | READY에서 UI가 설정하거나, 박스 처리 후 관제가 갱신. 작업 종료·중단 때 최종 스냅샷도 저장. `u` = 미분류 (구역이 꽉 차서 미분류로 보낸 것 포함) |
 | 작업 결과 | `status` | text | `BEFORE` / `RUNNING` / `DONE` / `ERROR` / `STOPPED`. **다음 작업이 시작될 때까지 그대로 남음** |
 | | `reason` | text | ERROR·STOPPED 이유. 작업 중단으로 물리 상태가 확정되지 않았으면 `재고 재측정 필요`를 포함. `DONE`은 정상 종료, `STOPPED`는 중단 당시 마지막 확인 재고 스냅샷 |
 | | `started_at`, `finished_at` | timestamptz | RUNNING 될 때 / DONE·ERROR·STOPPED 될 때 |
@@ -71,8 +71,8 @@
 | `BEFORE`, `PREFLIGHT` | 데이터 받기·사전 점검 | "점검 중" |
 | `STANDBY` | 카운트다운 | 확인 후 10분 대기. `start_at`까지 남은 시간 표시. 취소 버튼 활성 |
 | `RUNNING` | 작업 시작 | |
-| `START_SETTING` | 시작 직전 설정 | RUNNING 기록 후 그리퍼 열기 → HOME → 닫기. 이후 선택한 재고 실측과 스캔 진행 |
-| `INVENTORY_CHECK` | 시작 재고 실측 | 재고 점검 |
+| `START_SETTING` | 시작 직전 설정 | RUNNING 기록 후 그리퍼 열기 → HOME → 닫기. UI launch에서는 DB 재고를 사용하고 첫 스캔으로 진행 |
+| `INVENTORY_CHECK` | 선택적 시작 재고 실측 | 별도 점검 서버를 실행하고 관제 점검 파라미터를 켠 경우 |
 | `SCANNING`, `SCAN_DONE` | 탐지 | 단계 표시 "스캔" |
 | `JUDGING`, `JUDGE_DONE` | 판별 | "판별" |
 | `PLACING`, `PLACE_DONE` | 적재 | "적재" |
@@ -185,8 +185,10 @@ DB 노드가 노트북 안에서만 받는 창구를 열어요: `http://127.0.0.
 | `POST /api/estop` | `POST /estop` | `{ok, message}`. `ok=false`면 message(예: "관제 연결 안 됨 — 펜던트 비상정지 버튼을 쓰세요")를 그대로 띄움 |
 | `POST /api/start` | `POST /start` | `{ok, message}`. 거절 이유 예: "준비 안 됨 (지금 관제 단계: RUNNING)" |
 | `POST /api/cancel` | `POST /cancel` | `{ok, message}`. 카운트다운 취소. 작업이 시작된 뒤에는 거절 ("취소할 카운트다운 없음") → 그때는 비상정지 |
-| 재고 조회 | `GET /inventory` | `{a, b, c, d, u, capacity}` — 읽기 전용. 재고 입력·수정 API는 제공하지 않음 |
-| (상태 확인용) | `GET /health` | `{ok, stage, store}` |
+| 재고 조회 | `GET /inventory` | `{a, b, c, d, u, capacity}` |
+| 재고 설정 | `POST /inventory` | `{a, b, c, d, u, source?}`. 관제가 READY일 때만. A~D는 `0..capacity`, U는 `0` 이상. 성공 시 DB 저장 후 관제에 변경 알림 |
+| 상태 확인 | `GET /state` | 저장소 state 행에 최신 관제 stage·연결 시각을 병합해 반환 |
+| 헬스 확인 | `GET /health` | `{ok, stage, store}` |
 
 ```ts
 // app/api/estop/route.ts
@@ -222,7 +224,8 @@ export async function POST(req: Request) {
   - 화면은 **`status = STOPPED`면 작업 상태를 빨간불 "비상정지"**로 보여 주면 돼요 (버튼을 누른 화면뿐 아니라 다른 화면·관리자 GUI에도 똑같이 보임).
 - **시작**: 시작 버튼 → 안전 확인 팝업(“10분 후 작업이 시작됩니다. 작업공간 내 사람 또는 파손 위험이 있는 물품이 없는지 확인해주세요.”) → [확인]에서 `/api/start` → 관제가 사전 점검 후 10분 카운트다운(로봇 정지) → 시작 설정에서 그리퍼 열기·HOME·닫기 → 재고 실측(옵션) → 스캔. [취소]는 팝업만 닫고 아무것도 보내지 않음.
   - 확인을 누른 시점부터 카운트다운이 시작되고, 대기 상태와 남은 시간을 표시합니다. 관리자 GUI에는 카운트다운을 건너뛰는 바로 시작 기능이 있으며 웹 UI에는 없습니다.
-  - 수동 재고 설정은 제거했습니다. 재고는 `/inventory_check` 실측값으로 시작하고, 작업 중에는 UI 상태만 갱신합니다. 완료·측정 공간 비움·비상정지/오류 중단 때 최종 재고 스냅샷을 DB에 기록합니다.
+  - 재고 입력 UI는 READY에서 `POST /inventory`로 A~D와 U의 현재 재고를 저장합니다. DB 노드는 `inventory_changed` 내부 명령으로 관제 메모리를 새 값과 동기화합니다. 작업 중에는 수동 변경을 거부합니다.
+  - 기본 UI launch는 `/inventory_check` 서버를 실행하지 않고, 작업 시작 때 DB 재고를 사용합니다. 적재 결과는 박스 처리마다 DB에 저장하고, 완료·오류·정지 때 최종 스냅샷도 기록합니다.
   - 카운트다운 중에는 `start_at`으로 남은 시간을 보여 줘요.
   - **카운트다운 취소** 버튼 → `/api/cancel` → 관제가 작업을 시작하지 않고 `READY`로 돌아감. `status = BEFORE`, `reason = '시작 안 함: ui에서 취소'`.
   - 사전 점검에서 막히면 카운트다운 없이 `READY`로 돌아오고 `status = BEFORE`, `reason`에 이유가 남아요 (로그 창에도 FAIL 항목).
@@ -240,7 +243,7 @@ export async function POST(req: Request) {
   - `source`: `control` / `scan` / `judge` / `place` / `ui` / `db` → 화면 태그 관제·탐지·판별·적재·UI·DB
   - `level`: `INFO` / `WARN` / `ERROR` → 색
   - `message`: 화면에 그대로 표시 (문구를 UI에서 만들지 않음)
-  - `code`: 관제 `JOB_START`·`INVENTORY_CHECK_DONE`·`JOB_DONE`·`JOB_CANCELED`·`JOB_ERROR`·`JOB_STOPPED`·`BOX_DONE`·`BOX_RETRY`·`COUNT_MISMATCH`·`ZONE_CLEAR`·`STOP_REQUEST`·`ROBOT_ALARM`·`PREFLIGHT`·`JOB_COMMAND`·`START_NOW`·`CONTROL_ERROR`·`CONTROL_WARN`·`ZONE_FULL`, 파트 `PART_LOG`, DB 노드 `UI_COMMAND`·`DB_RETRY`. `INVENTORY_SET`은 수동 재고 설정 제거로 사용하지 않음.
+  - `code`: 관제 `JOB_START`·`INVENTORY_CHECK_DONE`·`JOB_DONE`·`JOB_CANCELED`·`JOB_ERROR`·`JOB_STOPPED`·`BOX_DONE`·`BOX_RETRY`·`COUNT_MISMATCH`·`ZONE_CLEAR`·`STOP_REQUEST`·`ROBOT_ALARM`·`PREFLIGHT`·`JOB_COMMAND`·`START_NOW`·`CONTROL_ERROR`·`CONTROL_WARN`·`ZONE_FULL`, 파트 `PART_LOG`, DB 노드 `UI_COMMAND`·`INVENTORY_SET`·`DB_RETRY`.
   - **사전 점검**: WARN·FAIL 항목이 한 줄씩 `code = 'PREFLIGHT'`(FAIL은 `level = ERROR`)로 오고, 마지막에 '사전 점검 통과/실패' 한 줄이 와요 → 시작이 안 된 이유를 로그 창에서 바로 볼 수 있어요
   - **재고 확인 불가**: 적재가 수량을 못 재면 재고는 그대로 두고 `COUNT_MISMATCH` WARN '… 적재 현황 확인 불가 …'가 와요
   - **구역 꽉 참** (`ZONE_FULL`, WARN): 6개가 찬 구역의 박스는 미분류로 가요. 재고는 그 구역 6, `u` +1. "A 구역을 비우세요" 안내로 보여 주면 돼요
@@ -312,5 +315,5 @@ cloudflared tunnel --url http://localhost:3000 # 켤 때마다 주소가 바뀜 
 | 관제 + fake 파트 + 실제 DB 노드 | `./scripts/fake_run.sh` (11/18: DB는 항상 `database_main`, 기본 파일 모드 + 재고 0으로 시작. Supabase로 보려면 `DB_STORE=auto`) | 다른 터미널 `tail -f ~/box_logs/fake_db/state_updates.jsonl` 에 단계·재고·결과가 차례로 찍힘, `~/box_logs/{job_id}.jsonl`에 로그 |
 | 비상정지 버튼 경로 | 위 상태에서 `curl -s -X POST localhost:8765/estop` | 관제가 `STOPPED : EMERGENCY STOP — by ui` |
 | 화면만 (DB 노드 없이) | Supabase 대시보드에서 `state` 값을 손으로 바꿈 | 화면이 바로 바뀜. 로그는 `~/box_logs/test.jsonl`에 샘플 줄 |
-| 재고 설정 | `POST /inventory` 요청 | HTTP 405. 재고는 로봇 실측으로만 설정 |
+| 재고 설정 | `curl -s -X POST localhost:8765/inventory -H 'Content-Type: application/json' -d '{"a":1,"b":0,"c":0,"d":0,"u":0}'` | READY에서 HTTP 200, 새 재고 저장 및 관제 메모리 갱신. READY 외에는 `ok=false`, 잘못된 값은 HTTP 400 |
 | 시작·취소 버튼 | `RESIDENT=1 ./scripts/fake_run.sh` → 다른 터미널에서 `curl -s -X POST localhost:8765/start`, `.../cancel` | start: `{ok: true}` → STANDBY. cancel: READY로 돌아오고 `status=BEFORE`. 다시 start → 끝까지 → READY, `status=DONE` |

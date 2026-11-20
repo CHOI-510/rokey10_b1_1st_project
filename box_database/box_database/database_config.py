@@ -7,7 +7,7 @@ database_config.py — DB 노드 설정 (관제·DB: 정쓰)
   SUPABASE_SERVICE_KEY   service_role 키 (DB 노드 전용. 웹 코드에 절대 넣지 말 것)
   BOX_LOG_DIR            이벤트 로그 파일 폴더 (기본 ~/box_logs)
   BOX_DB_PORT            버튼 창구 포트 (기본 8765, 127.0.0.1에서만 받음)
-  BOX_START_TOKEN        설정하면 /start·/cancel에 헤더 X-Box-Token이 같아야 받음 (기본: 안 씀)
+  BOX_START_TOKEN        설정하면 /start·/cancel·/inventory에 헤더 X-Box-Token이 같아야 받음 (기본: 안 씀)
 
 ROS 파라미터 (ros2 run box_database database_main --ros-args -p store:=file)
   store     'auto'(기본: 키가 있으면 supabase, 없으면 file) / 'supabase' / 'file'

@@ -19,6 +19,8 @@
   <exec_depend>box_judge</exec_depend>
   <exec_depend>box_place</exec_depend>
   <exec_depend>box_database</exec_depend>
+  <exec_depend>rosbridge_server</exec_depend>
+  <exec_depend>rosapi</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>
