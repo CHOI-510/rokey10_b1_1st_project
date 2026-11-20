@@ -124,8 +124,9 @@ CLASS_LAYOUT = {
 
 
 # U 투하 좌표는 읽어 온 JSON/내장 CONFIG의 이전 값보다 우선 적용한다.
-UNCLASSIFIED_RELEASE_POSE = [800.0, -118.0, 183.0, 171.0, -118.0, -92.0]
-UNCLASSIFIED_APPROACH_Z = 203.0
+UNCLASSIFIED_RELEASE_POSE = [793.0, -113.0, 186.0, 171.0, -117.0, -92.0]
+UNCLASSIFIED_APPROACH_Z = 186.0
+UNCLASSIFIED_MOVE_TOL_MM = 5.0  # U 이동의 축별 XYZ 도달 허용 오차
 
 
 def apply_class_layout(c):
@@ -289,8 +290,8 @@ class PlaceAlgorithm:
     # ------------------------------------------------------------------
     # 동작 단위 (robot 명령을 설정값과 묶음)
     # ------------------------------------------------------------------
-    def _move(self, pose):
-        self.robot.movel(pose, vel=self.c['speed_mm_s'], acc=self.c['acc_mm_s2'])
+    def _move(self, pose, tol=2.0):
+        self.robot.movel(pose, vel=self.c['speed_mm_s'], acc=self.c['acc_mm_s2'], tol=tol)
 
     def _raise(self):
         pose = self.robot.pose()
@@ -670,17 +671,19 @@ class PlaceAlgorithm:
         미분류 Goal과 '구역 만재 → 미분류로 보내기'(11/18)가 같이 쓴다."""
         current = self.robot.pose()                     # 옆으로 가기 전에 접근 높이까지 수직 상승
         if current[2] < approach_z:
-            self._move([current[0], current[1], approach_z, *current[3:]])
+            self._move([current[0], current[1], approach_z, *current[3:]], tol=UNCLASSIFIED_MOVE_TOL_MM)
         above = [release_pose[0], release_pose[1], approach_z, *release_pose[3:]]
-        self._move(above)
+        self._move(above, tol=UNCLASSIFIED_MOVE_TOL_MM)
         self._pending(phase='placing', release_pose=release_pose)
         report('placing')
         self._ensure_holding('미분류 투하 전')
-        self._move(release_pose)                        # 위치 이동만 (힘 제어 하강 없음)
+        if release_pose != above:
+            self._move(release_pose, tol=UNCLASSIFIED_MOVE_TOL_MM)                    # 위치 이동만 (힘 제어 하강 없음)
         self._pending(phase='releasing')
         self.release()
         self._pending(phase='released')
-        self._move(above)
+        if release_pose != above:
+            self._move(above, tol=UNCLASSIFIED_MOVE_TOL_MM)
         self._pending(phase='released_and_retracted')
         self.go_home(home)
 
