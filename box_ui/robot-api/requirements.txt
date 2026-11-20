@@ -1,0 +1,9 @@
+# Runtime dependencies (Python 3.12).
+# Versions match the previously verified robot-fastapi container.
+fastapi==0.165.0
+pydantic==2.14.3
+uvicorn==0.54.0
+websocket-client==1.9.2
+
+# Required by fastapi.testclient for API tests.
+httpx==0.28.1
