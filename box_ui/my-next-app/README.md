@@ -1,3 +1,7 @@
+## ROS 2 로봇 연결
+
+`NEXT_PUBLIC_ROBOT_API_URL=http://localhost:8000`을 `.env.local`에 설정하고 API와 `box_bringup` launch를 함께 실행합니다. 시작·취소·정지는 `robot-api → rosbridge → ROS 2 관제`로 전달되며 카운트다운은 관제가 담당합니다. 시작 팝업은 실제 재고를 조회·저장합니다. 상세 실행 순서와 fake 시험 방법은 [robot-api README](../robot-api/README.md)를 참고하세요.
+
 This is a [Next.js](https://nextjs.org) project using the App Router and Supabase.
 
 ## Connect Supabase
@@ -45,4 +49,8 @@ To learn more about Next.js, take a look at the following resources:
 
 You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
 
-## Conect Supabase(PostgreSQL)
+## Deploy on Vercel
+
+The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+
+Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.

@@ -14,7 +14,7 @@ type Counts = Record<(typeof specifications)[number]["loc_id"], number>;
 
 const emptyCounts: Counts = { A: 0, B: 0, C: 0, D: 0 };
 
-export default function StockStatus() {
+export default function StockStatus({ onConnectionChange }: { onConnectionChange: (connected: boolean) => void }) {
   const [counts, setCounts] = useState<Counts>(emptyCounts);
   const [unmappedLocIds, setUnmappedLocIds] = useState<string[]>([]);
   const [inventoryRowCount, setInventoryRowCount] = useState(0);
@@ -30,7 +30,8 @@ export default function StockStatus() {
         const supabase = createSupabaseClient();
         const { data, error: queryError } = await supabase
           .from("inventory")
-          .select("standard, cnt, loc_id");
+          .select("standard, cnt, loc_id")
+          .abortSignal(AbortSignal.timeout(8000));
 
         if (queryError) throw queryError;
         if (!active) return;
@@ -58,8 +59,10 @@ export default function StockStatus() {
         setInventoryRowCount(data?.length ?? 0);
         setUnmappedLocIds([...unknownLocations]);
         setError(null);
+        onConnectionChange(true);
       } catch (loadError) {
         if (active) {
+          onConnectionChange(false);
           setError(loadError instanceof Error ? loadError.message : "inventory 조회 중 오류가 발생했습니다.");
         }
       } finally {
@@ -67,14 +70,18 @@ export default function StockStatus() {
       }
     };
 
-    void loadInventory();
-    const refreshInterval = window.setInterval(() => void loadInventory(), 15_000);
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      await loadInventory();
+      if (active) timer = setTimeout(poll, 15_000);
+    };
+    void poll();
 
     return () => {
       active = false;
-      window.clearInterval(refreshInterval);
+      clearTimeout(timer);
     };
-  }, []);
+  }, [onConnectionChange]);
 
   const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
 

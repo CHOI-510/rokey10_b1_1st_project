@@ -41,5 +41,4 @@ export default function JobLogSummary() {
     </section>
   );
 }
-import type { ApiLogEvent } from "./types";
 

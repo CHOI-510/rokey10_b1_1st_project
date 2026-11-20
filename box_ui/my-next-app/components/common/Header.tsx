@@ -4,11 +4,13 @@ type HeaderProps = {
   startDisabled: boolean;
   stopDisabled: boolean;
   apiConnected: boolean;
+  robotConnected: boolean;
+  dbConnected: boolean;
   onStartClick: () => void;
   onStopClick: () => void;
 };
 
-export default function Header({ dateLabel, timeLabel, startDisabled, stopDisabled, apiConnected, onStartClick, onStopClick }: HeaderProps) {
+export default function Header({ dateLabel, timeLabel, startDisabled, stopDisabled, apiConnected, robotConnected, dbConnected, onStartClick, onStopClick }: HeaderProps) {
   return (
     <header className="grid min-h-[104px] w-full grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-5 rounded-[20px] border border-[#e1e8ef] bg-white px-[22px] py-[14px] text-[#202936] shadow-sm max-[1020px]:grid-cols-[minmax(0,1fr)_auto_minmax(0,auto)] max-[1020px]:gap-[10px] max-[1020px]:px-[14px] max-[560px]:min-h-0 max-[560px]:grid-cols-[minmax(0,1fr)_auto] max-[560px]:gap-3 max-[560px]:rounded-2xl max-[560px]:px-[13px] max-[560px]:py-[13px]">
       <div className="flex min-w-0 items-center gap-[13px] max-[1020px]:gap-[9px] max-[560px]:gap-2">
@@ -30,8 +32,9 @@ export default function Header({ dateLabel, timeLabel, startDisabled, stopDisabl
       </div>
 
       <div className="flex items-center justify-end gap-[9px] max-[1020px]:gap-[6px] max-[560px]:col-span-full max-[560px]:justify-start max-[560px]:flex-wrap">
-        <span className={`inline-flex h-[37px] items-center gap-[7px] whitespace-nowrap rounded-full px-3 text-[13px] max-[1020px]:h-8 max-[1020px]:px-2 max-[1020px]:text-[11px] max-[560px]:h-[30px] ${apiConnected ? "bg-[#e7f8ef] text-[#147a43]" : "bg-[#fff0f0] text-[#c9232b]"}`}><i className={`h-2 w-2 rounded-full ${apiConnected ? "bg-[#12a65a]" : "bg-[#e52327]"}`} />{apiConnected ? "API 연결" : "API 끊김"}</span>
-        <span className="inline-flex h-[37px] items-center gap-[7px] whitespace-nowrap rounded-full bg-[#f2f5f8] px-3 text-[13px] text-[#586577] max-[1020px]:h-8 max-[1020px]:px-2 max-[1020px]:text-[11px] max-[560px]:h-[30px]"><i className="h-2 w-2 rounded-full bg-[#12a65a]" />DB 연결</span>
+        <span className={`inline-flex h-[37px] items-center gap-[7px] whitespace-nowrap rounded-full px-3 text-[13px] max-[1020px]:h-8 max-[1020px]:px-2 max-[1020px]:text-[11px] max-[560px]:h-[30px] ${apiConnected ? "bg-[#e7f8ef] text-[#147a43]" : "bg-[#fff0f0] text-[#c9232b]"}`}><i className={`h-2 w-2 rounded-full ${apiConnected ? "bg-[#12a65a]" : "bg-[#e52327]"}`} />{apiConnected ? "API" : "API"}</span>
+        <span className={`inline-flex h-[37px] items-center gap-[7px] whitespace-nowrap rounded-full px-3 text-[13px] max-[1020px]:h-8 max-[1020px]:px-2 max-[1020px]:text-[11px] max-[560px]:h-[30px] ${robotConnected ? "bg-[#e7f8ef] text-[#147a43]" : "bg-[#fff0f0] text-[#c9232b]"}`}><i className={`h-2 w-2 rounded-full ${robotConnected ? "bg-[#12a65a]" : "bg-[#e52327]"}`} />{robotConnected ? "로봇" : "로봇"}</span>
+        <span title={dbConnected ? "Supabase DB 연결됨" : "Supabase DB 미연결 또는 확인 중"} aria-label={dbConnected ? "DB 연결됨" : "DB 미연결 또는 확인 중"} className={`inline-flex h-[37px] items-center gap-[7px] whitespace-nowrap rounded-full px-3 text-[13px] max-[1020px]:h-8 max-[1020px]:px-2 max-[1020px]:text-[11px] max-[560px]:h-[30px] ${dbConnected ? "bg-[#e7f8ef] text-[#147a43]" : "bg-[#fff0f0] text-[#c9232b]"}`}><i className={`h-2 w-2 rounded-full ${dbConnected ? "bg-[#12a65a]" : "bg-[#e52327]"}`} />DB</span>
         <button className="h-[46px] whitespace-nowrap rounded-xl border-0 bg-[#117d75] px-[18px] text-[15px] font-bold text-white enabled:hover:bg-[#0e6e67] disabled:cursor-not-allowed disabled:opacity-60 max-[1020px]:h-10 max-[1020px]:px-3 max-[1020px]:text-[13px] max-[560px]:h-9" type="button" onClick={onStartClick} disabled={startDisabled}><span className="mr-[5px] text-[11px]" aria-hidden="true">▶</span>시작</button>
         <button className="grid h-[54px] w-[54px] shrink-0 place-items-center rounded-full border-[6px] border-[#ffe1e2] bg-[#e52327] hover:bg-[#cf1f23] disabled:cursor-not-allowed disabled:opacity-50 max-[1020px]:h-11 max-[1020px]:w-11 max-[1020px]:border-[5px] max-[560px]:h-10 max-[560px]:w-10" type="button" aria-label="비상 정지" onClick={onStopClick} disabled={stopDisabled}><i className="h-3 w-3 rounded-[2px] bg-white" /></button>
       </div>
