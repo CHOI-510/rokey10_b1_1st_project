@@ -58,6 +58,7 @@ PARAMS = {
     'body_clear': (31.0, '핑거 끝 위로 들어올 수 있는 물체 높이 [mm]'),
     'clear_after': (5.0, '내려놓은 뒤 열린 핑거 끝 - 윗면 [mm]'),
     'close_clear': (10.0, '빈 그리퍼 닫기 전 닫힌 핑거 끝 - 최대 물체 [mm]'),
+    'h_floor_offset': (-1.16, '높이 기준 = 측정존 바닥 z + 이 값 [mm]: 닫힌 핑거 끝 바닥 접촉 TCP z 29.74 - 바닥 30.9 (11/17 실측). sync 집기는 바닥 z 그대로'),
     'h_start': (78.0, '높이: 닫힌 핑거 끝 테이블 위 출발 높이 [mm]'),
     'h_fast_vel': (5.0, '높이 1차 속도 [mm/s] (11/18 8 -> 5 로 되돌림)'),
     'h_fast_thr': (6.0, '높이 1차 판정 Fz [N] (5 mm/s 에서 실측한 값)'),
@@ -84,7 +85,8 @@ PARAMS = {
     'speed': (60.0, '일반 직선 이동 속도 [mm/s]'),
     'home_vel': (60.0, '홈 관절 이동 [deg/s]'),
     # 판별
-    'tol_mm': (3.0, '치수 허용 오차 [mm] (세 길이 모두 이 안이어야 후보)'),
+    'tol_mm': (2.5, '가로 · 세로 허용 오차 [mm] (11/20 3 -> 2.5, 탐지 방향 정렬 뒤 대각 잡기 없음)'),
+    'tol_h_mm': (3.0, '높이 허용 오차 [mm] (바닥 기준이 들어가 여유를 더 둠)'),
     'soft_classes': ('D', '말랑한 물품 class (쉼표). 치수가 같은 후보를 물성으로 가를 때'),
     'soft_dw': (1.0, '3 -> 40 N 폭 변화가 이 이상이면 말랑 [mm] (알루미늄 0.6~0.7, 지우개 1.3~1.6)'),
     # 위상 정렬
@@ -114,7 +116,7 @@ PARAMS = {
     'regrip_gap': (6.0, '물성: 폭 + 이만큼 열고 내려가 3 N 으로 잡음 [mm]'),
 }
 
-PLAN_CFG = {'tilt_sign': 1, 'flip_tol': 3.0, 'tip_past': 8.0, 'grip_edge': 6.0, 'grid': 1.0, 'lift_extra': 5.0,
+PLAN_CFG = {'tilt_sign': 1, 'flip_tol': 2.0, 'tip_past': 8.0, 'grip_edge': 6.0, 'grid': 1.0, 'lift_extra': 5.0,
             'approach': 25.0, 'obj_clear': 10.0, 'open_margin': 8.0}
 RELEASE_WIDTH = pp.PAD_MAX
 
@@ -298,11 +300,13 @@ class JudgeAlgorithm:
 
     # ------------------------------------------------------------------ 판별
     def candidates(self, specs, lengths):
-        m = sorted(lengths)
+        """lengths = [H, W, D]. 크기순으로 맞춰 비교하되 허용 오차는 측정 축별 (높이 tol_h_mm, 가로 · 세로 tol_mm)."""
+        tols = [self.p['tol_h_mm'], self.p['tol_mm'], self.p['tol_mm']]
+        m = sorted(zip(lengths, tols))
         out = []
         for s in specs:
             ref = sorted([s['width_mm'], s['depth_mm'], s['height_mm']])
-            if max(abs(a - b) for a, b in zip(m, ref)) <= self.p['tol_mm']:
+            if all(abs(a - b) <= t for (a, t), b in zip(m, ref)):
                 out.append(s)
         return out
 
@@ -322,6 +326,7 @@ class JudgeAlgorithm:
     # ------------------------------------------------------------------ 측정 단계
     def _measure_height(self, table_z):
         io, p = self.io, self.p
+        table_z = table_z + p['h_floor_offset']                   # 높이 기준: 닫힌 핑거 끝이 바닥에 닿는 TCP z (11/20)
         io.g.grip_until_done(p['grip_force'])                     # 최대 물체 위에서 빈 그리퍼 닫기
         io.move_z_to(table_z + p['h_start'], p['speed'])
         sA, zA = self._pos_descent(table_z - 1.0, p['h_fast_vel'], p['h_fast_thr'], 0.4, 1.0)
