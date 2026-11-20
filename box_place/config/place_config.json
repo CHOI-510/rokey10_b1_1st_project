@@ -3,7 +3,7 @@
   "search_timeout_s": 160.0,
   "contact_force_n": 6.0,
   "abort_force_n": 25.0,
-  "abs_force_limit_n": 20.0,
+  "abs_force_limit_n": 25.0,
   "contact_sign": 1,
   "speed_mm_s": 60.0,
   "acc_mm_s2": 100.0,
