@@ -23,7 +23,7 @@ judge_algorithm.py — 판별 파트 메인 로직 (judge_template.py 약속, 11
     - J6 는 0 ± 150 deg 안에서 돌리고 끝에 되감는다 (툴 케이블 꼬임 방지)
 
   템플릿 약속: JudgeAlgorithm(node, robot), judge(specs, poses, report) -> 'A'~'D' 또는 'U'
-    실패는 PartError('MEASURE_FAILED' / 'GRASP_FAILED'), CANCELED 는 잡지 않는다. 로봇은 robot(DsrIO)으로만.
+    실패는 PartError('MEASURE_FAILED' / 'GRASP_FAILED' / 'NOT_FOUND'), CANCELED 는 잡지 않는다. 로봇은 robot(DsrIO)으로만.
   테이블 기준(측정존 바닥 Z): Goal 의 DB 측정존 z (poses['measure_zone'][2], 적재와 같은 값)
 ================================================================
 """
@@ -333,6 +333,8 @@ class JudgeAlgorithm:
         io.g.grip_until_done(p['grip_force'])                     # 최대 물체 위에서 빈 그리퍼 닫기
         io.move_z_to(table_z + p['h_start'], p['speed'])
         sA, zA = self._pos_descent(table_z - 1.0, p['h_fast_vel'], p['h_fast_thr'], 0.4, 1.0)
+        if sA == 'clear':     # 바닥까지 내려가도 안 닿음 = 측정존에 물체 없음 (11/20) -> 관제가 리커버리 · 재탐지
+            raise PartError('NOT_FOUND', '높이 1차 하강에서 바닥까지 물체 없음 (측정존 비었음)')
         if sA != 'contact':
             raise _Fail(f'높이 1차 하강에서 윗면을 못 찾음 ({sA})')
         io.move_z_to(zA + p['h_backoff'], 30.0)
