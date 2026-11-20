@@ -32,7 +32,7 @@ import math
 import statistics
 import time
 
-from box_comm.common import GRIP_RETRY, GRIPPER, SYNC_GRIP, TCP, UNCLASSIFIED
+from box_comm.common import GRIP_RETRY, GRIPPER, SYNC_GRIP, TCP, TRAVEL_SPEED_MM_S, UNCLASSIFIED
 from box_comm.gripper import holding
 from box_comm.judge_interface import PartError
 from box_comm.sync_grip import GripMissed, SyncGripper, grasp_height_for_tip, tip_h_mm
@@ -254,7 +254,8 @@ class JudgeAlgorithm:
         H = None
         try:
             self.robot.move_to_waypoint(zone, orientation=waypoint_orientation,
-                                        vel=p['speed'], acc=p['speed'] * 3)
+                                        vel=p['speed'], acc=p['speed'] * 3,
+                                        travel_vel=TRAVEL_SPEED_MM_S)
             io.move_z_to(max(io.cur_z(), self._safe_closed_z(table_z)), p['speed'])
 
             report('measuring_length1')
@@ -295,7 +296,8 @@ class JudgeAlgorithm:
         result = self.classify(specs, lengths, dw)
         report.log(f'판별 결과 {result}')
         self.robot.move_to_waypoint(zone, orientation=waypoint_orientation,
-                                    vel=p['speed'], acc=p['speed'] * 3)
+                                    vel=p['speed'], acc=p['speed'] * 3,
+                                    travel_vel=TRAVEL_SPEED_MM_S)
         return result
 
     # ------------------------------------------------------------------ 판별

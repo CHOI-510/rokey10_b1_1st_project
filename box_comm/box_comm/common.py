@@ -205,6 +205,7 @@ TOOL = {
 #   현재 −x 방향 80mm, y는 같음). 단 간격·z·박스 높이는 적재 파트만 가진다.
 # ----------------------------------------------------------------------
 TRAVEL_Z = 160.0                         # 물품을 들고 단순 XY 이동할 때의 최소 TCP Z [mm]
+TRAVEL_SPEED_MM_S = 100.0                # TRAVEL_Z 이상에서 옆으로 이동할 때만 적용 [mm/s]
 WAYPOINT = {'z_mm': TRAVEL_Z}             # XY는 Goal의 measure_zone에서 가져옴. 자세는 이동 전 자세 유지
 
 FIXED_POSES = {

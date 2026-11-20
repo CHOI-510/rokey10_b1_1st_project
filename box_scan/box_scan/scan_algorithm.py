@@ -35,7 +35,7 @@ from bisect import bisect_right
 from datetime import datetime
 from pathlib import Path
 
-from box_comm.common import GRIPPER, PartError, TRAVEL_Z
+from box_comm.common import GRIPPER, PartError, TRAVEL_SPEED_MM_S, TRAVEL_Z
 from box_comm.sync_grip import GripMissed, make_sync_gripper, tip_h_mm
 from box_comm.common import SYNC_GRIP, TCP
 
@@ -402,7 +402,8 @@ class ScanAlgorithm:
                     grip = self._find_and_grip(contact,reference,report)
                     if grip is not None and self._carry_and_place(grip,zone,home_z,report):
                         r.move_to_waypoint(zone, orientation=reference,
-                                           vel=LINEAR_VEL, acc=LINEAR_ACC)
+                                           vel=LINEAR_VEL, acc=LINEAR_ACC,
+                                           travel_vel=TRAVEL_SPEED_MM_S)
                         report.log('물품 1개 배치 완료, 측정존 WAYPOINT 복귀. 다음 요청에서 현재 단계·경로 재개')
                         return True
                     failure = '반원·직선 중심 탐지 실패' if grip is None else '이송 높이에서 파지 확인 실패'
@@ -434,7 +435,8 @@ class ScanAlgorithm:
             self.resume=None
             self._last_miss=None
         r.move_to_waypoint(zone, orientation=reference,
-                           vel=LINEAR_VEL, acc=LINEAR_ACC)
+                           vel=LINEAR_VEL, acc=LINEAR_ACC,
+                           travel_vel=TRAVEL_SPEED_MM_S)
         self._reset_cursor()
         report.log('Y 본탐색 및 X 확인탐색 완료: 물품 없음, 측정존 WAYPOINT 복귀')
         return False
@@ -879,7 +881,9 @@ class ScanAlgorithm:
             report.log('파지 각도와 무관하게 HOME 기준 0도 자세로 정렬 완료')
         transfer_pose = r.pose()
         transfer_pose[:2] = zone[:2]
-        self._move(transfer_pose)
+        r.move_via_travel_z(transfer_pose, travel_z=TRAVEL_Z,
+                            vel=LINEAR_VEL, acc=LINEAR_ACC,
+                            travel_vel=TRAVEL_SPEED_MM_S)
         report('placing')
         # 파지는 _place_with_force에서 Force 하강 직전에 한 번 확인한다.
         # 핑거 끝이 측정존 바닥 아래로 가지 않도록 동기 집기의 오프셋을 반영한다.

@@ -75,7 +75,8 @@ import math
 import time
 from pathlib import Path
 
-from box_comm.common import (GRIP_RETRY, GRIPPER, SYNC_GRIP, PartError, RESULT_CLASSES, STACK, TCP, TRAVEL_Z,
+from box_comm.common import (GRIP_RETRY, GRIPPER, SYNC_GRIP, PartError, RESULT_CLASSES, STACK, TCP,
+                             TRAVEL_SPEED_MM_S, TRAVEL_Z,
                              UNCLASSIFIED, VALID_CLASSES, count_from_position)
 from box_comm.gripper import check_grip, holding
 from box_comm.sync_grip import GripMissed, make_sync_gripper
@@ -291,7 +292,14 @@ class PlaceAlgorithm:
     # 동작 단위 (robot 명령을 설정값과 묶음)
     # ------------------------------------------------------------------
     def _move(self, pose, tol=2.0):
-        self.robot.movel(pose, vel=self.c['speed_mm_s'], acc=self.c['acc_mm_s2'], tol=tol)
+        current = self.robot.pose()
+        lateral_at_travel_z = (
+            current[2] >= TRAVEL_Z - 0.1 and pose[2] >= TRAVEL_Z - 0.1
+            and abs(current[2] - pose[2]) <= 0.1
+            and math.hypot(current[0] - pose[0], current[1] - pose[1]) > 0.1
+        )
+        speed = TRAVEL_SPEED_MM_S if lateral_at_travel_z else self.c['speed_mm_s']
+        self.robot.movel(pose, vel=speed, acc=self.c['acc_mm_s2'], tol=tol)
 
     def _raise(self):
         pose = self.robot.pose()
@@ -648,7 +656,8 @@ class PlaceAlgorithm:
         home, zone, release_pose, approach_z = self._unclassified_poses(poses)
         self._pending(**{'class': UNCLASSIFIED, 'route': 'unclassified', 'phase': 'picking'})
         report('picking')
-        self.robot.move_to_waypoint(zone, vel=self.c['speed_mm_s'], acc=self.c['acc_mm_s2'])
+        self.robot.move_to_waypoint(zone, vel=self.c['speed_mm_s'], acc=self.c['acc_mm_s2'],
+                                    travel_vel=TRAVEL_SPEED_MM_S)
         self.pick_from_measure_zone(zone, report)
         self._pending(phase='moving')
         report('moving')
@@ -701,7 +710,8 @@ class PlaceAlgorithm:
 
         self._pending(**{'class': result_class, 'phase': 'picking'})
         report('picking')
-        self.robot.move_to_waypoint(zone, vel=self.c['speed_mm_s'], acc=self.c['acc_mm_s2'])
+        self.robot.move_to_waypoint(zone, vel=self.c['speed_mm_s'], acc=self.c['acc_mm_s2'],
+                                    travel_vel=TRAVEL_SPEED_MM_S)
         self.pick_from_measure_zone(zone, report, result_class)
         self._pending(phase='moving')
         report('moving')

@@ -18,7 +18,7 @@ import time
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 
-from box_comm.common import GRIPPER, ROBOT, SAFETY, TRAVEL_Z, WAYPOINT
+from box_comm.common import GRIPPER, ROBOT, SAFETY, TRAVEL_SPEED_MM_S, TRAVEL_Z, WAYPOINT
 from box_comm.robot import connect_dsr
 
 
@@ -365,7 +365,8 @@ class DsrIO:
             acc=acc,
         )
 
-    def move_via_travel_z(self, target, travel_z=TRAVEL_Z, vel=80.0, acc=100.0, tol=2.0):
+    def move_via_travel_z(self, target, travel_z=TRAVEL_Z, vel=80.0, acc=100.0,
+                          travel_vel=TRAVEL_SPEED_MM_S, tol=2.0):
         """수직 상승 → 안전 고도에서 XY 이동 → 목표 자세·Z 순서로 직선 이동한다.
 
         공정 내부의 접촉/조작 동작에는 쓰지 않는다. 인계점·일반 이송처럼 단순 이동에만 호출한다.
@@ -379,14 +380,15 @@ class DsrIO:
         if current[2] < cruise_z - 0.1:
             self.movel([current[0], current[1], cruise_z, *current[3:]], vel, acc, tol)
         # XY 이동은 현재 자세를 유지해 안전 높이에서 수행한다.
-        self.movel([target[0], target[1], cruise_z, *current[3:]], vel, acc, tol)
+        self.movel([target[0], target[1], cruise_z, *current[3:]], travel_vel, acc, tol)
         # 목표 자세도 안전 높이에서 바꾼 뒤 마지막에 수직으로 목표 Z에 접근한다.
         self.movel([target[0], target[1], cruise_z, *target[3:]], vel, acc, tol)
         if abs(cruise_z - target[2]) > 0.1:
             self.movel(target, vel, acc, tol)
         return self.pose()
 
-    def move_to_waypoint(self, measure_zone, orientation=None, vel=80.0, acc=100.0):
+    def move_to_waypoint(self, measure_zone, orientation=None, vel=80.0, acc=100.0,
+                         travel_vel=TRAVEL_SPEED_MM_S):
         """DB 측정존 중앙 위 WAYPOINT로 이동한다. 기본은 현재 TCP 자세를 유지한다."""
         if measure_zone is None or len(measure_zone) != 3:
             raise ValueError('WAYPOINT 계산에 측정존 XYZ가 필요합니다')
@@ -395,7 +397,7 @@ class DsrIO:
         if len(abc) != 3 or not all(math.isfinite(v) for v in abc):
             raise ValueError('WAYPOINT 자세는 유한한 ABC 3개여야 합니다')
         target = [float(measure_zone[0]), float(measure_zone[1]), WAYPOINT['z_mm'], *abc]
-        return self.move_via_travel_z(target, vel=vel, acc=acc)
+        return self.move_via_travel_z(target, vel=vel, acc=acc, travel_vel=travel_vel)
 
     def amovel_rel(
         self,
