@@ -30,7 +30,8 @@ import math
 import time
 from pathlib import Path
 
-from box_comm.common import GRIPPER, STACK, TCP, TOOL, VALID_CLASSES, PartError
+from box_comm.common import (GRIPPER, STACK, TCP, TOOL, TRAVEL_SPEED_MM_S, VALID_CLASSES,
+                             PartError)
 from box_comm.gripper import holding
 
 
@@ -368,9 +369,8 @@ class InventoryCheckAlgorithm:
         if result_class not in self.c['classes']:
             raise PartError('PLACE_FAILED', f'점검 대상이 아님: {result_class}')
         xy = (poses.get('place_zones') or {}).get(result_class)
-        home = poses.get('home_j')
-        if not vector(xy, 2) or not vector(home, 6):
-            raise PartError('PLACE_FAILED', '점검 구역 XY/HOME 좌표가 없습니다')
+        if not vector(xy, 2):
+            raise PartError('PLACE_FAILED', '점검 구역 XY 좌표가 없습니다')
         xy = self._slot_xy(result_class, tier, xy)
         signature = self._signature(result_class, xy)
         empty_z = None if self.calibrate else self._reference(result_class, tier, xy)
@@ -378,14 +378,20 @@ class InventoryCheckAlgorithm:
         if held:
             raise PartError('PLACE_FAILED', f'점검 전 물건을 쥐고 있습니다: {why}, 폭={width:.2f}')
         report('moving')
-        # 관제가 다른 파트를 정지하고 로봇을 넘겼다는 전제. HOME 경로는 기존처럼 확인된 경로 사용.
-        self.robot.movej(home, vel=self.c['home_speed_deg_s'], acc=self.c['home_acc_deg_s2'])
         self._raise()
         closed = self.robot.grip_close(GRIPPER['grip_force_n'])
         if closed.grabbed or not math.isfinite(closed.width_mm) or closed.width_mm > GRIPPER['empty_width_mm']:
             raise PartError('PLACE_FAILED', '점검 전 그리퍼가 비어 있지 않습니다')
         orient = self.c['classes'][result_class]['orientation']
-        self._move([*xy, self.c['travel_z'], *orient])
+        # 시작은 HOME 또는 직전 구역의 TRAVEL_Z. 구역 사이에 HOME을 거치지 않고
+        # 안전 고도에서 XY를 100 mm/s로 이동한 뒤 점검 자세·높이로 접근한다.
+        self.robot.move_via_travel_z(
+            [*xy, self.c['travel_z'], *orient],
+            travel_z=self.c['travel_z'],
+            vel=self.c['speed_mm_s'],
+            acc=self.c['acc_mm_s2'],
+            travel_vel=TRAVEL_SPEED_MM_S,
+        )
         report('placing')
         try:
             self._move_to_probe_start(result_class, tier, xy, orient, empty_z, report)
@@ -409,7 +415,6 @@ class InventoryCheckAlgorithm:
             count = count_from_contact(z, empty_z, self.c['classes'][result_class]['height_mm'],
                                        self.c['layer_tolerance_mm'], STACK['levels'])
         self._raise()
-        self.robot.movej(home, vel=self.c['home_speed_deg_s'], acc=self.c['home_acc_deg_s2'])
         if self.calibrate:
             self.state['references'].setdefault(result_class, {})[str(tier)] = {'signature': signature, 'empty_contact_tcp_z': z}
             self._save()
