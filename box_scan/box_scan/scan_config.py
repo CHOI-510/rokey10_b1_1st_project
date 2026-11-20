@@ -36,7 +36,7 @@ Z0 = 0.0                     # 모의 윗면 높이·설정 검증 기준 Z (실
 TABLE_Z = 29.8               # 탐색 작업대 바닥 TCP Z 실측 (11/18: 20mm 박스 윗면 49.8). TCP = 닫힌 핑거 끝이라 윗면 Z − 박스 높이
                              #   sync 집기 하한(TABLE_Z + 2.6)과 측정존 내려놓기 예상 높이에 씀
 MAX_OBJECT_HEIGHT_MM = 80.0
-COLLISION_GRIP_TIP_Z = 75.0   # 반원 5회 미검출 시 핑거 끝의 BASE 절대 Z [mm]
+COLLISION_GRIP_TIP_Z = 60.0   # 반원 5회 미검출 시 핑거 끝의 BASE 절대 Z [mm]
 GRIP_DEPTH_FROM_TOP_MM = 15.0   # 핑거 끝 목표 깊이. 하한은 TABLE_Z + SYNC_GRIP의 2.6 mm
 GRIP_RETRY_ANGLES = (0.0, 90.0, 45.0)    # 직선 탐침 방향에 정렬한 최초 집기 자세 기준
 GRIP_RETRY_LIFT_MM = 20.0
