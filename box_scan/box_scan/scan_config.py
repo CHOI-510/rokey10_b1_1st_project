@@ -30,7 +30,7 @@ SETTLE_SECONDS = 0.2
 
 # 탐색 파트 쥠 판정 여유 (공통/판별/적재 설정은 변경하지 않음)
 GRIP_WIDTH_RANGE_MARGIN_MM = 5.0  # 공통 박스 폭 범위의 양 끝에 추가할 여유
-GRIP_HOLD_WIDTH_TOL_MM = 5.0     # 상승/이송 중 재조임 후 기준 폭 대비 허용 변화. 재조임 전후 비교에는 미사용
+GRIP_HOLD_WIDTH_TOL_MM = 10.0     # 상승/이송 중 재조임 후 기준 폭 대비 허용 변화. 재조임 전후 비교에는 미사용
 
 # 집기 높이 · 재시도
 Z0 = 0.0                     # 탐색 작업대 바닥 TCP Z (원본 값, 높이 로그·검증·sim에만 씀 — 실제 바닥은 TABLE_Z)
@@ -87,7 +87,7 @@ PLACE_SLOW_FROM_MM = 20.0    # 예상 접촉 Z 위에서 순응·힘 제어 시�
 PLACE_MIN_ABOVE_FLOOR_MM = 2.0   # 핑거 끝 최소 높이 = 측정존 바닥 Z + 이 값. TCP 하한은 핑거 끝 오프셋을 보정
 PLACE_FORCE_TARGET_N = 20.0  # BASE -Z 배치 목표 힘
 PLACE_CONTACT_Z_TOL_MM = 10.0  # 예상 접촉보다 높은 접촉 허용 여유(조기 접촉 검사)
-PLACE_MAX_BELOW_EXPECTED_MM = 5.0  # 예상보다 아래로 탐색하는 최대 거리. 기존 하강 하한 유지
+PLACE_MAX_BELOW_EXPECTED_MM = 8.0  # 예상 접촉 높이보다 아래로 탐색하는 최대 거리. 바닥 보호 하한은 별도 유지
 PLACE_STOP_Z_TOL_MM = 1.0    # 샘플링/정지 후 바닥 보호 하한 확인 여유
 PLACE_CONTACT_N = 3.0        # Fz 증가량: 기존5N에서 완화(실측 확인 필요)
 PLACE_SAFETY_N = 25.0
