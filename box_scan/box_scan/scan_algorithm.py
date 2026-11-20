@@ -15,12 +15,12 @@ GRASP_FAILED는 탐색 커서를 유지해 관제 재요청 시 같은 경로에
 - picking: 측면 정지점을 기준으로 진행 방향 앞쪽 반원에서 윗면을 탐침한다.
   연속 검출 각도의 양 끝 평균 방향으로 직선 탐침해 먼 경계를 좁힌다.
   측면 정지점과 경계의 중간에서 첫 윗면 높이를 사용하고, 0°, +90°, +45° 순으로 집기한다.
-  반원 후보를 모두 실제로 탐침해 미검출이면, 측면 정지점 XY에서 바닥 기준으로 한 번 집는다.
+  반원 후보를 모두 실제로 탐침해 미검출이면, 측면 정지점 XY에서 핑거 끝의 BASE Z를 기준으로 한 번 집는다.
   동기 닫기, 재조임 및 파지 판별은 기존 통합 방식에 따른다.
 - moving: 수직 상승 후 파지를 확인하고 측정존까지 수평 직선 이동한다.
   성공 각도와 무관하게 이송 높이에서 HOME 기준 0도 자세로 정렬하고 파지를 다시 확인한다.
 - placing: 예상 접촉점 위 20 mm에서 순응·힘 제어로 하강한다.
-  허용 높이에서 Fz 접촉과 정지를 확인한 뒤에만 놓는다.
+  정지 확인 후 놓는다. 미접촉 또는 조기 접촉이면 현재 위치에서 놓는다.
 
 ROS 파라미터
 - csv_dir: 지정한 경우에만 탐색 중 힘과 보정값을 CSV로 기록한다.
@@ -735,7 +735,7 @@ class ScanAlgorithm:
                 if fan_misses == len(PROBE_FAN_ANGLES_DEG):
                     self._move_z(PROBE_START_Z)
                     report.log(f'반원 {fan_misses}회 미검출 → 충돌 정지점 '
-                               f'X={origin[0]:.1f}, Y={origin[1]:.1f}에서 바닥 기준 1회 집기', 'WARN')
+                               f'X={origin[0]:.1f}, Y={origin[1]:.1f}에서 핑거 끝 BASE Z={COLLISION_GRIP_TIP_Z:.1f} mm로 1회 집기', 'WARN')
                     return self._grip([origin[0], origin[1], None], reference, report,
                                       probe_orientation)
                 raise ProbeMiss('반원에 유효 윗면 없음')
@@ -782,9 +782,8 @@ class ScanAlgorithm:
         top_z = top[2]
         collision_fallback = top_z is None
         floor_tip = TABLE_Z + SYNC_GRIP['tip_above_floor_mm']
-        tip_z = floor_tip if collision_fallback else calculate_grip_z(top_z)
-        on_floor = tip_z <= floor_tip
-        tip_z = max(tip_z, floor_tip)
+        tip_z = COLLISION_GRIP_TIP_Z if collision_fallback else max(calculate_grip_z(top_z), floor_tip)
+        on_floor = not collision_fallback and tip_z == floor_tip
         sg = make_sync_gripper(r, tip_z - SYNC_GRIP['tip_above_floor_mm'],
                                log=lambda m: self.log.info(f'[scan] {m}'))
         retry_z = PROBE_START_Z if collision_fallback else max(PROBE_START_Z, top_z + GRIP_RETRY_LIFT_MM)
@@ -800,6 +799,10 @@ class ScanAlgorithm:
             self._orient(o)
             gz = sg.grasp_z_for_open(raw_open)             # 열린 폭에서 핑거 끝이 tip_z가 되는 TCP Z
             approach_failure = self._sync_approach(gz)
+            if collision_fallback and approach_failure is None:
+                actual_tip_z = r.pose()[2] + tip_z - gz
+                if not math.isfinite(actual_tip_z) or actual_tip_z < TABLE_Z:
+                    raise RuntimeError('충돌점 집기 하강 후 핑거 끝이 작업대 하한을 벗어남')
             if approach_failure is not None:
                 why = approach_failure
                 nxt = f'다음 {angles[n]:+g}도' if n < len(angles) else '포기'
@@ -894,7 +897,7 @@ class ScanAlgorithm:
         return True
 
     def _place_with_force(self, contact_z, floor_tcp, report):
-        """배치 전 파지 1회 확인 → Force 접촉 → 하한/조기 접촉 확인 후 개방 허용.
+        """배치 전 파지를 확인한다. 정상 정지 후 미접촉·조기 접촉도 현 위치 개방을 허용한다.
         _move_z는 동기 이동, _force_down은 stop으로 정지 확인까지 하므로 중복 대기를 하지 않는다.
         """
         if not math.isfinite(contact_z) or not math.isfinite(floor_tcp):
@@ -918,17 +921,23 @@ class ScanAlgorithm:
                 stop_z, PLACE_FORCE_TARGET_N, PLACE_CONTACT_N, PLACE_SAFETY_N,
                 check_xyz=True, contact_details=details)
         stopped_z = stopped_pose[2]
+        if not math.isfinite(stopped_z) or stopped_z < floor_tcp - PLACE_STOP_Z_TOL_MM:
+            raise RuntimeError(f'배치 정지 높이가 유효 범위 밖: Z={stopped_z:.1f}; 파지 유지')
+        if status == 'reached':
+            report.log(f'배치 접촉 없음: 예상 Z={contact_z:.1f}, 정지 Z={stopped_z:.1f}; 현재 위치에서 개방', 'WARN')
+            return
         if status != 'contact':
-            raise RuntimeError(f'배치 접촉 없음: 예상 Z={contact_z:.1f}, 정지 Z={stopped_z:.1f}; 파지 유지')
+            raise RuntimeError(f'알 수 없는 배치 하강 결과: {status}; 파지 유지')
         detected_z = details['z']
         force_note = f", ΔFz={details['dfz']:.1f} N" if 'dfz' in details else ''
         note = f'예상 Z={contact_z:.1f}, 접촉 Z={detected_z:.1f}, 정지 Z={stopped_z:.1f}{force_note}'
         if not math.isfinite(detected_z) or not math.isfinite(stopped_z):
             raise RuntimeError('배치 접촉/정지 높이가 유효하지 않음; 파지 유지')
-        if detected_z > upper_z:
-            raise RuntimeError(f'배치 조기 접촉: {note}; 파지 유지')
         if min(detected_z, stopped_z) < floor_tcp - PLACE_STOP_Z_TOL_MM:
             raise RuntimeError(f'배치 바닥 보호 하한 초과: {note}; 파지 유지')
+        if detected_z > upper_z:
+            report.log(f'배치 조기 접촉: {note}; 현재 위치에서 개방', 'WARN')
+            return
         # 접촉 후 하중이 바닥으로 옮겨지며 폭/잡힘 신호가 바뀔 수 있어 개방 직전 쥠 재검사는 생략.
         report.log(f'배치 접촉 및 정지 확인: {note}')
 
