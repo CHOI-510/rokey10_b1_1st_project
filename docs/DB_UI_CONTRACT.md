@@ -71,7 +71,7 @@
 | `BEFORE`, `PREFLIGHT` | 데이터 받기·사전 점검 | "점검 중" |
 | `STANDBY` | 카운트다운 | 확인 후 10분 대기. `start_at`까지 남은 시간 표시. 취소 버튼 활성 |
 | `RUNNING` | 작업 시작 | |
-| `START_SETTING` | 시작 직전 설정 | RUNNING 기록 후 그리퍼 열기 → HOME → 닫기. UI launch에서는 DB 재고를 사용하고 첫 스캔으로 진행 |
+| `START_SETTING` | 시작 직전 설정 | RUNNING 기록 후 그리퍼 열기 → HOME → 닫기. 기본 UI launch는 DB 재고를 사용하고 첫 스캔으로 진행 (`inventory_check:=true`면 실측 단계 추가) |
 | `INVENTORY_CHECK` | 선택적 시작 재고 실측 | 별도 점검 서버를 실행하고 관제 점검 파라미터를 켠 경우 |
 | `SCANNING`, `SCAN_DONE` | 탐지 | 단계 표시 "스캔" |
 | `JUDGING`, `JUDGE_DONE` | 판별 | "판별" |
@@ -225,7 +225,7 @@ export async function POST(req: Request) {
 - **시작**: 시작 버튼 → 안전 확인 팝업(“10분 후 작업이 시작됩니다. 작업공간 내 사람 또는 파손 위험이 있는 물품이 없는지 확인해주세요.”) → [확인]에서 `/api/start` → 관제가 사전 점검 후 10분 카운트다운(로봇 정지) → 시작 설정에서 그리퍼 열기·HOME·닫기 → 재고 실측(옵션) → 스캔. [취소]는 팝업만 닫고 아무것도 보내지 않음.
   - 확인을 누른 시점부터 카운트다운이 시작되고, 대기 상태와 남은 시간을 표시합니다. 관리자 GUI에는 카운트다운을 건너뛰는 바로 시작 기능이 있으며 웹 UI에는 없습니다.
   - 재고 입력 UI는 READY에서 `POST /inventory`로 A~D와 U의 현재 재고를 저장합니다. DB 노드는 `inventory_changed` 내부 명령으로 관제 메모리를 새 값과 동기화합니다. 작업 중에는 수동 변경을 거부합니다.
-  - 기본 UI launch는 `/inventory_check` 서버를 실행하지 않고, 작업 시작 때 DB 재고를 사용합니다. 적재 결과는 박스 처리마다 DB에 저장하고, 완료·오류·정지 때 최종 스냅샷도 기록합니다.
+  - 기본 UI launch는 `/inventory_check` 서버를 실행하지 않고, 작업 시작 때 DB 재고를 사용합니다. `inventory_check:=true`를 지정하면 실물 재고 실측을 수행합니다. 적재 결과는 박스 처리마다 DB에 저장하고, 완료·오류·정지 때 최종 스냅샷도 기록합니다.
   - 카운트다운 중에는 `start_at`으로 남은 시간을 보여 줘요.
   - **카운트다운 취소** 버튼 → `/api/cancel` → 관제가 작업을 시작하지 않고 `READY`로 돌아감. `status = BEFORE`, `reason = '시작 안 함: ui에서 취소'`.
   - 사전 점검에서 막히면 카운트다운 없이 `READY`로 돌아오고 `status = BEFORE`, `reason`에 이유가 남아요 (로그 창에도 FAIL 항목).

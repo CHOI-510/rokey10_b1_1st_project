@@ -53,7 +53,7 @@
 - 관제 ↔ DB: 응답이 필요하면 **Service** (작업 데이터, 재고 반영, 상태 기록), 알리기만 하면 **Topic** (이벤트 로그 `/event_log`)
 - 파트끼리는 직접 통신하지 않고, 파트는 DB와 UI를 모릅니다. 파트 로그도 Feedback으로 관제에 보내면 관제가 `/event_log`로 넘깁니다.
 - 비상정지만 방향이 반대입니다(DB → 관제 `/emergency_stop`). 로봇 정지와 상태 감시는 관제가 두산 서비스를 직접 씁니다.
-- 실물 `system.launch.py`는 `/control`, `/scan`, `/judge`, `/place`, `/database` (+ 관리자 화면 `/control_monitor`)를 실행합니다. `/inventory_check`는 필요할 때 별도 실행하는 선택적 점검 서버이며 기본 UI launch에서는 시작하지 않습니다. 가상·fake 모드에서는 일부 파트가 fake Action 서버로 대체됩니다.
+- 실물 `system.launch.py`는 `/control`, `/scan`, `/judge`, `/place`, `/database` (+ 관리자 화면 `/control_monitor`)를 실행합니다. 기본 UI 흐름은 재고 실측을 생략하지만 `inventory_check:=true`면 `/inventory_check` 실측 서버도 함께 실행합니다. 가상·fake 모드에서는 일부 파트가 fake Action 서버로 대체됩니다.
 
 <!-- TODO: 노드 구조도, 통신 시퀀스 그림 -->
 
@@ -355,7 +355,7 @@ ros2 launch box_bringup system.launch.py mode:=real bringup:=false   # bringup�
 
 - 로봇 bringup은 `box_bringup/launch/robot.launch.py`가 띄웁니다. 수업 패키지 `m0609_rg2_bringup`과 같은 노드인데 **OnRobot 그리퍼 드라이버를 끄고**(`gripper_driver:=false` 기본 — 파트가 Modbus로 직접 쓰므로, 이제 `pkill` 필요 없음) **RViz를 끔**(`rviz:=true`로 켬). 원본 패키지는 고치지 않았습니다.
 - 그 밖의 인자: `start_delay`(기본 600), `db_store`(auto/file/supabase), `gui`, `rosbridge`(기본 true), `rosbridge_port`(기본 9090), `sim_boxes`, `box_count`·`classes`(fake). 고정 파라미터는 `box_bringup/config/params.yaml`.
-- UI launch에서는 재고 실측 Action 서버를 시작하지 않습니다. READY에서 `POST /inventory`로 재고를 설정하고 시작하세요. `BOX_DB_PORT` 또는 rosbridge 포트가 이미 사용 중이면 launch가 중단됩니다. 기존 DB 노드와 중복 실행하지 마세요.
+- UI launch 기본값은 재고 실측 Action 서버를 시작하지 않습니다. 실물 재고를 측정하려면 `inventory_check:=true`를 지정하세요. 기본 UI 흐름은 READY에서 `POST /inventory`로 재고를 설정합니다. `BOX_DB_PORT` 또는 rosbridge 포트가 이미 사용 중이면 launch가 중단됩니다. 기존 DB 노드와 중복 실행하지 마세요.
 - `scan_mode` launch 인자는 없습니다. `mode:=virtual`은 가상 박스 힘/높이 모델을 쓰는 `scan_main`을 실행하고, `fake:=true`는 이동 없는 `fake_scan`을 실행합니다.
 - launch로 띄우면 **터미널 키(s/q)는 안 들어갑니다.** 관제는 READY에서 기다리고, 시작·취소·바로 시작은 관리자 GUI(또는 웹 UI) 버튼으로. 전체 종료는 launch 터미널에서 Ctrl+C 한 번.
 - launch의 순서는 '켜는 순서'일 뿐 준비 완료를 기다리지 않습니다. 파트는 첫 로봇 명령 때 두산 서비스를 기다리고, 관제는 시작 명령을 받으면 사전 점검에서 로봇·그리퍼를 확인하므로 따로 기다릴 필요가 없습니다.

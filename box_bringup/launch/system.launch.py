@@ -20,6 +20,7 @@ mode에 따라 바뀌는 것
   gui:=true            관리자 모니터 GUI
   rosbridge:=true      웹 UI용 rosbridge WebSocket (127.0.0.1에만 바인딩)
   rosbridge_port:=9090 rosbridge WebSocket 포트
+  inventory_check:=false 시작 재고 실측 (real은 실제 점검, virtual/fake는 가짜 점검)
   rviz:=false          RViz (bringup에 포함)
   gripper_driver:=false  OnRobot 드라이버 (켜면 파트의 Modbus 그리퍼와 충돌 — 보통 끔)
   sim_boxes:="420,100,50;510,-20,60"   virtual 탐지 가상 박스
@@ -29,7 +30,7 @@ mode에 따라 바뀌는 것
 관제는 상주 모드: launch가 뜨면 READY에서 시작 명령(웹 UI / 관리자 GUI)을 기다린다.
   launch로 띄우면 터미널 키(s/q)는 들어가지 않는다 → 시작·취소·바로 시작은 관리자 GUI 버튼으로.
   비상정지: 웹 UI / 관리자 GUI / 펜던트. 전체 종료: launch 터미널에서 Ctrl+C 한 번.
-재고는 DB/UI에서 설정하며, 이 UI launch에서는 시작 시 로봇 재고 실측을 실행하지 않는다.
+재고는 DB/UI에서 설정하는 것이 기본이며, inventory_check:=true로 시작 재고 실측을 켤 수 있다.
 DB HTTP(기본 8765) 또는 rosbridge(기본 9090) 포트가 이미 사용 중이면 로봇 노드를 시작하지 않는다.
 ================================================================
 """
@@ -78,6 +79,7 @@ def generate_launch_description():
     # 조건 문자열 조각 (PythonExpression 안에서 평가)
     is_fake = ["'", fake, "'.lower() == 'true'"]
     not_fake = ["'", fake, "'.lower() != 'true'"]
+    inventory_enabled = ["'", LaunchConfiguration('inventory_check'), "'.lower() == 'true'"]
     is_real = ["'", mode, "' == 'real'"]
     is_virtual = ["'", mode, "' == 'virtual'"]
 
@@ -102,6 +104,8 @@ def generate_launch_description():
         DeclareLaunchArgument('gui', default_value='true'),
         DeclareLaunchArgument('rosbridge', default_value='true', description='웹 API용 rosbridge WebSocket'),
         DeclareLaunchArgument('rosbridge_port', default_value='9090'),
+        DeclareLaunchArgument('inventory_check', default_value='false',
+                               description='true: 시작 전 재고 점검 Action 실행'),
         DeclareLaunchArgument('rviz', default_value='false'),
         DeclareLaunchArgument('gripper_driver', default_value='false'),
         DeclareLaunchArgument('sim_boxes', default_value='420,100,50;510,-20,60'),
@@ -140,6 +144,16 @@ def generate_launch_description():
         node('box_control', 'fake_place', when(is_fake)),
     ]
 
+    # 시작 재고 점검은 선택 기능. real에서는 실제 접촉 실측, virtual/fake에서는 fake Action.
+    inventory_check_nodes = [
+        node('box_place', 'inventory_check', when(not_fake, is_real, inventory_enabled),
+             [{'robot_setup': 'on'}]),
+        node('box_control', 'fake_inventory_check', when(is_fake, inventory_enabled),
+             [{'fake_move_robot': False}]),
+        node('box_control', 'fake_inventory_check', when(not_fake, is_virtual, inventory_enabled),
+             [{'fake_move_robot': True}]),
+    ]
+
     # fake runs start with a clean inventory. Real/virtual runs retain DB values.
     database = node('box_database', 'database_main', parameters=[{
         'store': LaunchConfiguration('db_store'),
@@ -148,7 +162,7 @@ def generate_launch_description():
     control = node(
         'box_control', 'control',
         parameters=[{'start_delay_sec': LaunchConfiguration('start_delay'),
-                     'inventory_check_enabled': False,
+                     'inventory_check_enabled': LaunchConfiguration('inventory_check'),
                      'robot_hardware_mode': mode,
                      'robot_monitor': _expr("'fake' if (", *is_fake, ") else 'dsr'")}],
         ros_arguments=['-p', 'gui:=false'])          # GUI는 아래 노드로 따로 (관제가 또 띄우지 않게)
@@ -158,4 +172,5 @@ def generate_launch_description():
 
     return LaunchDescription(args + [
         OpaqueFunction(function=_check_runtime),
-        gripper_env, robot, database, *parts, gui, control, OpaqueFunction(function=_include_rosbridge)])
+        gripper_env, robot, database, *parts, *inventory_check_nodes, gui, control,
+        OpaqueFunction(function=_include_rosbridge)])
