@@ -29,6 +29,7 @@ recovery.py — 관제 복구 동작 모음 (관제 전용)
 ================================================================
 """
 
+import math
 import os
 import time
 
@@ -64,6 +65,30 @@ class Recovery:
         self._robot = None
         self.last_error = ''               # 마지막 실패 이유 (로그용)
         self.skipped = False               # 밀어내기 경로가 없어 움직이지 않고 넘어갔는지 (11/18 임시)
+
+    def prepare_start(self, poses):
+        """시작 카운트다운 종료 후 그리퍼를 열고 HOME으로 이동한 뒤 닫는다."""
+        self.last_error = ''
+        if getattr(self.io, '_monitor', 'dsr') != 'dsr':
+            self.log.info('[start_setting] fake 로봇 모드 — 그리퍼 초기화 동작 생략')
+            return None
+        home = (poses or {}).get('home_j')
+        if (not isinstance(home, (list, tuple)) or len(home) != 6
+                or any(not math.isfinite(float(v)) for v in home)):
+            self.last_error = f'DB HOME 관절 좌표가 유효하지 않음 ({home})'
+            return 'RECOVERY_FAILED'
+        state, name = self.io.robot_state()
+        if state != 1:  # DSR STANDBY
+            self.last_error = f'그리퍼 초기화 전 로봇이 STANDBY가 아님 ({name})'
+            return 'RECOVERY_FAILED'
+
+        def reset_to_home(robot):
+            robot.grip_open()                       # 공용 최대 열기 폭
+            robot.movej(home, vel=100.0, acc=100.0)
+            result = robot.grip_close()
+            self.log.info(f'[start_setting] 최대 열기 → HOME 이동 → 닫기 완료 (폭 {result.width_mm:.1f} mm)')
+
+        return self._run('시작 그리퍼 설정', reset_to_home)
 
     # ------------------------------------------------------------------
     # 로봇 연결 (처음 쓸 때 한 번)

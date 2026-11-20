@@ -20,6 +20,7 @@ mode에 따라 바뀌는 것
   gui:=true            관리자 모니터 GUI
   rviz:=false          RViz (bringup에 포함)
   gripper_driver:=false  OnRobot 드라이버 (켜면 파트의 Modbus 그리퍼와 충돌 — 보통 끔)
+  inventory_check:=true 시작 재고 실측 (false면 DB 재고를 유지하고 스캔부터 시작)
   sim_boxes:="420,100,50;510,-20,60"   virtual 탐지 가상 박스
   box_count:=4 classes:="A,B,B,D"      fake 탐지 박스 수 / fake 판별 순서
 고정 파라미터는 config/params.yaml (관제 progress_timeout_sec, clear_zone ...)
@@ -80,6 +81,8 @@ def generate_launch_description():
         DeclareLaunchArgument('gui', default_value='true'),
         DeclareLaunchArgument('rviz', default_value='false'),
         DeclareLaunchArgument('gripper_driver', default_value='false'),
+        DeclareLaunchArgument('inventory_check', default_value='true',
+                              description='false: 시작 재고 실측을 건너뛰고 스캔부터 시작'),
         DeclareLaunchArgument('sim_boxes', default_value='420,100,50;510,-20,60'),
         DeclareLaunchArgument('box_count', default_value='4'),
         DeclareLaunchArgument('classes', default_value='A,B,B,D'),
@@ -115,9 +118,14 @@ def generate_launch_description():
         node('box_place', 'place_main', when(not_fake, is_virtual), [{'sim_contact': True}]),
         node('box_control', 'fake_place', when(is_fake)),
         # 시작 재고 점검 (실물 모드만 로봇 접촉 점검, 나머지는 fake 응답)
-        node('box_place', 'inventory_check', when(not_fake, is_real), [{'robot_setup': 'on'}]),
-        node('box_control', 'fake_inventory_check', when(is_fake), [{'fake_move_robot': False}]),
-        node('box_control', 'fake_inventory_check', when(is_virtual), [{'fake_move_robot': True}]),
+        node('box_place', 'inventory_check', when(not_fake, is_real,
+             ["'", LaunchConfiguration('inventory_check'), "'.lower() == 'true'"]), [{'robot_setup': 'on'}]),
+        node('box_control', 'fake_inventory_check', when(is_fake,
+             ["'", LaunchConfiguration('inventory_check'), "'.lower() == 'true'"]),
+             [{'fake_move_robot': False}]),
+        node('box_control', 'fake_inventory_check', when(is_virtual,
+             ["'", LaunchConfiguration('inventory_check'), "'.lower() == 'true'"]),
+             [{'fake_move_robot': True}]),
     ]
 
     database = node('box_database', 'database_main', parameters=[{
@@ -127,6 +135,7 @@ def generate_launch_description():
     control = node(
         'box_control', 'control',
         parameters=[{'start_delay_sec': LaunchConfiguration('start_delay'),
+                     'inventory_check_enabled': LaunchConfiguration('inventory_check'),
                      'robot_monitor': _expr("'fake' if (", *is_fake, ") else 'dsr'")}],
         ros_arguments=['-p', 'gui:=false'])          # GUI는 아래 노드로 따로 (관제가 또 띄우지 않게)
 

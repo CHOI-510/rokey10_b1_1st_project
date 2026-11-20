@@ -109,14 +109,16 @@ GOAL_TEXT = {
 }
 
 STATE_LABEL = {
-    'READY': '대기 (시작 가능)', 'BEFORE': '작업전', 'PREFLIGHT': '사전점검', 'STANDBY': '시작대기', 'RUNNING': '작업중',
+    'READY': '대기 (시작 가능)', 'BEFORE': '작업전', 'PREFLIGHT': '사전점검', 'STANDBY': '시작대기',
+    'START_SETTING': '시작 설정', 'RUNNING': '작업중',
     'INVENTORY_CHECK': '시작 재고 점검',
     'SCANNING': '스캔중', 'SCAN_DONE': '스캔완료', 'JUDGING': '판별중', 'JUDGE_DONE': '판별완료',
     'PLACING': '적재중', 'PLACE_DONE': '적재완료', 'CLEARING': '측정존 비우기',
     'DONE': '작업완료', 'ERROR': '오류중단', 'STOPPED': '정지', 'CANCELED': '시작취소',
 }
 STATE_COLOR = {
-    'READY': 'blue', 'BEFORE': 'dim', 'PREFLIGHT': 'orange', 'STANDBY': 'orange', 'RUNNING': 'teal',
+    'READY': 'blue', 'BEFORE': 'dim', 'PREFLIGHT': 'orange', 'STANDBY': 'orange',
+    'START_SETTING': 'orange', 'RUNNING': 'teal',
     'INVENTORY_CHECK': 'teal',
     'SCANNING': 'teal', 'SCAN_DONE': 'teal', 'JUDGING': 'teal', 'JUDGE_DONE': 'teal',
     'PLACING': 'teal', 'PLACE_DONE': 'teal', 'CLEARING': 'orange',

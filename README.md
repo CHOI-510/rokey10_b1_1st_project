@@ -340,6 +340,7 @@ ros2 launch box_bringup system.launch.py mode:=real        # 실제 로봇 (예�
 ros2 launch box_bringup system.launch.py mode:=virtual     # 에뮬레이터 (예전 sodvir). 판별은 fake, 탐지·적재는 가상 박스·가상 접촉
 ros2 launch box_bringup system.launch.py fake:=true db_store:=file start_delay:=10.0   # 로봇 없이 전부 fake
 ros2 launch box_bringup system.launch.py mode:=real bringup:=false   # bringup은 따로 띄운 경우 (sodreal 터미널)
+ros2 launch box_bringup system.launch.py mode:=real inventory_check:=false  # 초기 재고 실측을 건너뛰고 스캔부터 시작 (DB 재고 유지)
 ```
 
 | mode | 로봇 bringup | 탐지 | 판별 | 적재 | 그리퍼 |

@@ -13,8 +13,7 @@ control.py가 GetJobData 직후, 시작 대기(STANDBY) 전에 run_all()을 한 
   4. 로봇 상태         : robot_monitor=dsr(기본)/fake면 STANDBY·MOVING이어야 함 (아니면 FAIL),
                          dsr인데 bringup·dsr_msgs2가 없으면 FAIL,
                          off(로봇 없이 테스트)면 WARN (작업 중 로봇 정지를 감지하지 못함)
-  5. 그리퍼 (11/17)    : RG2 Modbus에 접속해 상태를 읽을 수 있는지 (접속 후 바로 끊음)
-                         11/18: 무언가를 쥐고 있으면 FAIL (지난 작업이 쥔 채 멈춘 경우)
+  5. 그리퍼            : RG2 Modbus 연결·안전 상태 확인 (움직이지 않음)
                          실패하면 FAIL — OnRobot 드라이버가 접속을 잡고 있는지 확인
                          BOX_GRIPPER=fake(에뮬레이터)면 OK(가짜), robot_monitor≠dsr면 확인 안 함(WARN)
   6. 측정존 비우기 (11/17) : 관제 복구 동작(recovery.py) 준비. push_path가 없으면 WARN
@@ -121,7 +120,7 @@ def check_robot(ctrl):
 #   Compute Box는 동시 접속 1개 → 다른 프로그램(OnRobot 드라이버 등)이 잡고 있으면 파트가 그리퍼를 못 씀
 # ----------------------------------------------------------------------
 def check_gripper(ctrl):
-    from box_comm.gripper import RG2, gripper_mode, holding
+    from box_comm.gripper import RG2, gripper_mode
     if gripper_mode() == 'fake':
         return [(OK, '가짜 그리퍼 (BOX_GRIPPER=fake, 에뮬레이터용)')]
     monitor = getattr(ctrl.io, '_monitor', 'dsr')
@@ -134,14 +133,11 @@ def check_gripper(ctrl):
                        '끄세요 (pkill -f OnRobotRGControllerServer), 그리퍼 전원·랜선 확인')]
     try:
         st = g.status()
-        held, _why, width = holding(g, None, check_range=False)
     finally:
         g.close()
     if any(st['safety']):
         return [(FAIL, f'그리퍼 안전 상태 비트 켜짐 {st["safety"]} — Compute Box 확인')]
-    if held:   # 지난 작업이 박스를 쥔 채 멈춘 경우 (비상정지·NO_SLOT 등). 그대로 시작하면 첫 파트가 그리퍼를 열어 떨어뜨림
-        return [(FAIL, f'그리퍼가 무언가를 쥐고 있음 (패드 간격 {width:.1f} mm) — 사람이 빼고 시작하세요')]
-    return [(OK, f'RG2 접속 OK, 비어 있음 (패드 간격 {st["width_mm"]:.1f} mm)')]
+    return [(OK, f'RG2 접속 OK, 안전 상태 정상 (현재 폭 {st["width_mm"]:.1f} mm; 사전점검에서는 움직이지 않음)')]
 
 
 # ----------------------------------------------------------------------

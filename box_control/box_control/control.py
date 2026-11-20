@@ -20,7 +20,8 @@ control.py — 관제 메인 (작업 시퀀스 · 재고 반영 · 중단 처리
   - -p auto_start:=true → 예전처럼 바로 작업 한 번 하고 종료 (fake_run.sh·시험용).
 
 작업 한 번의 흐름 (인터페이스 문서 2.5 관제 상태)
-  BEFORE → GetJobData → PREFLIGHT(사전 점검) → STANDBY(시작 대기) → RUNNING
+  BEFORE → GetJobData → PREFLIGHT(움직임 없는 사전 점검) → STANDBY(시작 대기)
+  → RUNNING → START_SETTING(그리퍼 열기·HOME 이동·닫기)
   → INVENTORY_CHECK(A/B/C/D 시작 수량 측정)
   → [SCANNING → SCAN_DONE → JUDGING → JUDGE_DONE → PLACING → PLACE_DONE
      → UpdateInventory] 반복
@@ -130,6 +131,7 @@ class State(str, Enum):
     BEFORE = 'BEFORE'           # 작업전   (DB 기록)
     PREFLIGHT = 'PREFLIGHT'     # 사전점검 (관제 내부)
     STANDBY = 'STANDBY'         # 시작대기 (카운트다운, 관제 내부)
+    START_SETTING = 'START_SETTING'  # 대기 종료 후 시작 그리퍼 설정
     RUNNING = 'RUNNING'         # 작업중   (DB 기록)
     INVENTORY_CHECK = 'INVENTORY_CHECK'  # 시작 재고 점검
     SCANNING = 'SCANNING'       # 스캔중
@@ -153,6 +155,7 @@ _STATE_LABEL = {
     State.BEFORE: '작업전',
     State.PREFLIGHT: '사전점검',
     State.STANDBY: '시작대기',
+    State.START_SETTING: '시작 설정',
     State.RUNNING: '작업중',
     State.INVENTORY_CHECK: '시작 재고 점검',
     State.SCANNING: '스캔중',
@@ -243,6 +246,7 @@ class Control:
         self.grasp_retry_total = 0         # 이번 작업 전체 재스캔 횟수 (요약용)
         self.recovery = Recovery(io, self.log)                     # 관제 복구 동작 (측정존 비우기 등)
         self.auto_start = bool(io.declare_parameter('auto_start', False).value)   # True: 바로 한 번 실행 후 종료
+        self.inventory_check_enabled = bool(io.declare_parameter('inventory_check_enabled', True).value)
         delay = float(io.declare_parameter('start_delay_sec', -1.0).value)     # 시작 대기 시간(초)
         self.start_delay = delay if delay >= 0 else (10.0 if self.auto_start else 600.0)  # 기본: 상주 10분, 시험 10초
         self._boot_id = time.strftime('%Y%m%d_%H%M%S')
@@ -380,7 +384,10 @@ class Control:
         self.inventory = {c: int(db_inventory.get(c, 0)) for c in INVENTORY_KEYS}
         self.inventory[UNCLASSIFIED] = 0       # 새 작업의 미분류 투하 구역은 0부터 집계
         self._inventory_available = True       # 직전 DB 재고를 기준값으로 보존, 실측 후 A~D 교체
-        self.log.info(f'[control] specs {len(self.specs)}개; 시작 재고는 로봇 점검으로 확인합니다')
+        if self.inventory_check_enabled:
+            self.log.info(f'[control] specs {len(self.specs)}개; 시작 재고는 로봇 점검으로 확인합니다')
+        else:
+            self.log.info(f'[control] specs {len(self.specs)}개; 시작 재고 점검 생략, DB 재고 유지: {self.inventory}')
         self.apply_db_poses(db_poses)
 
         # PREFLIGHT: 시작 전 점검 (box_control/preflight.py)
@@ -400,27 +407,35 @@ class Control:
         self.io.arm_monitor(True)                        # 작업 중에만 로봇 이상·진행 없음을 정지로 처리
         if err := self.io.set_job_status(State.RUNNING.value):
             return self.abort_job(err)
+        self.set_state(State.START_SETTING)
+        if err := self.recovery.prepare_start(self.poses):
+            return self.abort_job(err)
+        start_msg = ('그리퍼 시작 설정 완료, 초기 재고 점검 시작' if self.inventory_check_enabled
+                     else '그리퍼 시작 설정 완료, 초기 재고 점검 생략')
         self.io.log_event('INFO', 'JOB_START',
-                          f'작업 시작 ({self._start_source or "-"}) — 초기 재고 점검 시작', box_id='')
+                          f'작업 시작 ({self._start_source or "-"}) — {start_msg}', box_id='')
 
-        # 시작 재고는 DB 값이 아니라 실물 점검 결과를 기준으로 한다.
-        self.set_state(State.INVENTORY_CHECK)
-        measured, err = self.io.inventory_check(self.poses, self.inventory)
-        if err:
-            self.inventory.update(measured)     # 완료된 분류는 새 실측값, 나머지는 기존 DB 기준값
-            self._inventory_needs_recheck = True
+        if self.inventory_check_enabled:
+            # 시작 재고는 DB 값이 아니라 실물 점검 결과를 기준으로 한다.
+            self.set_state(State.INVENTORY_CHECK)
+            measured, err = self.io.inventory_check(self.poses, self.inventory)
+            if err:
+                self.inventory.update(measured)     # 완료된 분류는 새 실측값, 나머지는 기존 DB 기준값
+                self._inventory_needs_recheck = True
+                self.publish_status()
+                return self.abort_job(err)
+            inventory = {c: 0 for c in INVENTORY_KEYS}
+            inventory.update(measured)
+            self.inventory = inventory
+            self._inventory_needs_recheck = False
             self.publish_status()
-            return self.abort_job(err)
-        inventory = {c: 0 for c in INVENTORY_KEYS}
-        inventory.update(measured)
-        self.inventory = inventory
-        self._inventory_needs_recheck = False
-        self.publish_status()
-        self.log.info(f'[control] 시작 재고 점검 완료: {self.inventory}')
-        if err := self.io.update_inventory(f'{self.job_id}_initial', self.inventory):
-            return self.abort_job(err)
-        self.io.log_event('INFO', 'INVENTORY_CHECK_DONE',
-                          f'시작 재고 점검 완료, DB 반영: {self.inventory}')
+            self.log.info(f'[control] 시작 재고 점검 완료: {self.inventory}')
+            if err := self.io.update_inventory(f'{self.job_id}_initial', self.inventory):
+                return self.abort_job(err)
+            self.io.log_event('INFO', 'INVENTORY_CHECK_DONE',
+                              f'시작 재고 점검 완료, DB 반영: {self.inventory}')
+        else:
+            self.log.warning(f'[control] 시작 재고 점검 생략 — DB 재고를 기준으로 스캔부터 시작: {self.inventory}')
 
         while True:
             box_id = f'{self.job_id}_{self.box_seq + 1:03d}'   # 이번 박스 (적재까지 끝나야 확정)
