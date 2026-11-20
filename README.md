@@ -261,7 +261,7 @@ DONE          최종 재고 스냅샷 저장 → SetJobStatus(DONE) → READY
   - 예외 (11/18): 적재가 잰 수량이 1 ~ 구역 정원(6) 밖이면 `place_interface`가 **작업을 실패시키지 않고** `count = 0`(수량 확인 불가)으로 보냅니다(박스는 이미 놓였으므로). 관제는 0을 받으면 **반영하지 않고** 이전 값을 유지하며 `COUNT_MISMATCH`에 '적재 현황 확인 불가'를 남깁니다. 같은 클래스를 다음에 적재할 때 측정값으로 바로잡힙니다.
 - `DONE` 상태 기록이 실패하면 에러 로그를 남깁니다 (UI에는 `RUNNING`으로 남아 있을 수 있음).
 - **미분류 (v0.5)**: `U`는 DB/UI 재고를 시작값으로 사용합니다. `result_class`가 `U`이거나 적재 구역 만재로 U 위치에 보냈으면 비교 없이 관제 메모리의 U를 +1 합니다 (적재는 `count = 0`). 각 박스 처리 후와 종료·중단 때 DB에 저장합니다.
-- **집기 실패 (11/17)**: 파트가 `GRIP_RETRY`(3)번 다시 집어 보고 포기하면 `GRASP_FAILED`로 Goal을 끝냅니다(그리퍼 열고 안전 높이). 관제는 작업을 끝내지 않고, 판별·적재였으면 **`CLEARING`(측정존비우기)** 상태에서 관제가 직접 로봇을 움직여 측정존 박스를 스캔 공간으로 밀어내고 비었는지 확인합니다(`box_control/recovery.py`, 관제 복구 동작 모음 — 나중에 예외 처리 동작도 여기에). 그 뒤 `BOX_RETRY` 경고를 남기고 **공간 스캔부터 다시** 합니다(재고·박스 번호 그대로). 연속 `RECOVER_LIMIT`(3)번을 넘으면 `ERROR : Too many pick failures`, 측정존을 못 비우면 `ERROR : Measure zone not cleared`. 박스 하나를 적재까지 끝내면 연속 횟수는 0. 밀어내기 경로(`common.RECOVERY push_path`)는 아직 미정 → **11/18부터 비우기를 fake로 넘기고(WARN 로그 `ZONE_CLEAR`, 대기 없음) 바로 재스캔**합니다. 스캔하는 동안 사람이 측정존 박스를 치웁니다. 관제 파라미터 `clear_zone`: `auto`(기본: `robot_monitor=dsr`면 실제 로봇, 아니면 `fake_ok`) / `robot` / `fake_ok` / `fake_fail`.
+- **집기 실패 (11/17)**: 파트가 `GRIP_RETRY`(3)번 다시 집어 보고 포기하면 `GRASP_FAILED`로 Goal을 끝냅니다(그리퍼 열고 안전 높이). 관제는 작업을 끝내지 않고, 판별·적재였으면 **`CLEARING`(측정존비우기)** 상태에서 `recovery.TOOL_SWEEP`의 고정 경로로 도구를 집어 측정존을 쓸고 반납합니다. 동작이 끝나면 `BOX_RETRY` 경고 후 **공간 스캔부터 다시** 합니다(재고·박스 번호 그대로). 잔류 물체 유무는 다음 탐지에서 확인합니다. 연속 `RECOVER_LIMIT`(3)번을 넘거나 복구 동작이 실패하면 작업을 종료합니다. `clear_zone`은 `auto`(기본: `robot_monitor=dsr`면 실물 도구 경로, 아니면 `fake_ok`) / `robot` / `fake_ok` / `fake_fail`입니다.
 - **중단 기록**: 오류로 중단되면 해당 파트의 마지막 Feedback stage와 경과 시간을 함께 로그로 남깁니다. (예: `SCANNING (스캔중) 단계에서 중단: GRASP_FAILED | /scan 마지막 stage="picking" (4.2초 전)`)
 - `box_id`는 관제가 `<작업 시작 시각>_<순번>` 형식으로 붙입니다. (예: `20261114_130512_001`)
   관제를 다시 실행해도 이전 작업과 겹치지 않으므로, DB 노드를 켜 둔 채 관제만 재실행해도 됩니다.
@@ -275,7 +275,7 @@ DONE          최종 재고 스냅샷 저장 → SetJobStatus(DONE) → READY
 | 적재 구역 | A~D 중 1단 x·y가 없는 구역 | 구역 좌표가 (0, 0) |
 | 로봇 상태 | bringup 없음, STANDBY·MOVING이 아님 | `robot_monitor=off` |
 | 그리퍼 | RG2 Modbus 접속 실패(OnRobot 드라이버가 잡고 있음 등), 안전 비트 켜짐 | `robot_monitor`≠dsr (확인 안 함). `BOX_GRIPPER=fake`면 OK. 그리퍼가 물체를 쥐고 있는지는 시작 거부 사유가 아닙니다. |
-| 측정존 비우기 (11/17) | | 밀어내기 경로 미정 |
+| 측정존 비우기 | 복구 도구 경로 실행 실패 | robot 모드에서 지정 경로를 실행 |
 
 고정 좌표(HOME, 측정존, 적재 구역 1단 x·y)는 **DB가 기준**입니다(v0.3, 적재 구역은 v0.4). 관제는 `GetJobData`로 받은 DB 값으로 자기 좌표를 **무조건 덮어쓰고**(비교·중단 없음, 로그만 남김), 그 값을 `/scan`, `/judge`, `/place` Goal에 매번 실어 보내고, 각 파트는 그 값(작업 함수의 `poses` 인자, 예전 방식은 `self.poses`)으로 움직입니다. `box_comm/common.py`의 `FIXED_POSES`는 **기본값**으로, Goal에 좌표가 없을 때(팀원이 혼자 `send_goal`로 테스트할 때)만 쓰입니다.
 WARN·FAIL 항목과 통과/실패 요약은 이벤트 로그(`code = PREFLIGHT`)로도 보내서 웹·관리자 GUI 로그 창에 보입니다 (11/18).
@@ -468,7 +468,7 @@ ros2 run box_place place_main --ros-args -p sim_contact:=true        # 에뮬레
 - **집은 뒤 들어 올리기 (11/18)**: 40N이 다 걸리기 전에 들면 박스가 핑거 사이로 빠져서, 탐지·적재는 다 조인 뒤 `GRIPPER settle_after_grip_s`(0.5초) 기다리고 처음 `lift_slow_mm`(15mm)은 `lift_slow_vel`(20mm/s)로 천천히 듭니다.
 - **폭 레지스터 부호 (11/18 수정)**: 패드 사이 폭(레지스터 275)은 부호 있는 값입니다. 부호 없이 읽으면 그리퍼가 닫힌 채 접속할 때 패드 두께 합이 −6543mm가 됐습니다(판별 실물, 판별 담당 제보). `gripper.py`에서 부호 있게 읽고, 그래도 패드 합이 0~30mm 밖이면 오프셋 × 2로 씁니다.
 - **'닫으면서 핑거 끝 높이 유지'(sync 집기)** 는 `box_comm/sync_grip.py` + `common.SYNC_GRIP`(판별 폭 측정·적재 측정존 집기 공용). 탐지는 고정 높이(윗면 − 15mm)로 닫음 — 넓은 면을 잡으면 실제 무는 깊이가 얕아짐(이슈 25).
-- **다시 집기** (`GRIP_RETRY` 3): 탐지는 각도 0/45/90°, 판별·적재는 같은 자리·같은 자세로. 판별 가로 하강에서 핑거가 박스에 얹히면 같은 자리로는 다시 해도 같으므로 바로 `GRASP_FAILED`. 최종 실패: 탐지 → 관제가 바로 재스캔, 판별·적재 → 관제가 측정존 비우기 → 재스캔. **밀어내기 경로(`RECOVERY push_path`)가 아직 없어서 비우기는 fake**(WARN 로그만, 대기 없음) — 스캔하는 동안 사람이 측정존을 치웁니다.
+- **복구 후 재스캔**: `GRASP_FAILED`면 탐지는 바로, 판별·적재는 측정존을 쓸고 다시 스캔합니다. 판별 Action이 `NOT_FOUND`로 실패한 경우도 측정존을 쓸고 재스캔합니다. 둘 다 연속 `RECOVER_LIMIT`회까지 허용합니다. 복구 도구를 잡은 상태에서 동작이 실패하면 자동 개방하지 않으므로 현장 확인 후 재시작해야 합니다.
 - Compute Box는 **동시 접속 1개**입니다. `robot`(DsrIO)이 그리퍼 명령을 처음 쓸 때 접속하고 Goal이 끝나면 끊어서, 탐지·판별·적재가 번갈아 씁니다.
 - **실제 로봇**: `m0609_rg2_bringup mode:=real`로 띄우면 OnRobot 드라이버(`OnRobotRGControllerServer`)가 먼저 접속을 잡습니다 → `ros2 node list | grep -i onrobot`으로 확인하고 `pkill -f OnRobotRGControllerServer`로 끕니다(RViz 손가락 표시만 멈춤). 사전 점검이 접속을 확인해 막혀 있으면 FAIL.
 - **에뮬레이터·fake**: 환경변수 `BOX_GRIPPER=fake` → 가짜 그리퍼(닫으면 잡힌 것으로). `BOX_FAKE_GRIP_FAILS=N`이면 처음 N번 닫기가 빈손. `fake_run.sh`는 기본 fake(`PLACE_MAIN=1`·`SCAN_MAIN=1`을 SIM 없이 돌리거나 `JUDGE_MAIN=1`일 때만 modbus).

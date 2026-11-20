@@ -16,7 +16,7 @@ control.py가 GetJobData 직후, 시작 대기(STANDBY) 전에 run_all()을 한 
   5. 그리퍼            : RG2 Modbus 연결·안전 상태 확인 (움직이지 않음)
                          실패하면 FAIL — OnRobot 드라이버가 접속을 잡고 있는지 확인
                          BOX_GRIPPER=fake(에뮬레이터)면 OK(가짜), robot_monitor≠dsr면 확인 안 함(WARN)
-  6. 측정존 비우기 (11/17) : 관제 복구 동작(recovery.py) 준비. push_path가 없으면 WARN
+  6. 측정존 비우기 : robot 모드에서 고정 도구 쓸기 경로를 사용
                          (판별·적재 집기 실패 시 측정존을 못 비워 작업이 바로 종료됨). fake 모드면 OK
 
 결과 기록: 터미널 로그 + WARN·FAIL 항목과 통과/실패 요약은 /event_log(code PREFLIGHT)로도 보냄 → 웹 로그 창 (11/18)
@@ -141,17 +141,13 @@ def check_gripper(ctrl):
 
 
 # ----------------------------------------------------------------------
-# 점검 6: 측정존 비우기 경로 (집기 실패 복구, 11/17)
+# 점검 6: 측정존 비우기 경로 (집기 실패 복구)
 # ----------------------------------------------------------------------
 def check_recovery(ctrl):
-    from box_comm.common import RECOVERY
     mode = getattr(getattr(ctrl, 'recovery', None), 'mode', 'robot')
     if mode != 'robot':
         return [(OK, f'측정존 비우기 {mode} (로봇 안 움직임, 시험용)')]
-    if not RECOVERY['push_path']:
-        return [(WARN, '측정존 밀어내기 경로 미정 (common.RECOVERY push_path) — 판별·적재에서 못 집으면 '
-                       '비우기를 건너뛰고(fake) 바로 재스캔합니다. 스캔하는 동안 사람이 측정존을 치워 주세요')]
-    return [(OK, f'측정존 밀어내기 경로 {len(RECOVERY["push_path"])}점')]
+    return [(OK, '측정존 비우기 고정 도구 쓸기 경로 (recovery.TOOL_SWEEP)')]
 
 
 CHECKS = [

@@ -403,7 +403,7 @@ class MonitorGui:
         t2, self.t_time = self.tile(tiles, '남은 시간', '—')
         t3, self.t_cond = self.tile(tiles, '대기 상태', '—')
         t4, self.t_box = self.tile(tiles, '현재 박스', '—')
-        t5, self.t_retry = self.tile(tiles, '집기 실패 재스캔', '—', 'orange')
+        t5, self.t_retry = self.tile(tiles, '복구 후 재스캔', '—', 'orange')
         t6, self.t_mis = self.tile(tiles, '재고 불일치', '—', 'green')
         for i, t in enumerate((t1, t2, t3, t4, t5, t6)):
             t.grid(row=i // 3, column=i % 3, sticky='nsew', padx=(0 if i % 3 == 0 else 6, 0),

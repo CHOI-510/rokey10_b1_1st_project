@@ -96,8 +96,8 @@ ERROR_TEXT = {
     'CANCELED': 'Canceled',
     'NO_PROGRESS': 'No progress',
     # 관제 복구 (box_control/recovery.py, 11/17)
-    'RECOVERY_FAILED': 'Measure zone not cleared',   # 집기 실패 뒤 측정존을 비우지 못함 → 측정존 사용 불가
-    'RETRY_LIMIT': 'Too many pick failures',         # 집기 실패 재스캔 연속 한도 초과
+    'RECOVERY_FAILED': 'Measure zone not cleared',   # 복구 후 측정존을 비우지 못함 → 측정존 사용 불가
+    'RETRY_LIMIT': 'Too many recovery retries',     # 복구 후 재스캔 연속 한도 초과
     # 관제 쪽 통신 오류 (control_interface)
     'SERVER_DOWN': 'No response',
     'REJECTED': 'Goal rejected',
@@ -340,21 +340,19 @@ SYNC_GRIP = {
 }
 
 # ----------------------------------------------------------------------
-# 집기 실패 복구 — 측정존 비우기 (관제 box_control/recovery.py, 판별·적재 GRASP_FAILED 뒤 관제가 실행)
-#   1. 그리퍼 열고 안전 높이로
-#   2. push_path를 차례로 movel (그리퍼 닫고 박스를 스캔 공간으로 밀어냄)
-#   3. 측정존 확인: 측정존 위에서 그리퍼를 열고 바닥 + probe_above_floor_mm까지 내려가 닫아 봄 → 잡히면 아직 박스가 있음
-#   push_path가 None(미정)이면 밀지 않고 RECOVERY_FAILED → 작업 종료 (사람이 측정존을 비움)
+# 복구 — 측정존 비우기 (관제 box_control/recovery.py, 판별 NOT_FOUND 또는 판별·적재 GRASP_FAILED 뒤 실행)
+#   실물 도구 경로와 속도·파지 설정은 recovery.TOOL_SWEEP에 정의한다.
+#   아래 push_path는 이전 복구 방식과의 설정 호환용이며 현재 실물 도구 경로에서는 사용하지 않는다.
 # ----------------------------------------------------------------------
 RECOVERY = {
-    'push_path': None,           # [[x, y, z, a, b, c], ...] [mm, deg, base] — 판별·적재와 실물 보고 정할 것
+    'push_path': None,           # 이전 경로 호환용. 현재 실물 도구 경로는 recovery.TOOL_SWEEP 사용
     'safe_z': TRAVEL_Z,          # 옆으로 움직이기 전 TCP 높이 [mm]
     'speed': 60.0,               # 직선 이동 속도 [mm/s]
     'acc': 100.0,
     'probe_orientation': None,   # 측정존 확인 때 그리퍼 자세 [a, b, c] (None이면 지금 자세 유지)
     'probe_above_floor_mm': 5.0, # 측정존 확인 때 TCP 높이 = 측정존 바닥 z + 이 값 (핑거 끝이 바닥에 닿지 않게, 11/18)
 }
-RECOVER_LIMIT = 3       # 관제: 집기 실패 → 재스캔을 연속 몇 번까지 허용 (넘으면 RETRY_LIMIT로 종료)
+RECOVER_LIMIT = 3       # 관제: 복구 후 재스캔을 연속 몇 번까지 허용 (넘으면 RETRY_LIMIT로 종료)
 
 # ----------------------------------------------------------------------
 # 정지 기능 (관제 control_interface가 사용)

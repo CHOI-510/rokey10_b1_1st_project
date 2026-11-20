@@ -300,7 +300,7 @@ self.robot.movel(target, vel=60, acc=100)
 | 단계 | 누가 | 하는 일 |
 | --- | --- | --- |
 | ① 다시 집기 | 파트 | `res = self.robot.grip_close()` → `res.grabbed`가 False면 다시 시도. 시도마다 `report.log('집기 실패, 재시도 2/3', 'WARN')` (UI 로그). 최대 `common.GRIP_RETRY`(3)번. 그래도 안 되면 그리퍼를 열고 `raise PartError('GRASP_FAILED', '3회 실패')` |
-| ② 측정존 비우기 | **관제** (`box_control/recovery.py`, 판별·적재만) | 파트 Goal이 끝난 뒤 관제가 직접 로봇을 움직여 측정존 박스를 스캔 공간으로 밀어내고(`common.RECOVERY push_path`), 측정존을 그리퍼로 잡아 봐서 비었는지 확인. 못 비우면 `ERROR : Measure zone not cleared`. **11/18: 경로 미정이라 fake**(WARN 로그만 남기고 성공 처리 → 스캔하는 동안 사람이 치움) |
+| ② 측정존 비우기 | **관제** (`box_control/recovery.py`, 판별·적재만) | 파트 Goal이 끝난 뒤 관제가 `recovery.TOOL_SWEEP`에 지정된 도구를 집어 측정존을 쓸고 반납. 도구 파지·모션 실패 시 `RECOVERY_FAILED`; 실패 중 자동 개방하지 않음. 동작 성공은 경로 완료를 뜻하며 잔류 물체는 다음 탐지에서 확인 |
 | ③ 흐름 되돌리기 | 관제 | `GRASP_FAILED`면 작업을 끝내지 않고 **공간 스캔부터 다시** (재고·박스 번호 그대로, UI 로그 `BOX_RETRY`). 연속 `RECOVER_LIMIT`(3)번을 넘거나 `RECOVERY_FAILED`면 작업 종료(`ERROR`) |
 
 파트별 다시 집기 (11/17 정함)
@@ -330,7 +330,7 @@ else:
 ```
 
 - `GRASP_FAILED`는 **"다시 집어 보고 포기했다"는 뜻으로만** 씁니다. 예상 못 한 오류에 쓰면 관제가 재스캔을 반복합니다.
-- 측정존 밀어내기 경로(`push_path`)가 아직 미정이라, 지금은 판별·적재에서 못 집으면 **비우기를 fake로 넘기고 바로 재스캔**합니다(사전 점검 WARN, 이벤트 로그 `ZONE_CLEAR` WARN). 스캔하는 동안 사람이 측정존 박스를 치워 주세요. 실물로 경로를 정하면 `common.RECOVERY`에 넣습니다.
+- 측정존 도구 쓸기 경로는 `recovery.TOOL_SWEEP`의 고정 좌표와 `GripperDA_v1` TCP를 사용합니다. 실제 로봇에서는 검증된 좌표·도구만 사용하고, 복구 도구를 잡은 상태에서 실패하면 자동 개방하지 않으므로 수동 확인이 필요합니다.
 - 그리퍼는 세 파트 모두 **Modbus**(`box_comm/gripper.py`)입니다. Compute Box는 동시 접속이 1개라 `robot`이 Goal 동안만 접속을 열고 닫습니다. OnRobot 드라이버(`m0609_rg2_bringup mode:=real`)가 떠 있으면 접속이 안 되니 `pkill -f OnRobotRGControllerServer`로 끕니다. 에뮬레이터·fake 시험은 `BOX_GRIPPER=fake`(가짜 그리퍼, `fake_run.sh`가 설정).
 
 ### 2-4. 그 밖의 규칙

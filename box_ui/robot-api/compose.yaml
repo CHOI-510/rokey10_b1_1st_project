@@ -4,13 +4,14 @@ services:
     build: .
     container_name: robot-fastapi
     restart: unless-stopped
-    ports:
-      - "8000:8000"
+    # On Linux, share the host network so this container can reach the
+    # localhost-only rosbridge and box_database started by system.launch.py.
+    network_mode: host
     environment:
       ROBOT_BACKEND: rosbridge
-      ROSBRIDGE_URL: ws://host.docker.internal:9090
+      ROSBRIDGE_URL: ws://127.0.0.1:9090
       ROSBRIDGE_TIMEOUT: "8"
-      BOX_API_URL: http://host.docker.internal:8765
+      BOX_API_URL: http://127.0.0.1:8765
       BOX_API_TIMEOUT: "8"
       BOX_START_TOKEN: ${BOX_START_TOKEN:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
