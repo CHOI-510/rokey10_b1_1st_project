@@ -123,7 +123,16 @@ CLASS_LAYOUT = {
 }
 
 
+# U 투하 좌표는 읽어 온 JSON/내장 CONFIG의 이전 값보다 우선 적용한다.
+UNCLASSIFIED_RELEASE_POSE = [800.0, -118.0, 183.0, 171.0, -118.0, -92.0]
+UNCLASSIFIED_APPROACH_Z = 203.0
+
+
 def apply_class_layout(c):
+    c.setdefault('unclassified', {}).update({
+        'release_pose': list(UNCLASSIFIED_RELEASE_POSE),
+        'approach_z': UNCLASSIFIED_APPROACH_Z,
+    })
     for category, fields in CLASS_LAYOUT.items():
         if category in c['classes']:
             c['classes'][category].update({key: list(value) for key, value in fields.items()})
