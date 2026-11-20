@@ -46,7 +46,7 @@ DEFAULT_CONFIG = {'travel_z': 160.0,
  'contact_sign': 1,
  'min_probe_tcp_z': 0.0,
  'max_probe_travel_mm': 160.0,
- 'contact_force_n': 6.0,
+ 'contact_force_n': 3.0,
  'desired_force_n': 8.0,
  'abort_force_n': 9.0,
  'abs_force_limit_n': 20.0,
@@ -69,6 +69,7 @@ DEFAULT_CONFIG = {'travel_z': 160.0,
 
 # 외부 JSON에 이전 1N 값이 남아 있어도 이번 시험은 3N을 적용한다.
 BASELINE_MAX_SPAN_N = 3.0
+CONTACT_FORCE_N = 3.0  # 실측: 하강 중 약 1.4~1.6N, 바닥 접촉 약 4.1~5.6N
 
 CLASS_LAYOUT = {
     'A': {'slot_offset_mm': [0.0, -45.0], 'orientation': [120.0, 180.0, 120.0]},
@@ -111,6 +112,7 @@ def count_from_contact(z, empty_z, height, tolerance, levels):
 
 def validate(c):
     c['baseline_max_span_n'] = BASELINE_MAX_SPAN_N
+    c['contact_force_n'] = CONTACT_FORCE_N  # 외부 JSON에 남은 이전 6N보다 우선
     c.setdefault('baseline_settle_s', 1.0)
     c.setdefault('baseline_attempts', 3)
     c.setdefault('probe_log_period_s', 1.0)
