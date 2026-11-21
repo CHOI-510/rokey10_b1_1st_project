@@ -8,11 +8,12 @@ const specifications = [
   { loc_id: "B", label: "규격 B", color: "bg-[#3d82f6]" },
   { loc_id: "C", label: "규격 C", color: "bg-[#f59a08]" },
   { loc_id: "D", label: "규격 D", color: "bg-[#8b5cf6]" },
+  { loc_id: "U", label: "미분류 U", color: "bg-[#94a3b8]" },
 ] as const;
 
 type Counts = Record<(typeof specifications)[number]["loc_id"], number>;
 
-const emptyCounts: Counts = { A: 0, B: 0, C: 0, D: 0 };
+const emptyCounts: Counts = { A: 0, B: 0, C: 0, D: 0, U: 0 };
 
 export default function StockStatus({ onConnectionChange }: { onConnectionChange: (connected: boolean) => void }) {
   const [counts, setCounts] = useState<Counts>(emptyCounts);
@@ -20,7 +21,7 @@ export default function StockStatus({ onConnectionChange }: { onConnectionChange
   const [inventoryRowCount, setInventoryRowCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [labels, setLabels] = useState<Record<keyof Counts, string>>({ A: "규격 A", B: "규격 B", C: "규격 C", D: "규격 D" });
+  const [labels, setLabels] = useState<Record<keyof Counts, string>>({ A: "규격 A", B: "규격 B", C: "규격 C", D: "규격 D", U: "미분류 U" });
 
   useEffect(() => {
     let active = true;
@@ -36,8 +37,8 @@ export default function StockStatus({ onConnectionChange }: { onConnectionChange
         if (queryError) throw queryError;
         if (!active) return;
 
-        const nextCounts: Counts = { A: 0, B: 0, C: 0, D: 0 };
-        const nextLabels: Record<keyof Counts, string> = { A: "규격 A", B: "규격 B", C: "규격 C", D: "규격 D" };
+        const nextCounts: Counts = { A: 0, B: 0, C: 0, D: 0, U: 0 };
+        const nextLabels: Record<keyof Counts, string> = { A: "규격 A", B: "규격 B", C: "규격 C", D: "규격 D", U: "미분류 U" };
         const unknownLocations = new Set<string>();
 
         for (const row of data ?? []) {
@@ -48,7 +49,7 @@ export default function StockStatus({ onConnectionChange }: { onConnectionChange
           if (specification) {
             nextCounts[specification.loc_id] += Number.isFinite(count) ? Math.max(0, count) : 0;
             const standard = String(row.standard ?? "").trim();
-            if (standard) nextLabels[specification.loc_id] = standard;
+            if (standard && specification.loc_id !== "U") nextLabels[specification.loc_id] = standard;
           } else {
             unknownLocations.add(locId || "(빈 loc_id)");
           }
@@ -73,7 +74,7 @@ export default function StockStatus({ onConnectionChange }: { onConnectionChange
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       await loadInventory();
-      if (active) timer = setTimeout(poll, 15_000);
+      if (active) timer = setTimeout(poll, 1000);
     };
     void poll();
 

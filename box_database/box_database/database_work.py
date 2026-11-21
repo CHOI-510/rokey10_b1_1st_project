@@ -35,6 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from box_comm.common import FIXED_POSES, INVENTORY_KEYS, REMOTE_JOB_COMMANDS, VALID_CLASSES, stack_capacity
 from box_database import database_config as cfg
 from box_database.database_store import make_stores
+from box_database.log_sync import LogSync
 
 
 def now_iso(offset_sec=0.0):
@@ -62,6 +63,8 @@ class DatabaseWork:
         self._log_job = None         # 로그 파일 중복 거르기 (작업별 마지막 seq)
         self._log_seq = 0
         self._log_lock = threading.Lock()
+        self._log_sync = LogSync(cfg.LOG_DIR, cfg.SUPABASE_URL, cfg.SUPABASE_KEY, self.log)
+        self._log_sync.start()
 
         self._inv_updates = 0        # 이 노드가 받은 재고 반영 횟수 (시험용 estop_at)
         self._db_down = False        # 저장소 쓰기 실패 중 (재고·상태를 모아 두고 다시 보내는 중)
@@ -313,9 +316,10 @@ class DatabaseWork:
         return 0
 
     def _append_log(self, job, event):
-        line = dict(event, received_at=now_iso())
+        line = dict(event, received_at=now_iso(), control_stage=self.stage)
         with open(self._log_path(job), 'a', encoding='utf-8') as f:
             f.write(json.dumps(line, ensure_ascii=False) + '\n')
+        self._log_sync.wake.set()
 
     def _log_ui_command(self, command, ok, message):
         """UI 버튼 기록 (seq 0 = 관제가 보낸 줄이 아님)"""
