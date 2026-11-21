@@ -1,6 +1,6 @@
 import JobLogSummary from "./JobLogSummary";
 import StockStatus from "./StockStatus";
-import StorageImage from "./StorageImage";
+import RobotLiveView from "./robot-view/RobotLiveView";
 import WorkStatus from "./WorkStatus";
 import type { WorkPhase } from "./types";
 
@@ -31,7 +31,7 @@ export default function DashboardGrid({ phase, countdownSeconds, elapsedSeconds,
       <WorkStatus phase={phase} countdownSeconds={countdownSeconds} elapsedSeconds={elapsedSeconds} onRecover={onRecover} onStartImmediately={onStartImmediately} recoveryDisabled={recoveryDisabled} immediateStartDisabled={immediateStartDisabled} stage={stage} boxSeq={boxSeq} jobId={jobId} stop={stop} reason={reason} onCancel={onCancel} commandPending={commandPending} />
       <JobLogSummary />
       <StockStatus onConnectionChange={onDbConnectionChange} />
-      <StorageImage />
+      <RobotLiveView stage={stage} />
     </section>
   );
 }
