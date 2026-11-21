@@ -21,11 +21,48 @@ database_store.py — 저장소 두 가지 (같은 함수 4개)
 ================================================================
 """
 import json
+import math
 import os
 import threading
 from datetime import datetime, timezone
 
 from box_database import database_config as cfg
+
+
+def _location_from_row(row):
+    """Map public.loc(id, coords) to the robot's internal location format."""
+    name = str(row.get('id') or '').strip()
+    if not name:
+        raise ValueError('loc.id가 비어 있습니다.')
+    if name.upper() in ('A', 'B', 'C', 'D', 'U'):
+        name = name.upper()
+    elif name.lower() == 'measure_zone':
+        name = 'measure_zone'
+    coords = row.get('coords')
+    if isinstance(coords, str):
+        try:
+            coords = json.loads(coords)
+        except (ValueError, TypeError):
+            # Also accept comma-separated coordinates, optionally in parentheses.
+            coords = coords.strip().removeprefix('(').removesuffix(')').split(',')
+    if isinstance(coords, dict):
+        if 'x' not in coords or 'y' not in coords:
+            raise ValueError(f'loc[{name}].coords에 x, y가 필요합니다.')
+        coords = [coords['x'], coords['y'], coords.get('z')]
+    if not isinstance(coords, (list, tuple)) or len(coords) not in (2, 3, 6):
+        raise ValueError(f'loc[{name}].coords는 [x,y], [x,y,z] 또는 6개 pose 값이어야 합니다.')
+    try:
+        if any(isinstance(value, bool) for value in coords):
+            raise ValueError('boolean coordinate')
+        values = [float(value) if value is not None else None for value in coords]
+        if any(value is not None and not math.isfinite(value) for value in values):
+            raise ValueError('non-finite coordinate')
+        if values[0] is None or values[1] is None or (len(values) == 6 and any(v is None for v in values)):
+            raise ValueError('missing coordinate')
+    except (ValueError, TypeError, OverflowError) as error:
+        raise ValueError(f'loc[{name}].coords에 유효한 숫자 좌표가 필요합니다.') from error
+    return {'name': name, 'x': values[0], 'y': values[1],
+            'z': values[2] if len(values) >= 3 else None}
 
 
 class SupabaseStore:
@@ -48,7 +85,8 @@ class SupabaseStore:
                 .order('class_id').execute().data)
 
     def locs(self):
-        return self.sb.table(cfg.TABLE_LOC).select('name,x,y,z').execute().data
+        rows = self.sb.table(cfg.TABLE_LOC).select('id,coords').execute().data
+        return [_location_from_row(row) for row in rows]
 
     def get_state(self):
         rows = (self.sb.table(cfg.TABLE_STATE).select('*')
