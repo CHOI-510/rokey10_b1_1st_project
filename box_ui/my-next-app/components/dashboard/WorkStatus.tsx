@@ -52,7 +52,7 @@ export default function WorkStatus({ phase, countdownSeconds, elapsedSeconds, on
   const partIndex = phase === "unknown" ? -1 : ["SCANNING", "SCAN_DONE"].includes(stage) ? 0
     : ["JUDGING", "JUDGE_DONE"].includes(stage) ? 1 : ["PLACING", "PLACE_DONE"].includes(stage) ? 2 : -1;
   return (
-    <section className="@container/status flex min-h-[300px] min-w-0 flex-col rounded-[20px] border border-[#e1e8ef] bg-white p-[clamp(14px,5cqi,24px)] shadow-sm max-[560px]:min-h-0 max-[560px]:rounded-2xl">
+    <section className="@container/status flex h-auto min-h-[300px] min-w-0 flex-col [&>*]:shrink-0 rounded-[20px] border border-[#e1e8ef] bg-white p-[clamp(14px,5cqi,24px)] shadow-sm max-[560px]:min-h-0 max-[560px]:rounded-2xl">
       <div className="flex items-center justify-between gap-3">
         <h2 className="m-0 text-[clamp(14px,4cqi,17px)] font-bold text-[#566477]">작업 상태</h2>
         <span className="min-w-0 truncate text-[clamp(11px,3.2cqi,14px)] text-[#97a3b4]">{jobId ? `job ${jobId}` : "job —"}</span>
@@ -85,27 +85,36 @@ export default function WorkStatus({ phase, countdownSeconds, elapsedSeconds, on
         </div>
       </div>
 
-      {reason && <p className="mt-3 break-words text-xs text-[#8794a6]">{reason}</p>}
+      {/* {reason && <p className="mt-3 break-words text-xs text-[#8794a6]">{reason}</p>} */}
 
-      {phase === "emergency" && (
-        <div className="mt-auto flex w-full flex-col items-end gap-2 pt-[clamp(14px,5cqi,24px)]">
-          <button className="max-w-full rounded-xl bg-[#117d75] px-[clamp(16px,5cqi,24px)] py-[clamp(9px,3cqi,12px)] text-[clamp(12px,3.5cqi,14px)] font-bold text-white hover:bg-[#0e6e67] disabled:cursor-not-allowed disabled:opacity-50" type="button" onClick={onRecover} disabled={recoveryDisabled}>복구</button>
-          {recoveryDisabled && <p className="m-0 text-xs text-[#8794a6]">관제가 대기 상태로 돌아오면 복구할 수 있습니다.</p>}
-        </div>
-      )}
-
-      {phase === "countdown" && (
-        <button type="button" onClick={onCancel} disabled={commandPending} className="mt-4 self-end rounded-xl border border-[#d9e1e9] px-4 py-2 text-sm text-[#586577] disabled:opacity-50">시작 취소</button>
-      )}
-      {phase === "countdown" && stage === "STANDBY" && (
-        <div className="mt-auto flex w-full flex-wrap items-center justify-end gap-2 pt-[clamp(14px,5cqi,24px)]">
-          <button
-            className="max-w-full rounded-xl bg-[#117d75] px-[clamp(16px,5cqi,24px)] py-[clamp(9px,3cqi,12px)] text-[clamp(12px,3.5cqi,14px)] font-bold text-white hover:bg-[#0e6e67] disabled:cursor-not-allowed disabled:opacity-50"
-            type="button"
-            onClick={onStartImmediately}
-            disabled={immediateStartDisabled}
-          >바로 시작</button>
-          {immediateStartDisabled && <p className="m-0 w-full text-right text-xs text-[#8794a6]">시작 요청 처리 중입니다.</p>}
+      {(phase === "emergency" || phase === "countdown") && (
+        <div className="mt-auto w-full min-w-0 shrink-0 pt-[clamp(14px,5cqi,24px)]">
+          <div className="flex w-full min-w-0 flex-col gap-2 @min-[320px]/status:flex-row @min-[320px]/status:flex-wrap @min-[320px]/status:justify-end">
+            {phase === "emergency" && (
+              <button
+                className="min-h-11 w-full min-w-0 max-w-full rounded-xl bg-[#117d75] px-4 py-2.5 text-[clamp(12px,3.5cqi,14px)] font-bold whitespace-normal break-words text-white hover:bg-[#0e6e67] disabled:cursor-not-allowed disabled:opacity-50 @min-[320px]/status:w-auto"
+                type="button" onClick={onRecover} disabled={recoveryDisabled}
+              >복구</button>
+            )}
+            {phase === "countdown" && (
+              <>
+                <button
+                  className="min-h-11 w-full min-w-0 max-w-full rounded-xl border border-[#d9e1e9] px-4 py-2.5 text-[clamp(12px,3.5cqi,14px)] whitespace-normal break-words text-[#586577] disabled:cursor-not-allowed disabled:opacity-50 @min-[320px]/status:w-auto"
+                  type="button" onClick={onCancel} disabled={commandPending}
+                >시작 취소</button>
+                  <button
+                    className="min-h-11 w-full min-w-0 max-w-full rounded-xl bg-[#117d75] px-4 py-2.5 text-[clamp(12px,3.5cqi,14px)] font-bold whitespace-normal break-words text-white hover:bg-[#0e6e67] disabled:cursor-not-allowed disabled:opacity-50 @min-[320px]/status:w-auto"
+                    type="button" onClick={onStartImmediately} disabled={immediateStartDisabled}
+                  >바로 시작</button>
+              </>
+            )}
+          </div>
+          {phase === "emergency" && recoveryDisabled && (
+            <p className="mb-0 mt-2 w-full min-w-0 text-[clamp(11px,3cqi,12px)] leading-relaxed break-words text-[#8794a6] [overflow-wrap:anywhere] @min-[320px]/status:text-right">관제가 대기 상태로 돌아오면 복구할 수 있습니다.</p>
+          )}
+          {phase === "countdown" && immediateStartDisabled && (
+            <p className="mb-0 mt-2 w-full min-w-0 text-[clamp(11px,3cqi,12px)] leading-relaxed break-words text-[#8794a6] [overflow-wrap:anywhere] @min-[320px]/status:text-right">{stage === "STANDBY" ? "시작 요청 처리 중입니다." : "사전 점검이 끝나면 바로 시작할 수 있습니다."}</p>
+          )}
         </div>
       )}
     </section>

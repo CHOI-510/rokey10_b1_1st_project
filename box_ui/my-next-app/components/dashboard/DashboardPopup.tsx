@@ -196,14 +196,14 @@ export default function DashboardPopup() {
         onStartClick={() => void openStartPopup()}
         onStopClick={() => setEmergencyConfirmOpen(true)}
       />
-      <p role="status" aria-live="polite" className={`mt-2 text-sm ${apiConnected ? "text-[#147a43]" : "text-[#c9232b]"}`}>
+      {/* <p role="status" aria-live="polite" className={`mt-2 text-sm ${apiConnected ? "text-[#147a43]" : "text-[#c9232b]"}`}>
         {apiMessage}{commandMessage && ` · ${commandMessage}`}
         {!apiConnected && (
           <button className="ml-3 underline underline-offset-2" type="button" onClick={() => void checkRobotConnection()}>
             연결 다시 확인
           </button>
         )}
-      </p>
+      </p> */}
       <DashboardGrid
         onDbConnectionChange={setDbConnected}
         phase={phase}
