@@ -7,6 +7,14 @@ type LogEvent = { id: number | string; timestamp: string; job_id: string; messag
 
 const PAGE_SIZE = 50;
 
+function stateBadgeClass(state: string) {
+  if (/오류|정지/.test(state)) return "bg-[#fff0f0] text-[#c9232b]";
+  if (/탐지|스캔/.test(state)) return "bg-[#fff4cc] text-[#a66a00]";
+  if (/판별/.test(state)) return "bg-[#e8f0ff] text-[#2563eb]";
+  if (/적재/.test(state)) return "bg-[#e7f8ef] text-[#147a43]";
+  return "bg-[#e1f6f2] text-[#128b81]";
+}
+
 function mergeLogs(current: LogEvent[], incoming: LogEvent[]) {
   const rows = new Map(current.map(row => [String(row.id), row]));
   incoming.forEach(row => rows.set(String(row.id), row));
@@ -130,7 +138,7 @@ export default function JobLogSummary() {
         {events.map((event) => (
           <li key={event.id} className="grid min-h-[44px] py-2 grid-cols-[72px_64px_minmax(0,1fr)] items-center gap-[10px] border-t border-[#e8edf2] max-[560px]:grid-cols-[60px_56px_minmax(0,1fr)] max-[560px]:gap-[7px]">
             <time className="text-sm tabular-nums text-[#98a4b4] max-[560px]:text-xs">{new Date(event.timestamp).toLocaleTimeString("ko-KR", { timeZone: "Asia/Seoul", hour12: false })}</time>
-            <span className={`w-fit rounded-full px-[9px] py-1 text-xs font-bold ${/오류|정지/.test(event.state) ? "bg-[#fff0f0] text-[#c9232b]" : "bg-[#e1f6f2] text-[#128b81]"}`}>{event.state}</span>
+            <span className={`w-fit rounded-full px-[9px] py-1 text-xs font-bold ${stateBadgeClass(event.state)}`}>{event.state}</span>
             <p title={event.message} className="m-0 min-w-0 break-words text-sm leading-relaxed text-[#526073] [overflow-wrap:anywhere] max-[560px]:text-xs">{event.message}</p>
           </li>
         ))}
