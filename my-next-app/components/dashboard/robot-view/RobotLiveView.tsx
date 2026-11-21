@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { createSupabaseClient } from "@/lib/supabase/client";
+import { useRobotTelemetry } from "./useRobotTelemetry";
 import RobotScene from "./RobotScene";
 import { demoFrame, HOME, ZONES, type RobotTelemetry } from "./model";
 
@@ -8,7 +9,9 @@ import { workspaceFromLocations, type LocationRow } from "./workspace";
 
 type Props = { telemetry?: RobotTelemetry; stage?: string };
 const controlClass = "min-h-9 rounded-lg border border-[#dce5eb] bg-white px-3 text-sm font-medium text-[#526073] transition-colors hover:bg-[#f0f6f5] focus-visible:outline-2 focus-visible:outline-[#117d75] disabled:cursor-not-allowed disabled:opacity-40";
-export default function RobotLiveView({ telemetry, stage }: Props) {
+export default function RobotLiveView({ telemetry: providedTelemetry, stage }: Props) {
+  const stream = useRobotTelemetry(providedTelemetry === undefined);
+  const telemetry = providedTelemetry || stream.telemetry;
   const [demo, setDemo] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [seconds, setSeconds] = useState(0);
@@ -109,7 +112,7 @@ export default function RobotLiveView({ telemetry, stage }: Props) {
         <RobotScene workspace={workspace} joints={joints} counts={counts} yaw={yaw} elevation={elevation} zoom={zoom}
           holding={demo ? frame.holding : Boolean(live && telemetry?.gripperClosed)} muted={!demo&&!live}
           target={demo ? "B" : live ? telemetry?.target : undefined}
-          tcp={live&&!demo ? telemetry?.tcpMm : undefined} onRotate={setYaw}/>
+          tcp={validTelemetry&&!demo ? telemetry?.tcpMm : undefined} onRotate={setYaw}/>
         {!demo&&!live && <span className="pointer-events-none absolute left-3 top-3 max-w-[85%] rounded-lg bg-white/90 px-3 py-2 text-xs text-[#7b8999] shadow-sm">{telemetry ? "마지막 수신 자세 · 자동 추정 이동 없음" : "대기 자세 예시 · 실제 로봇 위치가 아닙니다"}</span>}
         {demo && <span className="absolute left-3 top-3 rounded-lg bg-[#fff4da] px-3 py-2 text-xs font-semibold text-[#a2660a]">UI 데모 · 동작 명령 전송 없음</span>}
       </div>
@@ -127,8 +130,9 @@ export default function RobotLiveView({ telemetry, stage }: Props) {
       <div className="mt-4 rounded-xl bg-[#f5f8fa] px-4 py-3">
         <p className="m-0 text-sm font-semibold text-[#526073]">{label}</p>
         {live&&!demo ? <p className="mb-0 mt-1 text-xs tabular-nums text-[#8794a6]">TCP · X {telemetry!.tcpMm[0].toFixed(1)} / Y {telemetry!.tcpMm[1].toFixed(1)} / Z {telemetry!.tcpMm[2].toFixed(1)} mm</p>
-          : <p className="mb-0 mt-1 text-xs text-[#8794a6]">{demo?"데모는 미리 정한 관절 경로를 재생합니다. 실제 궤적이 아닙니다.":"현재 API에는 실시간 관절각·TCP 데이터가 아직 연결되지 않았습니다."}</p>}
+          : <p className="mb-0 mt-1 text-xs text-[#8794a6]">{demo?"데모는 미리 정한 관절 경로를 재생합니다. 실제 궤적이 아닙니다.":stream.message}</p>}
       </div>
+      {live && !demo && <p className="mb-0 mt-2 break-words text-xs tabular-nums text-[#8794a6]">관절각 · {telemetry!.jointsDeg.map((angle,index) => `J${index+1} ${angle.toFixed(1)}°`).join(" / ")}</p>}
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
         {ZONES.map(zone=><span key={zone.id} className="flex items-center gap-1.5 text-xs text-[#6b788a]"><i className="h-2.5 w-2.5 rounded-[3px]" style={{backgroundColor:zone.color}}/>{zone.id} · {counts[zone.id]||0}개</span>)}
       </div>

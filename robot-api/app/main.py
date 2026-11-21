@@ -24,7 +24,9 @@ BOX_TOKEN = os.getenv("BOX_START_TOKEN", "")
 BOX_TIMEOUT = float(os.getenv("BOX_API_TIMEOUT", "8"))
 
 bridge = RosbridgeClient(os.getenv("ROSBRIDGE_URL", "ws://127.0.0.1:9090"),
-                         timeout=float(os.getenv("ROSBRIDGE_TIMEOUT", "8")))
+                         timeout=float(os.getenv("ROSBRIDGE_TIMEOUT", "8")),
+                         service_ns=os.getenv("ROBOT_SERVICE_NS", "/dsr01/dsr_controller2"),
+                         telemetry_period=float(os.getenv("ROBOT_TELEMETRY_PERIOD", "0.1")))
 
 
 @asynccontextmanager
@@ -148,6 +150,25 @@ def get_robot_status() -> RobotStatus:
         return box_status()
     with _lock:
         return _mock_status.model_copy()
+
+
+class RobotTelemetry(BaseModel):
+    connected: bool
+    source: str = "dsr_read_services"
+    frame: Literal["BASE"] = "BASE"
+    received_at: datetime | None = None
+    age_ms: int | None = None
+    joints_deg: tuple[float, float, float, float, float, float] | None = None
+    tcp_mm: tuple[float, float, float] | None = None
+    orientation_deg: tuple[float, float, float] | None = None
+    message: str = ""
+
+
+@app.get("/robot/telemetry", response_model=RobotTelemetry)
+def get_robot_telemetry() -> RobotTelemetry:
+    if BACKEND != "rosbridge":
+        return RobotTelemetry(connected=False, message="실측 좌표에는 rosbridge real 모드 연결이 필요합니다.")
+    return RobotTelemetry(**bridge.telemetry.snapshot())
 
 
 def command_robot(command: Literal["start", "stop", "cancel", "start_now"]) -> RobotStatus:

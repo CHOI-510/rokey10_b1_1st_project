@@ -3,7 +3,7 @@ export type RobotTelemetry = {
   jointsDeg: [number, number, number, number, number, number];
   tcpMm: Vec3;
   receivedAt: number;
-  gripperClosed: boolean;
+  gripperClosed?: boolean;
   target?: "A" | "B" | "C" | "D" | "U";
 };
 export const HOME = [0, 0, 90, 0, 90, 0];

@@ -19,6 +19,8 @@ export default function RobotScene({ workspace, joints, counts, yaw, elevation, 
     return [450 + rx * .65 * zoom, 340 + (ry * Math.sin(tilt) - (z - 60) * Math.cos(tilt)) * .65 * zoom];
   };
   const points = armPoints(joints);
+  // Actual BASE TCP replaces the conceptual gripper endpoint when telemetry is live.
+  if (tcp) points[points.length - 1] = tcp;
   const polygon = (vertices: Vec3[]) => vertices.map(p => project(p).join(",")).join(" ");
   const line = (a: Vec3, b: Vec3) => { const [x1,y1] = project(a), [x2,y2] = project(b); return { x1, y1, x2, y2 }; };
   const box = (position: Vec3, color: string, key: string, w = 28, h = 21) => {

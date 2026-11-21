@@ -144,3 +144,17 @@ npx tsc --noEmit
 - 11:20:26 정지 → STOPPED, `EMERGENCY STOP — by ui (시작 전)`.
 
 API·프로토콜 테스트 16개, DB 상태 테스트 3개, UI lint·TypeScript 검사를 통과했습니다. 현재 UI·API·fake ROS·rosbridge는 실행 중이며 마지막 결과는 STOPPED입니다.
+
+## 실측 로봇 자세 API
+
+`GET /robot/telemetry`는 별도의 읽기 전용 rosbridge 소켓에서 두산 서비스를 조회한 마지막 샘플을 즉시 반환합니다.
+
+- `${ROBOT_SERVICE_NS}/aux_control/get_current_posj`: 6개 관절각, degree
+- `${ROBOT_SERVICE_NS}/aux_control/get_current_posx` (`ref: 0`): BASE TCP XYZ(mm), ABC(degree)
+- 기본 namespace `/dsr01/dsr_controller2`, 기본 조회 주기 `ROBOT_TELEMETRY_PERIOD=0.1`초. 두 조회는 순차 호출하므로 완전히 동시인 샘플은 아닙니다.
+- 관제 상태가 fresh이고 `robot_monitor=dsr`, `robot_hardware_mode=real`, `robot_connected=true`일 때만 조회합니다. fake/mock/virtual 데이터를 실측으로 표시하지 않습니다.
+- 응답: `connected`, `joints_deg`, `tcp_mm`, `orientation_deg`, `received_at`, `age_ms`, `frame=BASE`, `message`. 아직 샘플이 없으면 좌표는 null입니다.
+- 실패/연결 끊김/2초 이상 오래된 데이터는 `connected=false`, 마지막 성공 샘플은 유지합니다. 명령 연결과 분리되어 시작/비상정지를 기다리게 하지 않습니다.
+- 웹 로봇 뷰는 100ms 간격으로 조회합니다. 그리퍼 개폐·물품 보유 여부는 이 서비스에서 제공하지 않으므로 추정하지 않습니다. 화면의 로봇 외형은 URDF 기반 단순 형상입니다.
+
+적용하려면 이 디렉터리의 변경 코드로 FastAPI 이미지를 다시 빌드하고 컨테이너를 교체해야 합니다. ROS2 관제/scan/judge/place 알고리즘 재빌드는 필요 없습니다. rosbridge가 실행 중인 ROS 환경에서 `dsr_msgs2` 서비스 타입을 찾을 수 있어야 하며, 해당 조회 서비스가 허용되어 있어야 합니다. 브라우저는 기존 `NEXT_PUBLIC_ROBOT_API_URL`을 그대로 사용합니다.

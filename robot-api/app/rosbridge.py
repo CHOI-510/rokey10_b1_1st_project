@@ -6,6 +6,8 @@ from threading import Event, Lock, Thread
 import time
 from uuid import uuid4
 
+from app.telemetry import TelemetryReader
+
 from websocket import create_connection, WebSocketTimeoutException
 
 logger = logging.getLogger(__name__)
@@ -16,7 +18,8 @@ class RosbridgeError(RuntimeError):
 
 
 class RosbridgeClient:
-    def __init__(self, url: str, timeout: float = 8.0, stale_after: float = 10.0):
+    def __init__(self, url: str, timeout: float = 8.0, stale_after: float = 10.0,
+                 service_ns: str = "/dsr01/dsr_controller2", telemetry_period: float = 0.1):
         self.url = url
         self.timeout = timeout
         self.stale_after = stale_after
@@ -34,14 +37,17 @@ class RosbridgeClient:
         self._ended_at = None
         self._job_id = None
         self._reason = ''
+        self.telemetry = TelemetryReader(url, self.real_robot_available, service_ns, telemetry_period)
 
     def start(self):
         self._stop.clear()
         self._thread = Thread(target=self._listen, name='rosbridge-status', daemon=True)
         self._thread.start()
+        self.telemetry.start()
 
     def close(self):
         self._stop.set()
+        self.telemetry.close()
         if self._socket is not None:
             self._socket.close()
         if self._thread is not None:
@@ -81,6 +87,14 @@ class RosbridgeClient:
             self._stage, self._data = stage, dict(data)
             self._seen = time.monotonic()
             self._online = True
+
+    def real_robot_available(self):
+        with self._lock:
+            return (self._online and bool(self._seen) and time.monotonic() - self._seen < self.stale_after
+                    and self._data.get('robot_monitor') == 'dsr'
+                    and self._data.get('robot_hardware_mode') == 'real'
+                    and self._data.get('robot_connected') is True
+                    and type(self._data.get('robot_state')) is int)
 
     def snapshot(self) -> dict:
         with self._lock:
