@@ -52,7 +52,7 @@ export default function RobotScene({ workspace, joints, counts, yaw, elevation, 
   };
   const orderedBoxes = [...boxes].sort((a,b)=>depth([a.position[0],a.position[1],a.position[2]+a.height/2])
     -depth([b.position[0],b.position[1],b.position[2]+b.height/2]));
-  return <svg viewBox="0 0 900 520" className="h-full min-h-[280px] w-full touch-pan-y select-none cursor-grab active:cursor-grabbing" role="img" aria-label="M0609 로봇 관절 구조와 적재 구역의 3차원 개념도. 판별존, 미분류 투하점, 탐지 경로를 BASE 좌표로 표시. 드래그로 시점 회전."
+  return <svg viewBox="0 0 900 520" className="h-full min-h-[280px] w-full touch-pan-y select-none cursor-grab active:cursor-grabbing" role="img" aria-label="M0609 URDF 로봇 외형과 적재 구역의 3차원 뷰. 판별존, 미분류 투하점, 탐지 경로를 BASE 좌표로 표시. 드래그로 시점 회전."
     onPointerDown={event => { drag.current = { x: event.clientX, angle: yaw }; event.currentTarget.setPointerCapture(event.pointerId); }}
     onPointerMove={event => { if (drag.current) onRotate(drag.current.angle + (event.clientX - drag.current.x) * .35); }}
     onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}>

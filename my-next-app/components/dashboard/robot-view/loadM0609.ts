@@ -1,4 +1,4 @@
-import { Color, Euler, Group, Mesh, MeshStandardMaterial, Vector3, type Object3D, type Material } from "three";
+import { Color, DoubleSide, Euler, Group, Mesh, MeshStandardMaterial, Vector3, type Object3D, type Material } from "three";
 import { ColladaLoader } from "three/addons/loaders/ColladaLoader.js";
 
 export type RobotMesh = { root: Group; joints: { object: Group; axis: Vector3 }[] };
@@ -38,18 +38,20 @@ export async function loadM0609(signal: AbortSignal): Promise<RobotMesh> {
       loads.push((async()=>{
         const result = await fetch(path,{signal});
         if (!result.ok) throw new Error("M0609 mesh load failed");
-        const parsed = new ColladaLoader().parse(await result.text(),path.slice(0,path.lastIndexOf("/")+1));
+        // This URDF renderer uses native Z-up coordinates. Bypass the loader's
+        // Y-up conversion at the metadata boundary; vertex data stay unchanged.
+        // Previously we undid that conversion after parsing, causing a warning per mesh.
+        const dae = (await result.text()).replace(/(<up_axis>\s*)Z_UP(\s*<\/up_axis>)/, "$1Y_UP$2");
+        const parsed = new ColladaLoader().parse(dae,path.slice(0,path.lastIndexOf("/")+1));
         if (!parsed) throw new Error("Invalid M0609 Collada mesh");
         const model = parsed.scene;
-        // ColladaLoader changes Z_UP to Y_UP; URDF visuals must retain their authored Z_UP axes.
-        model.rotation.set(0,0,0);
         const extras: Object3D[] = [];
         model.traverse(object=>{
           if (object.type.includes("Camera") || object.type.includes("Light")) extras.push(object);
           if (object instanceof Mesh) {
             const convert = (old: Material) => {
               const color = "color" in old && old.color instanceof Color ? old.color.clone() : new Color("#e6e9ec");
-              const material = new MeshStandardMaterial({color,roughness:.45,metalness:.18});
+              const material = new MeshStandardMaterial({color,roughness:.45,metalness:.18,side:DoubleSide});
               old.dispose(); return material;
             };
             object.material = Array.isArray(object.material) ? object.material.map(convert) : convert(object.material);
@@ -83,5 +85,3 @@ export function setRobotJoints(robot: RobotMesh, degrees: number[]) {
   robot.joints.forEach((joint,i)=>joint.object.quaternion.setFromAxisAngle(joint.axis,degrees[i]*Math.PI/180));
   robot.root.updateMatrixWorld(true);
 }
-// Retained for geometry tests and flange/TCP alignment checks.
-export const worldPosition = (object: Object3D) => new Vector3().setFromMatrixPosition(object.matrixWorld);
