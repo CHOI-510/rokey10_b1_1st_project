@@ -5,14 +5,14 @@ import { useEffect, useRef } from "react";
 import { AmbientLight, DirectionalLight, Mesh, MeshStandardMaterial, OrthographicCamera, Scene, WebGLRenderer } from "three";
 import { disposeRobot, loadM0609, setRobotJoints, type RobotMesh } from "./loadM0609";
 
-type Props = { joints: number[]; clip: number[]; muted: boolean; onStatus: (status: "loading" | "ready" | "error") => void };
-type Frame = Pick<Props,"joints" | "clip" | "muted">;
+type Props = { joints: number[]; clip: number[]; muted: boolean; gripperClosed?: boolean; onStatus: (status: "loading" | "ready" | "error") => void };
+type Frame = Pick<Props,"joints" | "clip" | "muted" | "gripperClosed">;
 type Runtime = { renderer: WebGLRenderer | SVGRenderer; scene: Scene; camera: OrthographicCamera; robot?: RobotMesh };
 function draw(runtime: Runtime, frame: Frame) {
   runtime.camera.projectionMatrix.fromArray(frame.clip).transpose();
   runtime.camera.projectionMatrixInverse.copy(runtime.camera.projectionMatrix).invert();
   if (runtime.robot) {
-    setRobotJoints(runtime.robot,frame.joints);
+    setRobotJoints(runtime.robot,frame.joints,frame.gripperClosed);
     runtime.robot.root.traverse(object=>{
       if (object instanceof Mesh) for (const material of Array.isArray(object.material)?object.material:[object.material]) {
         if (material instanceof MeshStandardMaterial) {
@@ -26,14 +26,14 @@ function draw(runtime: Runtime, frame: Frame) {
   runtime.renderer.render(runtime.scene,runtime.camera);
   if (runtime.renderer instanceof SVGRenderer) runtime.renderer.domElement.style.backgroundColor="transparent";
 }
-export default function M0609RobotMesh({joints,clip,muted,onStatus}: Props) {
+export default function M0609RobotMesh({joints,clip,muted,gripperClosed,onStatus}: Props) {
   const container=useRef<HTMLDivElement>(null);
   const runtime=useRef<Runtime|null>(null);
-  const latest=useRef<Frame>({joints,clip,muted});
+  const latest=useRef<Frame>({joints,clip,muted,gripperClosed});
   useEffect(()=>{
-    latest.current={joints,clip,muted};
+    latest.current={joints,clip,muted,gripperClosed};
     if (runtime.current) draw(runtime.current,latest.current);
-  },[joints,clip,muted]);
+  },[joints,clip,muted,gripperClosed]);
   useEffect(()=>{
     const element=container.current;
     if (!element) return;
@@ -77,5 +77,5 @@ export default function M0609RobotMesh({joints,clip,muted,onStatus}: Props) {
       element.replaceChildren();
     };
   },[onStatus]);
-  return <div ref={container} aria-label="Doosan M0609 URDF 외형" style={{width:"100%",height:"100%",display:"block",pointerEvents:"none"}}/>;
+  return <div ref={container} aria-label="Doosan M0609 · OnRobot RG2 URDF 외형" style={{width:"100%",height:"100%",display:"block",pointerEvents:"none"}}/>;
 }

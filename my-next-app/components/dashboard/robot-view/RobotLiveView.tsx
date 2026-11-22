@@ -105,7 +105,7 @@ export default function RobotLiveView({ telemetry: providedTelemetry, stage }: P
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="m-0 text-[17px] font-bold text-[#566477]">적재 현황 · 로봇 뷰</h2>
-          <p className="mb-0 mt-1 text-xs text-[#8794a6]">Doosan M0609 · URDF 외형</p>
+          <p className="mb-0 mt-1 text-xs text-[#8794a6]">Doosan M0609 · OnRobot RG2</p>
         </div>
         <span role="status" className={`rounded-full px-3 py-1.5 text-xs font-semibold ${demo ? "bg-[#fff4da] text-[#a2660a]" : live ? "bg-[#e7f8ef] text-[#147a43]" : "bg-[#f1f5f8] text-[#718096]"}`}>{status}</span>
       </div>
@@ -118,6 +118,7 @@ export default function RobotLiveView({ telemetry: providedTelemetry, stage }: P
       </div>
       <div className="relative mt-3 h-[340px] min-w-0 overflow-hidden rounded-xl border border-[#e7edf1] bg-[#fbfcfd] sm:h-[380px]">
         <RobotScene workspace={workspace} joints={joints} counts={counts} yaw={yaw} elevation={elevation} zoom={zoom}
+          gripperClosed={demo ? frame.holding : live ? telemetry?.gripperClosed : undefined}
           holding={demo ? frame.holding : Boolean(live && telemetry?.gripperClosed)} muted={!demo&&!live}
           target={demo ? "B" : live ? telemetry?.target : undefined}
           tcp={validTcp&&!demo ? telemetry?.tcpMm : undefined} onRotate={setYaw}/>
@@ -154,7 +155,7 @@ export default function RobotLiveView({ telemetry: providedTelemetry, stage }: P
         </div>
         <p className="mb-0 mt-3 leading-relaxed">A·B 두 번째 자리는 Y −45mm, C·D는 Y −30mm입니다. 미분류는 바닥 위치가 아닌 투하 TCP 좌표입니다. 테두리는 실제 작업대 경계를 뜻하지 않습니다.</p>
       </details>
-      <p className="mb-0 mt-3 text-[11px] leading-relaxed text-[#9aa5b4]">로봇 본체는 M0609 URDF 외형을 사용합니다. 그리퍼는 단순 형상이며, WebGL 미지원 시 경량 SVG 모델을 표시하며, 모델 로딩 실패 시 관절 개념도를 표시합니다. 구역 중심·탐색 경로는 BASE 좌표를 사용합니다. 구역 테두리 크기는 개념 형상입니다. A~D는 2자리 × 3층까지 표현합니다.</p>
+      <p className="mb-0 mt-3 text-[11px] leading-relaxed text-[#9aa5b4]">로봇 본체는 M0609 URDF 외형을 사용합니다. 그리퍼는 OnRobot RG2 모델입니다. 실측 개방 폭 미수신 시 열린 자세 예시로 표시합니다. 데모 개폐는 예시입니다. WebGL 미지원 시 경량 SVG 모델을 표시하며, 모델 로딩 실패 시 관절 개념도를 표시합니다. 구역 중심·탐색 경로는 BASE 좌표를 사용합니다. 구역 테두리 크기는 개념 형상입니다. A~D는 2자리 × 3층까지 표현합니다.</p>
     </section>
   );
 }

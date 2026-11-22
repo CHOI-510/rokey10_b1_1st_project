@@ -1,0 +1,3 @@
+OnRobot RG2 visual meshes: onrobot-ros2/onrobot_rg_description (MIT, see LICENSE.txt).
+Browser URDF: visual-only expansion of workspace rg2/m0609_rg2_bringup/urdf/onrobot_rg2*.xacro.
+Uses the local corrected right knuckle joint and tool0 attachment. No ROS control files changed.

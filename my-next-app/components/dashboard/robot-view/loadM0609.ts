@@ -1,7 +1,9 @@
 import { Color, DoubleSide, Euler, Group, Mesh, MeshStandardMaterial, Vector3, type Object3D, type Material } from "three";
+import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { ColladaLoader } from "three/addons/loaders/ColladaLoader.js";
 
-export type RobotMesh = { root: Group; joints: { object: Group; axis: Vector3 }[] };
+type Motor = { object: Group; axis: Vector3 };
+export type RobotMesh = { root: Group; joints: Motor[]; fingers: (Motor & { multiplier: number })[] };
 const numbers = (text: string | null, fallback: number[]) => text ? text.trim().split(/\s+/).map(Number) : fallback;
 function origin(group: Group, element: Element | null) {
   if (!element) return;
@@ -19,25 +21,35 @@ export function disposeRobot(root: Object3D) {
   });
 }
 export async function loadM0609(signal: AbortSignal): Promise<RobotMesh> {
-  const response = await fetch("/robots/m0609/m0609.urdf", {signal});
-  if (!response.ok) throw new Error("M0609 URDF load failed");
-  const xml = new DOMParser().parseFromString(await response.text(),"application/xml");
-  if (xml.querySelector("parsererror")) throw new Error("Invalid M0609 URDF");
+  const documents = await Promise.all(["/robots/m0609/m0609.urdf", "/robots/rg2/rg2.urdf"].map(async path => {
+    const response=await fetch(path,{signal});
+    if (!response.ok) throw new Error("Robot URDF load failed");
+    const xml=new DOMParser().parseFromString(await response.text(),"application/xml");
+    if (xml.querySelector("parsererror")) throw new Error("Invalid robot URDF");
+    return xml;
+  }));
+  const elements=(selector: string)=>documents.flatMap(xml=>Array.from(xml.querySelectorAll(selector)));
   const root = new Group(), links = new Map<string,Group>(), motors = new Map<string,{object:Group;axis:Vector3}>();
   const loads: Promise<void>[] = [];
-  for (const element of xml.querySelectorAll("robot > link")) {
+  for (const element of elements("robot > link")) {
     const link = new Group(); link.name = element.getAttribute("name") || ""; links.set(link.name,link);
     for (const visual of element.querySelectorAll(":scope > visual")) {
       const mesh = visual.querySelector("geometry > mesh");
       if (!mesh) continue;
       const path = mesh.getAttribute("filename") || "";
-      if (!path.startsWith("/robots/m0609/")) throw new Error("Unexpected M0609 mesh path");
+      if (!path.startsWith("/robots/m0609/") && !path.startsWith("/robots/rg2/")) throw new Error("Unexpected M0609 mesh path");
       const holder = new Group(); origin(holder,visual.querySelector("origin")); link.add(holder);
       const scale = numbers(mesh.getAttribute("scale"),[1,1,1]);
       holder.scale.set(scale[0]*1000,scale[1]*1000,scale[2]*1000);
       loads.push((async()=>{
         const result = await fetch(path,{signal});
         if (!result.ok) throw new Error("M0609 mesh load failed");
+        if (path.endsWith(".stl")) {
+          const geometry=new STLLoader().parse(await result.arrayBuffer());
+          const rgba=numbers(visual.querySelector("material > color")?.getAttribute("rgba") || null,[.8,.8,.8,1]);
+          holder.add(new Mesh(geometry,new MeshStandardMaterial({color:new Color(rgba[0],rgba[1],rgba[2]),roughness:.5,metalness:.15,side:DoubleSide})));
+          return;
+        }
         // This URDF renderer uses native Z-up coordinates. Bypass the loader's
         // Y-up conversion at the metadata boundary; vertex data stay unchanged.
         // Previously we undid that conversion after parsing, causing a warning per mesh.
@@ -62,7 +74,7 @@ export async function loadM0609(signal: AbortSignal): Promise<RobotMesh> {
     }
   }
   const children = new Set<string>();
-  for (const joint of xml.querySelectorAll("robot > joint")) {
+  for (const joint of elements("robot > joint")) {
     const parentName=joint.querySelector("parent")?.getAttribute("link") || "";
     const childName=joint.querySelector("child")?.getAttribute("link") || "";
     const parent=links.get(parentName), child=links.get(childName);
@@ -79,9 +91,16 @@ export async function loadM0609(signal: AbortSignal): Promise<RobotMesh> {
   if (signal.aborted || results.some(result=>result.status==="rejected")) {disposeRobot(root);throw new Error("M0609 assets unavailable");}
   const joints=Array.from({length:6},(_,i)=>motors.get(`joint_${i+1}`));
   if (joints.some(joint=>!joint)) {disposeRobot(root);throw new Error("M0609 joints missing");}
-  return {root,joints:joints as RobotMesh["joints"]};
+  const fingers=elements("robot > joint").filter(joint=>joint.getAttribute("name")?.startsWith("rg2_") && joint.getAttribute("type")==="revolute").map(joint=>({
+    ...motors.get(joint.getAttribute("name")!)!,
+    multiplier:Number(joint.querySelector("mimic")?.getAttribute("multiplier") ?? 1),
+  }));
+  return {root,joints:joints as RobotMesh["joints"],fingers};
 }
-export function setRobotJoints(robot: RobotMesh, degrees: number[]) {
+export function setRobotJoints(robot: RobotMesh, degrees: number[], gripperClosed?: boolean) {
   robot.joints.forEach((joint,i)=>joint.object.quaternion.setFromAxisAngle(joint.axis,degrees[i]*Math.PI/180));
+  // UI poses only; no measured finger width is currently available from the API.
+  const fingerAngle=gripperClosed ? .785398 : -.558505;
+  robot.fingers.forEach(joint=>joint.object.quaternion.setFromAxisAngle(joint.axis,fingerAngle*joint.multiplier));
   robot.root.updateMatrixWorld(true);
 }

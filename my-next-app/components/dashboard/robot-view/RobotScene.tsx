@@ -10,10 +10,10 @@ import { SCAN, type Workspace } from "./workspace";
 type Props = {
   workspace: Workspace;
   joints: number[]; counts: Record<string, number>; yaw: number; elevation: number; zoom: number;
-  holding: boolean; muted: boolean; target?: string; tcp?: Vec3;
+  holding: boolean; muted: boolean; gripperClosed?: boolean; target?: string; tcp?: Vec3;
   onRotate: (yaw: number) => void;
 };
-export default function RobotScene({ workspace, joints, counts, yaw, elevation, zoom, holding, muted, target, tcp, onRotate }: Props) {
+export default function RobotScene({ workspace, joints, counts, yaw, elevation, zoom, holding, muted, gripperClosed, target, tcp, onRotate }: Props) {
   const [meshStatus,setMeshStatus] = useState<"loading" | "ready" | "error">("loading");
   const drag = useRef<{ x: number; angle: number } | null>(null);
   const points = armPoints(joints);
@@ -98,10 +98,9 @@ export default function RobotScene({ workspace, joints, counts, yaw, elevation, 
       {holding && box({position:points[points.length-1],color:"#e4a63b",key:"carried",width:24,height:24})}
     </g>}
     <foreignObject x="0" y="0" width="900" height="520" pointerEvents="none">
-      <M0609RobotMesh joints={joints} clip={clipMatrixFromProjection(project,depth)} muted={muted} onStatus={setMeshStatus}/>
+      <M0609RobotMesh joints={joints} clip={clipMatrixFromProjection(project,depth)} muted={muted} gripperClosed={gripperClosed} onStatus={setMeshStatus}/>
     </foreignObject>
     {meshStatus === "ready" && <g opacity={muted ? .4 : 1}>
-      <line {...line(points[points.length-2],points[points.length-1])} stroke="#667681" strokeWidth="8" strokeLinecap="round"/>
       {holding && box({position:points[points.length-1],color:"#e4a63b",key:"carried",width:24,height:24})}
     </g>}
     {/* Stock is an always-visible overlay at its actual world position. */}

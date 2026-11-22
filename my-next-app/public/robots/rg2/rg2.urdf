@@ -1,0 +1,119 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot name="rg2_visual">
+  <link name="rg2_base_link">
+    <visual>
+      <geometry>
+        <mesh filename="/robots/rg2/meshes/base_link.stl" />
+      </geometry>
+      <material name="">
+        <color rgba="0.8 0.8 0.8 1" />
+      </material>
+    </visual>
+  </link>
+  <joint name="rg2_mount" type="fixed">
+    <parent link="tool0" />
+    <child link="rg2_base_link" />
+    <origin xyz="0 0 0" rpy="1.5708 0 1.5708" />
+  </joint>
+  <link name="rg2_left_outer_knuckle">
+    <visual>
+      <geometry>
+        <mesh filename="/robots/rg2/meshes/outer_knuckle.stl" />
+      </geometry>
+      <material name="">
+        <color rgba="0.8 0.8 0.8 1" />
+      </material>
+    </visual>
+  </link>
+  <link name="rg2_left_inner_knuckle">
+    <visual>
+      <geometry>
+        <mesh filename="/robots/rg2/meshes/inner_knuckle.stl" />
+      </geometry>
+      <material name="">
+        <color rgba="0.8 0.8 0.8 1" />
+      </material>
+    </visual>
+  </link>
+  <link name="rg2_left_inner_finger">
+    <visual>
+      <geometry>
+        <mesh filename="/robots/rg2/meshes/inner_finger.stl" />
+      </geometry>
+      <material name="">
+        <color rgba="0.1 0.1 0.1 1" />
+      </material>
+    </visual>
+  </link>
+  <joint name="rg2_finger_joint" type="revolute">
+    <parent link="rg2_base_link" />
+    <child link="rg2_left_outer_knuckle" />
+    <origin xyz="0 -0.017178 0.125797" rpy="0 0 0" />
+    <axis xyz="-1 0 0" />
+  </joint>
+  <joint name="rg2_left_inner_knuckle_joint" type="revolute">
+    <parent link="rg2_base_link" />
+    <child link="rg2_left_inner_knuckle" />
+    <origin xyz="0 -0.007678 0.142297" rpy="0 0 0.0" />
+    <axis xyz="1 0 0" />
+    <mimic joint="rg2_finger_joint" multiplier="-1" offset="0" />
+  </joint>
+  <joint name="rg2_left_inner_finger_joint" type="revolute">
+    <parent link="rg2_left_outer_knuckle" />
+    <child link="rg2_left_inner_finger" />
+    <origin xyz="0 -0.039592 0.038177" rpy="0 0 0" />
+    <axis xyz="1 0 0" />
+    <mimic joint="rg2_finger_joint" multiplier="1" offset="0" />
+  </joint>
+  <link name="rg2_right_outer_knuckle">
+    <visual>
+      <geometry>
+        <mesh filename="/robots/rg2/meshes/outer_knuckle.stl" />
+      </geometry>
+      <material name="">
+        <color rgba="0.8 0.8 0.8 1" />
+      </material>
+    </visual>
+  </link>
+  <link name="rg2_right_inner_knuckle">
+    <visual>
+      <geometry>
+        <mesh filename="/robots/rg2/meshes/inner_knuckle.stl" />
+      </geometry>
+      <material name="">
+        <color rgba="0.8 0.8 0.8 1" />
+      </material>
+    </visual>
+  </link>
+  <link name="rg2_right_inner_finger">
+    <visual>
+      <geometry>
+        <mesh filename="/robots/rg2/meshes/inner_finger.stl" />
+      </geometry>
+      <material name="">
+        <color rgba="0.1 0.1 0.1 1" />
+      </material>
+    </visual>
+  </link>
+  <joint name="rg2_right_outer_knuckle_joint" type="revolute">
+    <parent link="rg2_base_link" />
+    <child link="rg2_right_outer_knuckle" />
+    <origin xyz="0 0.017178 0.125797" rpy="0 0 3.141592653589793" />
+    <axis xyz="1 0 0" />
+    <mimic joint="rg2_finger_joint" multiplier="-1" offset="0" />
+  </joint>
+  <joint name="rg2_right_inner_knuckle_joint" type="revolute">
+    <parent link="rg2_base_link" />
+    <child link="rg2_right_inner_knuckle" />
+    <origin xyz="0 0.007678 0.142297" rpy="0 0 -3.141592653589793" />
+    <axis xyz="1 0 0" />
+    <mimic joint="rg2_finger_joint" multiplier="-1" offset="0" />
+  </joint>
+  <joint name="rg2_right_inner_finger_joint" type="revolute">
+    <parent link="rg2_right_outer_knuckle" />
+    <child link="rg2_right_inner_finger" />
+    <origin xyz="0 -0.039592 0.038177" rpy="0 0 0" />
+    <axis xyz="1 0 0" />
+    <mimic joint="rg2_finger_joint" multiplier="1" offset="0" />
+  </joint>
+</robot>
