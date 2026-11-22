@@ -41,3 +41,35 @@ inventory에는 각 loc_id가 하나씩 있어야 한다. 자세한 조건은 SQ
 서비스 키는 브라우저에 전달하거나 Git에 커밋하지 않는다.
 웹의 로그 조회·스크롤은 기존 기능을 유지하고 inventory는 1초마다 조회한다.
 로컬 테스트용 별도 프로젝트에는 자동 반영하지 않는다.
+
+## 실행 중인 구형 DB 노드와 별개로 파일 감시하기 (Docker)
+
+현재 ROS2 설치본에 LogSync가 없거나 ROS 터미널에 서비스 키가 전달되지 않은 경우,
+관제를 중지하지 않고 GitHub 관리용 소스의 파일 전송기를 독립 컨테이너로 실행할 수 있다.
+
+```bash
+cd robot-api
+docker compose up -d --no-deps log-sync
+docker logs --tail 30 -f robot-log-sync
+```
+
+`robot-log-sync`는 `robot-fastapi:latest`의 Python 환경에서 소스 `log_sync.py`를 직접 실행한다.
+`my-next-app/.env.local`의 서버 서비스 키와 Supabase URL을 읽으며 브라우저 키로 INSERT하지 않는다.
+호스트 `${HOME}/box_logs`를 `/logs`에 마운트하므로 작업자 이름을 하드코딩하지 않는다.
+다른 경로는 `BOX_LOG_DIR=/실제/box_logs docker compose up -d --no-deps log-sync`로 지정한다.
+호스트 UID/GID가 1000이 아니라면 `LOG_SYNC_UID=$(id -u) LOG_SYNC_GID=$(id -g)`도 지정한다.
+`.env.local`의 키를 변경하면 `docker compose up -d --no-deps --force-recreate log-sync`로 다시 생성한다.
+로그 원본은 유지하며 폴더 안의 잠금 파일로 DB 노드 내장 전송기와 중복 실행을 방지한다.
+새 파일 및 기존 파일의 추가 줄을 약 1초 간격으로 확인한다. 여러 과거 로그를 처음 동기화할 때는
+DB 응답/백로그에 따라 지연될 수 있다. 파일명의 날짜가 바뀌어도 `*.jsonl`을 계속 감시한다.
+
+### 2026-11-22 확인한 DB 스키마 누락
+
+운영 log INSERT는 트리거가 참조하는 `public.inventory_log_positions` 테이블이 없어
+`42P01`로 롤백되는 상태였다. 이 경우 **Supabase SQL Editor에서
+`sql/repair_inventory_log_positions.sql`을 실행**한다. 기존 트리거는 바꾸지 않는다.
+파일 감시기는 실패한 파일 위치를 넘기지 않고 재시도하므로 SQL 적용 후 대기 중인 로그도 전송한다.
+새 구역별 watermark는 `-infinity`에서 시작해 이미 생성된 오늘 로그도 재고에 반영하도록 한다.
+기존 watermark가 있으면 그 값은 유지한다. 전체 트리거 파일의 기본 초기화 기준(now)은 신규 설치용이므로
+밀린 오늘 로그를 복구할 때 이 전용 SQL을 사용한다.
+키워드 필터가 적용되어 모든 원시 줄이 log 행으로 저장되는 것은 아니다.

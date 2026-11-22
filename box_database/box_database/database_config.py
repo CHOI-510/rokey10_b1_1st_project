@@ -20,8 +20,8 @@ ROS 파라미터 (ros2 run box_database database_main --ros-args -p store:=file)
 import os
 
 # ---- 연결·경로 ----
-SUPABASE_URL = os.environ.get('SUPABASE_URL', '')
-SUPABASE_KEY = os.environ.get('SUPABASE_SERVICE_KEY', '')
+from box_database.server_settings import server_settings
+SUPABASE_URL, SUPABASE_KEY = server_settings()
 LOG_DIR = os.path.expanduser(os.environ.get('BOX_LOG_DIR', '~/box_logs'))
 HTTP_HOST = '127.0.0.1'                     # 노트북 안에서만 받음 (Next.js가 같은 노트북에서 넘김)
 HTTP_PORT = int(os.environ.get('BOX_DB_PORT', '8765'))
@@ -37,6 +37,7 @@ SEEN_WRITE_SEC = 5.0        # 바뀐 게 없을 때 control_seen_at만 쓰는 �
 # ---- 테이블 (docs/DB_UI_CONTRACT.md) ----
 TABLE_PRODUCT = 'product'
 TABLE_LOC = 'loc'
+TABLE_INVENTORY = 'inventory'
 TABLE_STATE = 'state'
 STATE_ID = 1
 LOC_MEASURE_ZONE = 'measure_zone'
@@ -57,7 +58,7 @@ INT_COLUMNS = ('box_seq',)
 FINISHED_STATUS = ('DONE', 'ERROR', 'STOPPED')
 SYNC_ONLY_COLUMNS = ('heartbeat_at', 'control_seen_at')   # 동기화 스레드가 매번 새로 쓰는 열
 
-# ---- 파일 모드 처음 값 — product.json·loc.json이 없을 때 이 값으로 만든다. 실제 값은 Supabase product·loc ----
+# ---- 파일 모드 전용 초기값. Supabase 모드에서는 아래 수량/규격을 DB 대신 사용하지 않는다. ----
 FILE_PRODUCT = [
     {'class_id': 'A', 'name': '알루미늄 묶음 A', 'width_mm': 60.0, 'depth_mm': 40.0, 'height_mm': 20.0, 'weight_g': 130.0},
     {'class_id': 'B', 'name': '젠가 묶음 B', 'width_mm': 75.0, 'depth_mm': 29.0, 'height_mm': 25.0, 'weight_g': 0.0},
@@ -71,7 +72,7 @@ FILE_LOC = [
     {'name': 'D', 'x': 635.0, 'y': 115.0, 'z': None},           # 11/18 입력
     {'name': LOC_MEASURE_ZONE, 'x': 300.0, 'y': -160.0, 'z': 30.9},   # z = 측정존 바닥 (판별 실측, 11/18 30 → 30.9)
 ]
-FILE_STATE = {        # Supabase state 테이블 기본값과 같게
+FILE_STATE = {        # 파일 상태 및 Supabase 모드의 메모리 메타데이터 기본 구조
     'id': STATE_ID, 'a': 0, 'b': 0, 'c': 0, 'd': 0, 'u': 0,
     'status': 'BEFORE', 'reason': '', 'started_at': None, 'finished_at': None,
     'stage': '', 'job_id': '', 'box_id': '', 'box_seq': 0, 'start_at': None,

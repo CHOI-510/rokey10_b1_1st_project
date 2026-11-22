@@ -23,7 +23,7 @@ type RobotStatus = {
   box_seq: number;
 };
 
-async function requestRobot(command?: "start" | "stop" | "cancel" | "start_now"): Promise<RobotStatus> {
+async function requestRobot(command?: "start" | "stop" | "cancel" | "start_now" | "recover"): Promise<RobotStatus> {
   const response = await fetch(`${ROBOT_API_URL}/robot/${command || "status"}`, {
     method: command ? "POST" : "GET", cache: "no-store",
     signal: AbortSignal.timeout(12000),
@@ -54,6 +54,7 @@ export default function DashboardPopup() {
   const [apiConnected, setApiConnected] = useState(false);
   const [apiMessage, setApiMessage] = useState("로봇 연결 확인 중");
   const [commandMessage, setCommandMessage] = useState("");
+  const [recoveryFeedback, setRecoveryFeedback] = useState("");
   const [pending, setPending] = useState(false);
   const [immediateStartRequested, setImmediateStartRequested] = useState(false);
   const immediateStartInFlight = useRef(false);
@@ -115,7 +116,7 @@ export default function DashboardPopup() {
     return () => { active = false; clearTimeout(timer); requestVersion.current += 1; };
   }, [checkRobotConnection]);
 
-  const sendCommand = async (command: "start" | "stop" | "cancel" | "start_now") => {
+  const sendCommand = async (command: "start" | "stop" | "cancel" | "start_now" | "recover") => {
     // Stop remains available while another request is waiting.
     if (command !== "stop" && commandInFlight.current) return;
     if (command === "start_now") {
@@ -133,6 +134,7 @@ export default function DashboardPopup() {
     requestVersion.current += 1;
     const version = requestVersion.current;
     setCommandMessage("명령 전송 중…");
+    setRecoveryFeedback(command === "recover" ? "복구 중 · SAFE_OFF 해제와 STANDBY 복귀를 확인하고 있습니다." : "");
     try {
       if (command === "start") {
         const { unclassified, ...counts } = startingInventory;
@@ -147,6 +149,10 @@ export default function DashboardPopup() {
       }
       const status = await requestRobot(command);
       if (version !== requestVersion.current) return;
+      if (command === "recover") {
+        setStopAcknowledged(true);
+        setRecoveryFeedback(status.message || "복구 완료 · 새 작업을 시작할 수 있습니다.");
+      }
       setCommandMessage(status.message || "명령 접수");
       await checkRobotConnection();
     } catch (error) {
@@ -155,6 +161,7 @@ export default function DashboardPopup() {
         immediateStartInFlight.current = false;
         setImmediateStartRequested(false);
       }
+      if (command === "recover") setRecoveryFeedback(error instanceof Error ? error.message : "로봇 복구 실패");
       setCommandMessage(error instanceof Error ? error.message : "명령 전송 실패");
       await checkRobotConnection();
     } finally {
@@ -205,15 +212,13 @@ export default function DashboardPopup() {
         )}
       </p> */}
       <DashboardGrid
+        recoveryFeedback={recoveryFeedback}
         onDbConnectionChange={setDbConnected}
         phase={phase}
         countdownSeconds={countdownSeconds}
         elapsedSeconds={elapsedSeconds}
         onRecover={() => {
-          if (apiConnected && robotStatus?.can_start && !pending) {
-            setStopAcknowledged(true);
-            setCommandMessage("");
-          }
+          if (apiConnected && robotStatus?.can_start && !pending) void sendCommand("recover");
         }}
         onStartImmediately={() => {
           if (apiConnected && phase === "countdown" && !pending && (robotStatus?.stage === "STANDBY" || robotStatus?.mode === "mock")) void sendCommand("start_now");

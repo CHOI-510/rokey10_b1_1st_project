@@ -66,3 +66,29 @@ class LogSyncTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class LiveFolderTests(unittest.TestCase):
+    def test_bad_line_does_not_block_new_events(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / '20261122_114422.jsonl'
+            event = dict(job_id='20261122_114422', message='A 적재 완료 → A 3개',
+                         received_at='2026-11-22T02:46:11.559915+00:00')
+            path.write_text('{bad json}\n' + json.dumps(event) + '\n')
+            sync = LogSync(directory, 'https://example.com', 'unused', Mock())
+            sync.upload = Mock()
+            self.assertEqual(sync.sync_file(path), 2)
+            self.assertEqual(sync.upload.call_args.args[0][0]['message'], event['message'])
+
+    def test_replaced_file_with_same_name_is_read_from_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / '20261122_job.jsonl'
+            event = dict(job_id='job', message='작업 시작', received_at='2026-11-22T00:00:00Z')
+            path.write_text(json.dumps(event) + '\n')
+            sync = LogSync(directory, 'https://example.com', 'unused', Mock())
+            sync.upload = Mock()
+            sync.sync_file(path)
+            replacement = Path(directory) / 'replacement'
+            replacement.write_text(json.dumps(dict(event, message='작업 완료')) + '\n')
+            replacement.replace(path)
+            self.assertEqual(sync.sync_file(path), 1)
+            self.assertEqual(sync.upload.call_count, 2)

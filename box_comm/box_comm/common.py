@@ -492,7 +492,7 @@ def robot_hint(state, connected=True, monitor='dsr') -> str:
 #   start_now : 카운트다운(STANDBY) 생략. 현장 관리자 전용 (관리자 GUI·터미널 s).
 #               웹 UI 경로(DB 노드 HTTP)는 받지 않고, 관제도 source='ui'면 거절한다.
 JOB_COMMANDS = ('start', 'cancel', 'start_now', 'inventory_changed')
-REMOTE_JOB_COMMANDS = ('start', 'cancel')     # 웹 UI(DB 노드 HTTP 창구)가 보낼 수 있는 명령
+REMOTE_JOB_COMMANDS = ('start', 'cancel', 'recover')     # 웹 UI(DB 노드 HTTP 창구)가 보낼 수 있는 명령
 SRV_JOB_COMMAND = '/job_command'
 
 

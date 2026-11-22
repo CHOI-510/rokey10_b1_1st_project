@@ -8,6 +8,7 @@ import { demoFrame, HOME, ZONES, type RobotTelemetry } from "./model";
 import { workspaceFromLocations, type LocationRow } from "./workspace";
 
 type Props = { telemetry?: RobotTelemetry; stage?: string };
+const ROBOT_API_URL = (process.env.NEXT_PUBLIC_ROBOT_API_URL || "http://localhost:8000").replace(/\/$/, "");
 const controlClass = "min-h-9 rounded-lg border border-[#dce5eb] bg-white px-3 text-sm font-medium text-[#526073] transition-colors hover:bg-[#f0f6f5] focus-visible:outline-2 focus-visible:outline-[#117d75] disabled:cursor-not-allowed disabled:opacity-40";
 export default function RobotLiveView({ telemetry: providedTelemetry, stage }: Props) {
   const stream = useRobotTelemetry(providedTelemetry === undefined);
@@ -57,14 +58,21 @@ export default function RobotLiveView({ telemetry: providedTelemetry, stage }: P
     const abort = new AbortController();
     async function poll() {
       try {
-        const { data, error } = await createSupabaseClient().from("loc").select("name,x,y,z")
-          .abortSignal(AbortSignal.any([abort.signal, AbortSignal.timeout(8000)]));
-        if (error) throw error;
+        const response = await fetch(`${ROBOT_API_URL}/robot/locations`, {
+          cache: "no-store", signal: AbortSignal.any([abort.signal, AbortSignal.timeout(8000)]),
+        });
+        if (!response.ok) throw new Error("loc API 조회 실패");
+        const data: LocationRow[] = await response.json();
+        if (!Array.isArray(data)) throw new Error("loc 응답 형식 오류");
         if (!active) return;
-        const next = workspaceFromLocations((data || []) as LocationRow[]);
+        if (!data?.length) {
+          setLocationStatus("loc API 조회 결과 없음 · 마지막 좌표/기본값 표시");
+          return;
+        }
+        const next = workspaceFromLocations(data as LocationRow[]);
         setWorkspace(next);
-        setLocationStatus(Object.values(next.sources).every(source => source === "DB")
-          ? "Supabase loc 좌표" : "DB 좌표 + 누락 구역 설정 기본값");
+        setLocationStatus(next.issues.length ? `DB 좌표 확인 필요 · ${next.issues.join(" / ")}` : Object.values(next.sources).every(source => source === "DB")
+          ? "Supabase loc 좌표" : "DB 좌표 · 일부 구역 기본값/미설정");
       } catch {
         if (active) setLocationStatus("좌표 DB 연결 확인 필요 · 마지막 좌표/기본값 표시");
       } finally {
@@ -85,9 +93,9 @@ export default function RobotLiveView({ telemetry: providedTelemetry, stage }: P
     }, demo && playing ? 50 : 500);
     return () => clearInterval(timer);
   }, [demo, playing]);
-  const validTelemetry = telemetry && telemetry.jointsDeg.length===6 && telemetry.jointsDeg.every(Number.isFinite)
-    && telemetry.tcpMm.length===3 && telemetry.tcpMm.every(Number.isFinite);
-  const live = Boolean(validTelemetry && now >= telemetry!.receivedAt && now-telemetry!.receivedAt<2000);
+  const validTelemetry = telemetry && telemetry.jointsDeg.length===6 && telemetry.jointsDeg.every(Number.isFinite);
+  const validTcp = telemetry?.tcpMm?.length === 3 && telemetry.tcpMm.every(Number.isFinite);
+  const live = Boolean(validTelemetry && telemetry!.receivedAt > 0 && Math.max(0, now-telemetry!.receivedAt)<2000);
   const frame = demoFrame(seconds);
   const joints = demo ? frame.joints : validTelemetry ? telemetry!.jointsDeg : HOME;
   const status = demo ? "데모 · 실제 로봇과 무관" : live ? "실측 데이터 수신 중" : telemetry ? "실측 데이터 끊김" : "실측 데이터 연결 대기";
@@ -112,7 +120,7 @@ export default function RobotLiveView({ telemetry: providedTelemetry, stage }: P
         <RobotScene workspace={workspace} joints={joints} counts={counts} yaw={yaw} elevation={elevation} zoom={zoom}
           holding={demo ? frame.holding : Boolean(live && telemetry?.gripperClosed)} muted={!demo&&!live}
           target={demo ? "B" : live ? telemetry?.target : undefined}
-          tcp={validTelemetry&&!demo ? telemetry?.tcpMm : undefined} onRotate={setYaw}/>
+          tcp={validTcp&&!demo ? telemetry?.tcpMm : undefined} onRotate={setYaw}/>
         {!demo&&!live && <span className="pointer-events-none absolute left-3 top-3 max-w-[85%] rounded-lg bg-white/90 px-3 py-2 text-xs text-[#7b8999] shadow-sm">{telemetry ? "마지막 수신 자세 · 자동 추정 이동 없음" : "대기 자세 예시 · 실제 로봇 위치가 아닙니다"}</span>}
         {demo && <span className="absolute left-3 top-3 rounded-lg bg-[#fff4da] px-3 py-2 text-xs font-semibold text-[#a2660a]">UI 데모 · 동작 명령 전송 없음</span>}
       </div>
@@ -129,10 +137,10 @@ export default function RobotLiveView({ telemetry: providedTelemetry, stage }: P
       </div>
       <div className="mt-4 rounded-xl bg-[#f5f8fa] px-4 py-3">
         <p className="m-0 text-sm font-semibold text-[#526073]">{label}</p>
-        {live&&!demo ? <p className="mb-0 mt-1 text-xs tabular-nums text-[#8794a6]">TCP · X {telemetry!.tcpMm[0].toFixed(1)} / Y {telemetry!.tcpMm[1].toFixed(1)} / Z {telemetry!.tcpMm[2].toFixed(1)} mm</p>
+        {live&&!demo&&validTcp ? <p className="mb-0 mt-1 text-xs tabular-nums text-[#8794a6]">TCP · X {telemetry!.tcpMm![0].toFixed(1)} / Y {telemetry!.tcpMm![1].toFixed(1)} / Z {telemetry!.tcpMm![2].toFixed(1)} mm</p>
           : <p className="mb-0 mt-1 text-xs text-[#8794a6]">{demo?"데모는 미리 정한 관절 경로를 재생합니다. 실제 궤적이 아닙니다.":stream.message}</p>}
       </div>
-      {live && !demo && <p className="mb-0 mt-2 break-words text-xs tabular-nums text-[#8794a6]">관절각 · {telemetry!.jointsDeg.map((angle,index) => `J${index+1} ${angle.toFixed(1)}°`).join(" / ")}</p>}
+      {/* {live && !demo && <p className="mb-0 mt-2 break-words text-xs tabular-nums text-[#8794a6]">관절각 · {telemetry!.jointsDeg.map((angle,index) => `J${index+1} ${angle.toFixed(1)}°`).join(" / ")}</p>} */}
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
         {ZONES.map(zone=><span key={zone.id} className="flex items-center gap-1.5 text-xs text-[#6b788a]"><i className="h-2.5 w-2.5 rounded-[3px]" style={{backgroundColor:zone.color}}/>{zone.id} · {counts[zone.id]||0}개</span>)}
       </div>
@@ -140,7 +148,7 @@ export default function RobotLiveView({ telemetry: providedTelemetry, stage }: P
         <summary className="cursor-pointer font-semibold">구역 좌표 · BASE / mm · {locationStatus}</summary>
         <div className="mt-3 grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
           <p className="m-0 break-words">판별존 · ({workspace.measure.join(", ")}) · {workspace.sources.measure_zone}</p>
-          {workspace.zones.map(zone => <p key={zone.id} className="m-0 break-words">{zone.id === "U" ? "미분류 투하 TCP" : `${zone.id} 첫 자리 XY`} · ({(zone.id === "U" ? zone.xyz : zone.xyz.slice(0,2)).join(", ")}) · {zone.id === "U" ? "적재 코드 설정" : workspace.sources[zone.id]}</p>)}
+          {workspace.zones.map(zone => <p key={zone.id} className="m-0 break-words">{zone.id === "U" ? "미분류 투하 TCP" : `${zone.id} 첫 자리 XY`} · ({(zone.id === "U" ? zone.xyz : zone.xyz.slice(0,2)).join(", ")}) · {workspace.sources[zone.id]}</p>)}
           <p className="m-0">탐지 Y 경로 · X 270~570 / Y -115~265 / Z 40</p>
           <p className="m-0">탐지 X 확인 · X 230~570 / Y -65~225 / Z 35</p>
         </div>

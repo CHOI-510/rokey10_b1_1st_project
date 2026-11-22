@@ -147,7 +147,8 @@ def generate_launch_description():
     # 시작 재고 점검은 선택 기능. real에서는 실제 접촉 실측, virtual/fake에서는 fake Action.
     inventory_check_nodes = [
         node('box_place', 'inventory_check', when(not_fake, is_real, inventory_enabled),
-             [{'robot_setup': 'on'}]),
+             [{'robot_setup': 'on', 'inventory_calibration_source':
+               _expr("'file' if '", LaunchConfiguration('db_store'), "' == 'file' else 'supabase'")}]),
         node('box_control', 'fake_inventory_check', when(is_fake, inventory_enabled),
              [{'fake_move_robot': False}]),
         node('box_control', 'fake_inventory_check', when(not_fake, is_virtual, inventory_enabled),

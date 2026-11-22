@@ -97,3 +97,73 @@ class TelemetryTests(unittest.TestCase):
             response = TestClient(main.app).get('/robot/telemetry').json()
             self.assertFalse(response['connected'])
             self.assertIsNone(response['joints_deg'])
+
+class CurrentControllerContractTests(unittest.TestCase):
+    def test_current_controller_mode_enables_real_telemetry(self):
+        bridge = RosbridgeClient('ws://test')
+        bridge._accept_status({'state': 'INVENTORY_CHECK', 'job_id': 'current-job',
+                               'robot_hardware_mode': 'real', 'robot_monitor': 'dsr',
+                               'robot_connected': True, 'robot_state': 2})
+        self.assertTrue(bridge.real_robot_available())
+        with patch.object(main, 'BACKEND', 'rosbridge'), patch.object(main, 'bridge', bridge):
+            body = TestClient(main.app).get('/robot/status').json()
+        self.assertTrue(body['robot_connected'])
+        self.assertEqual(body['robot_hardware_mode'], 'real')
+        self.assertEqual(body['state'], 'running')
+
+    def test_missing_mode_is_reported_not_assumed_real(self):
+        bridge = RosbridgeClient('ws://test')
+        bridge._accept_status({'state': 'READY', 'robot_monitor': 'dsr',
+                               'robot_connected': True, 'robot_state': 1})
+        with patch.object(main, 'BACKEND', 'rosbridge'), patch.object(main, 'bridge', bridge):
+            body = TestClient(main.app).get('/robot/status').json()
+        self.assertFalse(body['robot_connected'])
+        self.assertIn('robot_hardware_mode', body['robot_hint'])
+
+class JointTopicTests(unittest.TestCase):
+    def message(self):
+        stamp=time.time()
+        return {'header':{'stamp':{'sec':int(stamp),'nanosec':int((stamp%1)*1e9)}},
+                'name':['rg2_finger_joint','joint_6','joint_5','joint_4','joint_3','joint_2','joint_1'],
+                'position':[0,0,0,0,0,0,1.5707963267948966]}
+
+    def test_reordered_measured_radians_become_degrees(self):
+        reader=TelemetryReader('ws://test',lambda:True)
+        reader._accept_joints(self.message())
+        sample=reader.snapshot()
+        self.assertTrue(sample['connected'])
+        self.assertEqual(sample['source'],'dsr_joint_states')
+        self.assertAlmostEqual(sample['joints_deg'][0],90)
+        self.assertFalse(sample['tcp_connected'])
+
+    def test_tcp_timeout_cannot_freeze_live_joint_angles(self):
+        reader=TelemetryReader('ws://test',lambda:True)
+        reader._sample_once(ReadSocket())
+        reader._seen=time.monotonic()-100
+        reader._online=False
+        reader._accept_joints(self.message())
+        sample=reader.snapshot()
+        self.assertTrue(sample['connected'])
+        self.assertFalse(sample['tcp_connected'])
+        self.assertGreater(sample['tcp_age_ms'],99000)
+        self.assertAlmostEqual(sample['joints_deg'][0],90)
+
+    def test_old_or_duplicate_headers_do_not_refresh_age(self):
+        reader=TelemetryReader('ws://test',lambda:True)
+        message=self.message();reader._accept_joints(message)
+        original=reader._joint_seen
+        reader._accept_joints(message)
+        self.assertEqual(reader._joint_seen,original)
+        message['header']['stamp']['sec']-=20
+        reader._accept_joints(message)
+        self.assertEqual(reader._joint_seen,original)
+        reader._joint_seen-=5
+        self.assertFalse(reader.snapshot()['connected'])
+
+    def test_fake_and_missing_joint_values_are_not_measurements(self):
+        reader=TelemetryReader('ws://test',lambda:False)
+        reader._accept_joints(self.message())
+        self.assertFalse(reader.snapshot()['connected'])
+        reader.real_robot_available=lambda:True
+        message=self.message();message['name'][1]='joint_1'
+        with self.assertRaises(ValueError):reader._accept_joints(message)

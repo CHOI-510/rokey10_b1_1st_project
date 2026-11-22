@@ -33,6 +33,7 @@ from pathlib import Path
 from box_comm.common import (GRIPPER, STACK, TCP, TOOL, TRAVEL_SPEED_MM_S, VALID_CLASSES,
                              PartError)
 from box_comm.gripper import holding
+from box_place.calibration_store import read_calibration
 
 
 # 외부 JSON 없이 실행 가능. 분류별 자리 간격과 자세는 이 값이 우선한다.
@@ -168,6 +169,12 @@ class InventoryCheckAlgorithm:
     def __init__(self, node, robot):
         self.robot = robot
         self.log = node.get_logger()
+        node.declare_parameter('inventory_calibration_source', 'file')
+        node.declare_parameter('inventory_calibration_api', 'http://127.0.0.1:8000')
+        self.calibration_source = node.get_parameter('inventory_calibration_source').value
+        self.calibration_api = node.get_parameter('inventory_calibration_api').value
+        if self.calibration_source not in ('file', 'supabase'):
+            raise ValueError('inventory_calibration_source must be file or supabase')
         node.declare_parameter('inventory_check_config', '')  # 빈 경로 = 내장 설정
         node.declare_parameter('inventory_check_state', str(Path.home() / '.ros' / 'inventory_check_state.json'))
         node.declare_parameter('inventory_calibrate', False)
@@ -180,7 +187,9 @@ class InventoryCheckAlgorithm:
         self.empty_confirmed = bool(node.get_parameter('inventory_empty_confirmed').value)
         if self.calibrate and not self.empty_confirmed:
             raise ValueError('교정 모드에서는 첫째·둘째 자리 모두 빈 상태임을 확인해야 합니다: inventory_empty_confirmed=true')
-        raw_state = json.loads(self.path.read_text()) if self.path.exists() else {'version': 2, 'references': {}}
+        raw_state = (json.loads(self.path.read_text())
+                     if (self.calibrate or self.calibration_source == 'file') and self.path.exists()
+                     else {'version': 2, 'references': {}})
         self.state = normalize_state(raw_state)
         if raw_state.get('version') == 1:
             backup = self.path.with_name(self.path.name + '.v1.bak')
@@ -424,6 +433,24 @@ class InventoryCheckAlgorithm:
         return count
 
 
+    def _load_db_calibration(self, poses):
+        try:
+            candidate = normalize_state(read_calibration(self.calibration_api))
+            previous = self.state
+            self.state = candidate
+            try:
+                for category in VALID_CLASSES:
+                    xy = (poses.get('place_zones') or {}).get(category)
+                    if not vector(xy, 2):
+                        raise ValueError(f'{category}: 점검 구역 XY 없음')
+                    for tier in (1, 2):
+                        self._reference(category, tier, self._slot_xy(category, tier, xy))
+            except Exception:
+                self.state = previous
+                raise
+        except Exception as error:
+            raise PartError('PLACE_FAILED', f'DB 교정값 검증 실패: {error}') from error
+
     def measure(self, result_class, poses, report):
         """정상 결과 int 0~6. 첫 자리가 3층일 때만 둘째 자리 추가 측정.
 
@@ -435,6 +462,9 @@ class InventoryCheckAlgorithm:
             for tier in (1, 2):
                 self._measure_slot(result_class, poses, report, tier)
             return ('CALIBRATED', 0)
+        if self.calibration_source == 'supabase':
+            self._load_db_calibration(poses)
+            report.log('Supabase loc 교정값 8자리 조건 검증 완료')
         first = self._measure_slot(result_class, poses, report, 1)
         if type(first) is not int or not 0 <= first <= STACK['levels']:
             raise PartError('PLACE_FAILED', f'{result_class}/1번 자리 측정 수량 오류: {first!r}')

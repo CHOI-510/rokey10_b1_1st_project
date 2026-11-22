@@ -11,6 +11,7 @@ type DashboardGridProps = {
   onRecover: () => void;
   onStartImmediately: () => void;
   recoveryDisabled: boolean;
+  recoveryFeedback?: string;
   immediateStartDisabled: boolean;
   stage: string;
   boxSeq: number;
@@ -22,13 +23,13 @@ type DashboardGridProps = {
   onDbConnectionChange: (connected: boolean) => void;
 };
 
-export default function DashboardGrid({ phase, countdownSeconds, elapsedSeconds, onRecover, onStartImmediately, recoveryDisabled, immediateStartDisabled, stage, boxSeq, jobId, stop, reason, onCancel, commandPending, onDbConnectionChange }: DashboardGridProps) {
+export default function DashboardGrid({ phase, countdownSeconds, elapsedSeconds, onRecover, onStartImmediately, recoveryDisabled, recoveryFeedback, immediateStartDisabled, stage, boxSeq, jobId, stop, reason, onCancel, commandPending, onDbConnectionChange }: DashboardGridProps) {
   return (
     <section
       aria-label="대시보드"
       className="mt-5 grid min-h-[calc(100vh-152px)] grid-cols-[minmax(280px,.78fr)_minmax(0,1.62fr)] grid-rows-[minmax(min-content,.8fr)_minmax(min-content,1.2fr)] gap-5 max-[760px]:grid-cols-1 max-[760px]:grid-rows-none"
     >
-      <WorkStatus phase={phase} countdownSeconds={countdownSeconds} elapsedSeconds={elapsedSeconds} onRecover={onRecover} onStartImmediately={onStartImmediately} recoveryDisabled={recoveryDisabled} immediateStartDisabled={immediateStartDisabled} stage={stage} boxSeq={boxSeq} jobId={jobId} stop={stop} reason={reason} onCancel={onCancel} commandPending={commandPending} />
+      <WorkStatus recoveryFeedback={recoveryFeedback} phase={phase} countdownSeconds={countdownSeconds} elapsedSeconds={elapsedSeconds} onRecover={onRecover} onStartImmediately={onStartImmediately} recoveryDisabled={recoveryDisabled} immediateStartDisabled={immediateStartDisabled} stage={stage} boxSeq={boxSeq} jobId={jobId} stop={stop} reason={reason} onCancel={onCancel} commandPending={commandPending} />
       <JobLogSummary />
       <StockStatus onConnectionChange={onDbConnectionChange} />
       <RobotLiveView stage={stage} />

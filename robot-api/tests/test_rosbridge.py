@@ -145,3 +145,25 @@ class RosbridgeApiTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class RecoveryBridgeTests(unittest.TestCase):
+    def test_verified_recovery_clears_old_stop_outcome_once(self):
+        bridge=RosbridgeClient('ws://test')
+        bridge._accept_status({'state':'READY','stop':['EMERGENCY_STOP','ui']})
+        self.assertEqual(bridge.snapshot()['status'],'STOPPED')
+        bridge._accept_status({'state':'READY','stop':None,'recovery_id':'recovered-1'})
+        self.assertEqual(bridge.snapshot()['status'],'BEFORE')
+        bridge._accept_status({'state':'READY','stop':['EMERGENCY_STOP','ui'],'recovery_id':'recovered-1'})
+        self.assertEqual(bridge.snapshot()['status'],'STOPPED')
+        bridge._accept_status({'state':'READY','stop':None,'recovery_id':'recovered-1'})
+        self.assertEqual(bridge.snapshot()['status'],'STOPPED')
+
+    def test_recover_endpoint_uses_controller_once_and_surfaces_refusal(self):
+        with patch.object(main,'BACKEND','rosbridge'),patch.object(main.bridge,'call_service',return_value={'success':True,'message':'STANDBY confirmed'}) as command:
+            response=TestClient(main.app).post('/robot/recover')
+            self.assertEqual(response.status_code,200)
+            self.assertEqual(response.json()['last_command'],'recover')
+            command.assert_called_once_with('/job_command',{'command':'recover','source':'ui'})
+        with patch.object(main,'BACKEND','rosbridge'),patch.object(main.bridge,'call_service',return_value={'success':False,'message':'hardware emergency'}) as command:
+            self.assertEqual(TestClient(main.app).post('/robot/recover').status_code,409)
+            self.assertEqual(command.call_count,1)

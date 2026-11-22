@@ -7,12 +7,12 @@ ROS 통신은 box_comm/database_interface.py가 하고, 이 클래스의 함수�
 
   관제 → DB 노드 (ROS)                      DB 노드가 하는 일
   -----------------------------------------------------------------------------
-  get_job_data()        작업 시작 때          product(분류 기준) + state(재고) 읽기
+  get_job_data()        작업 시작 때          product(분류 기준) + inventory(재고) 읽기
   get_fixed_poses()     작업 시작 때          loc(측정존·적재 구역) 읽기, HOME은 코드 값
-  update_inventory()    박스 처리 후           state 재고 열 쓰기
-  set_job_status()      RUNNING·DONE 등      state 작업 결과 열 쓰기 (관제가 응답을 기다림)
+  update_inventory()    박스 처리 후           inventory.cnt 갱신 (파일 모드는 state.json)
+  set_job_status()      RUNNING·DONE 등      런타임 상태 갱신 (작업 이력은 JSONL/log에 저장)
   on_state()            /control_status      바뀐 열만 모아 두고 동기화 스레드가 씀 (관제를 안 막음)
-  on_event()            /event_log           ~/box_logs/{job_id}.jsonl에 한 줄 (DB에는 안 올림)
+  on_event()            /event_log           ~/box_logs/{job_id}.jsonl 기록 → LogSync가 log에 전송
 
   웹 UI 버튼 → DB 노드 (같은 노트북, HTTP 127.0.0.1:8765)
     POST /estop   → 관제 /emergency_stop     (언제든, 인터넷 없어도 동작)
@@ -406,7 +406,7 @@ class DatabaseWork:
         if command == 'estop':
             ok = self.node.request_emergency_stop('ui')
             msg = '' if ok else '관제 연결 안 됨 — 펜던트 비상정지 버튼을 쓰세요'
-        elif command in REMOTE_JOB_COMMANDS:            # start_now(바로 시작)는 현장 전용 → 여기로 못 옴
+        elif command in REMOTE_JOB_COMMANDS:            # 실제 상태·복구 가능 여부는 관제가 판단
             if cfg.START_TOKEN and headers.get('X-Box-Token', '') != cfg.START_TOKEN:
                 return 403, {'ok': False, 'message': '권한 없음'}
             if command == 'start' and self.stage != 'READY':

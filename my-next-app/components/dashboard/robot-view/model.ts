@@ -1,7 +1,7 @@
 export type Vec3 = [number, number, number];
 export type RobotTelemetry = {
   jointsDeg: [number, number, number, number, number, number];
-  tcpMm: Vec3;
+  tcpMm?: Vec3;
   receivedAt: number;
   gripperClosed?: boolean;
   target?: "A" | "B" | "C" | "D" | "U";
@@ -49,7 +49,7 @@ export const ZONES = [
   { id: "B", color: "#3d82f6", xyz: [630, -200, 30.2], spacing: 45, height: 25 },
   { id: "C", color: "#f59a08", xyz: [635, -30, 27.9], spacing: 30, height: 20 },
   { id: "D", color: "#8b5cf6", xyz: [635, 115, 27.9], spacing: 30, height: 20 },
-  { id: "U", color: "#94a3b8", xyz: [793, -113, 0], spacing: 30, height: 20 },
+  { id: "U", color: "#94a3b8", spacing: 30, height: 20 },
 ] as const;
 export function demoFrame(seconds: number) {
   const poses = [HOME, [0, 25, 110, 0, 45, 0], [0, 35, 115, 0, 30, 0], [-25, 25, 95, 0, 55, 20], [-25, 40, 100, 0, 40, 20], [-25, 25, 95, 0, 55, 20], HOME];

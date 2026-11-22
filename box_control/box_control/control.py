@@ -14,8 +14,8 @@ control.py — 관제 메인 (작업 시퀀스 · 재고 반영 · 중단 처리
   - 결과(DONE/ERROR/STOPPED)는 DB status·reason에 남고, 단계(stage)만 READY로 돌아온다.
   - READY에서도 로봇 상태는 계속 조회·발행한다 (이상이 있어도 정지할 작업이 없으니 표시만).
   - 카운트다운 중 취소: UI 취소(/job_command cancel) 또는 터미널 q → 작업 안 하고 READY.
-  - 카운트다운 생략(바로 시작): 현장 관리자만 — 관리자 GUI(/job_command start_now) 또는 터미널 s.
-    웹 UI(source='ui')에서 온 start_now는 거절한다. 누가 했는지 이벤트 로그(JOB_COMMAND)에 남는다.
+  - 카운트다운 생략(바로 시작): STANDBY에서 웹 UI·관리자 GUI 또는 터미널 s로 요청.
+    요청 출처는 이벤트 로그(JOB_COMMAND)에 남는다.
   - READY에서 터미널 q → 관제 종료.
   - -p auto_start:=true → 예전처럼 바로 작업 한 번 하고 종료 (fake_run.sh·시험용).
 
@@ -238,6 +238,7 @@ class Control:
         self._inventory_available = False
         self._inventory_needs_recheck = False
         self.box_seq = 0
+        self.recovery_id = ''
         self.job_id = ''                   # 작업마다 새로 (_new_job). READY에서는 마지막 작업 ID 유지
         self._current_class = ''          # 지금 박스의 판별 결과 (중단 이유 표시용)
         self._current_box = ''            # 지금 박스 box_id (모니터 GUI 표시용)
@@ -287,6 +288,8 @@ class Control:
         """모니터 GUI용 상태 발행 (/control_status). 단계 바뀔 때·재고 반영 후·중단 시 호출."""
         self.io.publish_status(
             state=self.state.value if self.state else '', job_id=self.job_id,
+            robot_hardware_mode=self.robot_hardware_mode,
+            recovery_id=getattr(self, 'recovery_id', ''),
             box_seq=self.box_seq, box_id=self._current_box, class_id=self._current_class,
             inventory=self.inventory, mismatches=len(self.count_mismatches),
             retries=self.recovery_retry_total,
@@ -629,6 +632,8 @@ class Control:
         with _Keys() as keys:
             while True:
                 try:
+                    if self.io.stop_reason() is None:
+                        stop_seen = None
                     if (stop := self.io.stop_reason()) and stop != stop_seen:
                         stop_seen = stop
                         self._record_idle_stop(stop)
@@ -667,18 +672,31 @@ class Control:
     def _record_idle_stop(self, stop):
         """READY에서 비상정지 → 정지할 작업은 없지만 DB status를 STOPPED로 (UI 작업 상태 빨간불 '비상정지').
         다음 시작 때 지워지고(reset_stop), 사전 점검이 로봇 상태를 다시 확인한다."""
-        code, detail = stop
-        reason = error_text(code) + (f' — {detail}' if detail else '') + ' (대기 중)'
-        self.log.warn(f'[control] 대기 중 정지 요청: {status_for(code)} : {reason}')
-        self.publish_status(reason=f'{status_for(code)} : {reason}')
-        if (db_err := self.io.set_job_status(status_for(code), reason)):
-            self.log.warn(f'[control] 정지 DB 기록 실패: {db_err}')
+        with self._cmd_lock:
+            if self.io.stop_reason() != stop:
+                return  # A completed recovery must not be overwritten by a stale idle-stop record.
+            code, detail = stop
+            reason = error_text(code) + (f' — {detail}' if detail else '') + ' (대기 중)'
+            self.log.warn(f'[control] 대기 중 정지 요청: {status_for(code)} : {reason}')
+            self.publish_status(reason=f'{status_for(code)} : {reason}')
+            if (db_err := self.io.set_job_status(status_for(code), reason)):
+                self.log.warn(f'[control] 정지 DB 기록 실패: {db_err}')
 
     def on_job_command(self, command, source):
         """/job_command 처리 (executor 스레드). 작업을 여기서 돌리지 않고 신호만 켠다 → 바로 응답."""
         with self._cmd_lock:
             state = self.state
             now = f'{state.value} ({state.label})' if state else '-'
+            if command == 'recover':
+                if state != State.READY or self._start_req.is_set():
+                    return False, f'작업 종료 후 대기 상태에서만 복구할 수 있습니다 (현재: {now})'
+                ok, message = self.io.recover_safe_off()
+                if ok:
+                    self.recovery_id = str(time.time_ns())
+                    self.publish_status(reason=message)
+                    self.io.set_job_status('BEFORE', '')
+                    self.io.log_event('INFO', 'ROBOT_RECOVERED', message)
+                return ok, message
             if command == 'start':
                 if state != State.READY:
                     return False, f'지금은 시작할 수 없음 (관제 단계: {now})'
@@ -690,8 +708,6 @@ class Control:
                 self._start_req.set()
                 return True, '시작 명령 수락 — 사전 점검 후 카운트다운'
             if command == 'start_now':
-                if source == 'ui':
-                    return False, '바로 시작은 현장(관리자 GUI·관제 터미널)에서만 가능'
                 if state != State.STANDBY:
                     return False, f'카운트다운 중이 아님 (관제 단계: {now})'
                 self._now_source = source

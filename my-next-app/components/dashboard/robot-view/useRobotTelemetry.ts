@@ -28,15 +28,16 @@ export function useRobotTelemetry(enabled = true) {
         const sample = await response.json();
         if (!active) return;
         if (sample.connected !== true || sample.frame !== "BASE" || !vector(sample.joints_deg,6)
-          || !vector(sample.tcp_mm,3) || typeof sample.age_ms !== "number" || !Number.isFinite(sample.age_ms)
+          || typeof sample.age_ms !== "number" || !Number.isFinite(sample.age_ms)
           || sample.age_ms < 0 || sample.age_ms >= 2000) {
           disconnected(sample.message || "실제 로봇 좌표 연결 대기");
         } else {
           setTelemetry({ jointsDeg: sample.joints_deg as RobotTelemetry["jointsDeg"],
-            tcpMm: sample.tcp_mm as RobotTelemetry["tcpMm"],
+            tcpMm: sample.tcp_connected === true && vector(sample.tcp_mm,3)
+              ? sample.tcp_mm as RobotTelemetry["tcpMm"] : undefined,
             // Use server sample age, independent of browser/server clock differences.
             receivedAt: Date.now() - sample.age_ms });
-          setMessage("두산 관절각·BASE TCP 실측 수신 중");
+          setMessage(sample.tcp_connected === true ? "두산 관절각·BASE TCP 실측 수신 중" : "실측 관절각 수신 중 · TCP 좌표 조회 지연");
         }
       } catch (error) {
         disconnected(error instanceof Error ? error.message : "좌표 API 연결 실패");

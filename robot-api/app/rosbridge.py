@@ -36,6 +36,7 @@ class RosbridgeClient:
         self._started_at = None
         self._ended_at = None
         self._job_id = None
+        self._recovery_id = None
         self._reason = ''
         self.telemetry = TelemetryReader(url, self.real_robot_available, service_ns, telemetry_period)
 
@@ -76,6 +77,11 @@ class RosbridgeClient:
                     if self._started_at and self._ended_at is None:
                         self._ended_at = now.isoformat()
                     self._outcome = stage
+            recovery_id = data.get('recovery_id')
+            if stage == 'READY' and recovery_id and recovery_id != self._recovery_id:
+                self._recovery_id = recovery_id
+                self._outcome, self._reason = 'BEFORE', ''
+                self._started_at = self._ended_at = self._start_at = None
             stop = data.get('stop')
             if stop:
                 if self._started_at and self._ended_at is None:
@@ -113,6 +119,7 @@ class RosbridgeClient:
                 'robot_hardware_mode': self._data.get('robot_hardware_mode', ''),
                 'robot_connected': self._data.get('robot_connected') is True,
                 'robot_state': self._data.get('robot_state'),
+                'robot_hint': self._data.get('robot_hint', ''),
             }
 
     def _listen(self):

@@ -7,6 +7,7 @@ type WorkStatusProps = {
   onRecover: () => void;
   onStartImmediately: () => void;
   recoveryDisabled: boolean;
+  recoveryFeedback?: string;
   immediateStartDisabled: boolean;
   stage: string;
   boxSeq: number;
@@ -23,7 +24,7 @@ function formatDuration(totalSeconds: number) {
   return `${minutes}:${seconds}`;
 }
 
-export default function WorkStatus({ phase, countdownSeconds, elapsedSeconds, onRecover, onStartImmediately, recoveryDisabled, immediateStartDisabled, stage, boxSeq, jobId, stop, reason, onCancel, commandPending }: WorkStatusProps) {
+export default function WorkStatus({ phase, countdownSeconds, elapsedSeconds, onRecover, onStartImmediately, recoveryDisabled, recoveryFeedback, immediateStartDisabled, stage, boxSeq, jobId, stop, reason, onCancel, commandPending }: WorkStatusProps) {
   const labels: Record<string, string> = {
     READY: "대기 (시작 가능)", BEFORE: "작업전", PREFLIGHT: "사전점검", STANDBY: "시작대기",
     RUNNING: "작업중", SCANNING: "스캔중", SCAN_DONE: "스캔완료", JUDGING: "판별중",
@@ -117,6 +118,7 @@ export default function WorkStatus({ phase, countdownSeconds, elapsedSeconds, on
           )}
         </div>
       )}
+      {recoveryFeedback && <p role="status" aria-live="polite" className="mb-0 mt-3 w-full min-w-0 break-words text-xs leading-relaxed text-[#586577]">{recoveryFeedback}</p>}
     </section>
   );
 }

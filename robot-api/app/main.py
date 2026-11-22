@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from app.calibration import read_calibration, read_locations
 from app.rosbridge import RosbridgeClient, RosbridgeError
 
 logger = logging.getLogger("robot-api")
@@ -52,12 +53,14 @@ app.add_middleware(
 class RobotStatus(BaseModel):
     mode: Literal["rosbridge", "box", "mock"]
     state: Literal["idle", "countdown", "running", "stopped", "error", "unknown"]
-    last_command: Literal["none", "start", "stop", "cancel", "start_now"] = "none"
+    last_command: Literal["none", "start", "stop", "cancel", "start_now", "recover"] = "none"
     updated_at: datetime
     stage: str = ""
     job_status: str = ""
     message: str = ""
     robot_connected: bool = False
+    robot_hardware_mode: str = ""
+    robot_hint: str = ""
     connected: bool = True
     can_start: bool = False
     start_at: str | None = None
@@ -124,6 +127,10 @@ def box_status() -> RobotStatus:
         state = "idle"
     else:
         state = "running"
+    hardware_mode = str(data.get("robot_hardware_mode") or "")
+    robot_hint = str(data.get("robot_hint") or "")
+    if connected and data.get("robot_monitor") == "dsr" and not hardware_mode:
+        robot_hint = "관제 상태에 robot_hardware_mode가 없습니다. 최신 관제의 상태 발행 코드를 확인하세요."
     return RobotStatus(
         mode="rosbridge" if BACKEND == "rosbridge" else "box", state=state, updated_at=utc_now(), stage=stage,
         job_status=job_status, connected=connected,
@@ -132,7 +139,8 @@ def box_status() -> RobotStatus:
                          and data.get("robot_connected") is True
                          and type(data.get("robot_state")) is int),
         can_start=connected and stage == "READY",
-        message=str(data.get("reason") or "") if connected else "관제 응답 없음: ROS launch를 확인하세요.",
+        robot_hardware_mode=hardware_mode, robot_hint=robot_hint,
+        message=(str(data.get("reason") or robot_hint) if connected else "관제 응답 없음: ROS launch를 확인하세요."),
         start_at=data.get("start_at"), started_at=data.get("started_at"),
         box_seq=int(data.get("box_seq") or 0),
         job_id=str(data.get("job_id") or ""), ended_at=data.get("ended_at"), stop=data.get("stop"),
@@ -158,6 +166,9 @@ class RobotTelemetry(BaseModel):
     frame: Literal["BASE"] = "BASE"
     received_at: datetime | None = None
     age_ms: int | None = None
+    tcp_connected: bool = False
+    tcp_age_ms: int | None = None
+    tcp_received_at: datetime | None = None
     joints_deg: tuple[float, float, float, float, float, float] | None = None
     tcp_mm: tuple[float, float, float] | None = None
     orientation_deg: tuple[float, float, float] | None = None
@@ -171,11 +182,11 @@ def get_robot_telemetry() -> RobotTelemetry:
     return RobotTelemetry(**bridge.telemetry.snapshot())
 
 
-def command_robot(command: Literal["start", "stop", "cancel", "start_now"]) -> RobotStatus:
+def command_robot(command: Literal["start", "stop", "cancel", "start_now", "recover"]) -> RobotStatus:
     global _mock_status
     if BACKEND == "mock":
         with _lock:
-            state = {"start": "running", "start_now": "running", "stop": "stopped", "cancel": "idle"}[command]
+            state = {"start": "running", "start_now": "running", "stop": "stopped", "cancel": "idle", "recover": "idle"}[command]
             _mock_status = RobotStatus(mode="mock", state=state, last_command=command,
                                        updated_at=utc_now(), can_start=state != "running")
             return _mock_status.model_copy()
@@ -189,7 +200,7 @@ def command_robot(command: Literal["start", "stop", "cancel", "start_now"]) -> R
             raise HTTPException(503, str(exc)) from exc
         result = {"ok": response.get("success"), "message": response.get("message", "")}
     else:
-        result = box_request({"start": "/start", "start_now": "/start_now", "stop": "/estop", "cancel": "/cancel"}[command], "POST")
+        result = box_request({"start": "/start", "start_now": "/start_now", "stop": "/estop", "cancel": "/cancel", "recover": "/recover"}[command], "POST")
     if result.get("ok") is not True:
         raise HTTPException(409, result.get("message") or "관제가 명령을 거절했습니다.")
     # Acceptance is not a robot state change. The UI polls actual control state.
@@ -240,3 +251,18 @@ def set_inventory(inventory: Inventory) -> dict:
     if result.get("ok") is not True:
         raise HTTPException(409, result.get("message") or "재고 설정 거절")
     return result
+
+
+@app.get("/robot/inventory/calibration")
+def get_inventory_calibration() -> dict:
+    return read_calibration()
+
+
+@app.get("/robot/locations")
+def get_robot_locations() -> list[dict]:
+    return read_locations()
+
+
+@app.post("/robot/recover", response_model=RobotStatus)
+def recover_robot() -> RobotStatus:
+    return command_robot("recover")

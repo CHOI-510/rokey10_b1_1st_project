@@ -152,6 +152,10 @@ class ControlInterface(Node):
 
         # 정지 기능
         self._stop_lock = threading.Lock()
+        self._stop_revision = 0
+        self._recovering = False
+        self._stop_hold_until = 0.0
+        self._stop_hold_count = 0
         self._stop = None                  # (code, detail) — 첫 요청만 유효
         self._stop_event = threading.Event()
         self._active = None                # (name, goal_handle, client) 실행 중인 Action
@@ -379,10 +383,12 @@ class ControlInterface(Node):
     def request_stop(self, code, detail=''):
         """정지 요청 (첫 요청만 유효). 로봇 정지 + 진행 중인 파트 Goal cancel."""
         with self._stop_lock:
-            if self._stop is not None:
+            self._stop_revision += 1
+            if self._stop is not None and not self._recovering:
                 return False
             if not detail and self._last_alarm and code.startswith('ROBOT_'):
                 detail = self._last_alarm
+            self._stop_hold_until = time.monotonic() + SAFETY['stop_hold_sec'] + SAFETY['stop_resend_sec'] + 0.1
             self._stop = (code, detail)
         self._stop_event.set()
         self.get_logger().error(f'[control] !!!!! 정지 요청: {code}' + (f' — {detail}' if detail else ''))
@@ -394,6 +400,10 @@ class ControlInterface(Node):
             self.get_logger().warn(f'[control] /{name} Goal cancel 요청')
             handle.cancel_goal_async()
         return True
+
+    def recover_safe_off(self):
+        from box_comm.safe_off_recovery import recover_safe_off
+        return recover_safe_off(self)
 
     def reset_stop(self):
         """새 작업 시작 전에 지난 정지 요청을 지움 (상주 모드). 로봇이 정말 멈춰 있으면 사전 점검이 FAIL로 막는다."""
@@ -447,6 +457,7 @@ class ControlInterface(Node):
         self._dsr = dsr_srv
         ns = ROBOT['service_ns'].rstrip('/')
         self._cli_move_stop = self.create_client(dsr_srv.MoveStop, f'{ns}/{SAFETY["srv_move_stop"]}', callback_group=cb)
+        self._cli_robot_control = self.create_client(dsr_srv.SetRobotControl, f'{ns}/system/set_robot_control', callback_group=cb)
         self._cli_robot_state = self.create_client(dsr_srv.GetRobotState, f'{ns}/{SAFETY["srv_robot_state"]}', callback_group=cb)
         self.create_subscription(dsr_msg.RobotError, SAFETY['topic_error'], self._on_robot_error, 10, callback_group=cb)
         self.create_subscription(dsr_msg.RobotDisconnection, SAFETY['topic_disconnect'],
@@ -466,11 +477,18 @@ class ControlInterface(Node):
         self.get_logger().error(f'[control] 로봇 move_stop(mode={SAFETY["stop_mode"]}) '
                                 f'{SAFETY["stop_hold_sec"]}초 동안 반복')
         end = time.monotonic() + SAFETY['stop_hold_sec']
+        with self._stop_lock:
+            self._stop_hold_until = end + SAFETY['stop_resend_sec'] + 0.1
+            self._stop_hold_count += 1
 
         def loop():
-            while time.monotonic() < end:
-                time.sleep(SAFETY['stop_resend_sec'])
-                self._robot_move_stop()
+            try:
+                while time.monotonic() < end:
+                    time.sleep(SAFETY['stop_resend_sec'])
+                    self._robot_move_stop()
+            finally:
+                with self._stop_lock:
+                    self._stop_hold_count -= 1
         threading.Thread(target=loop, daemon=True).start()
 
     def _on_robot_error(self, msg):

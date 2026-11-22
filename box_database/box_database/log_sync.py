@@ -45,16 +45,17 @@ def event_row(event):
 
 class LogSync:
     def __init__(self, folder, url, key, logger):
-        self.folder = Path(folder)
+        self.folder = Path(folder).expanduser()
         self.url, self.key, self.logger = url.rstrip('/'), key, logger
         self.offsets = {}
+        self.identities = {}
         self.wake = threading.Event()
         self.use_upsert = True
         self._lock_file = None
 
     def start(self):
         if not self.url or not self.key:
-            self.logger.warn('[log_sync] Supabase 설정 없음 — JSONL만 저장; 연결 설정 후 재시작하면 재전송')
+            self.logger.warning('[log_sync] Supabase 설정 없음 — JSONL만 저장; 연결 설정 후 재시작하면 재전송')
             return
         threading.Thread(target=self.run, name='job_log_sync', daemon=True).start()
 
@@ -78,6 +79,7 @@ class LogSync:
                 self.use_upsert = False
                 self.insert_missing(rows, headers)
             else:
+                error.log_sync_detail = body
                 raise
 
     def insert_missing(self, rows, headers):
@@ -109,8 +111,10 @@ class LogSync:
                     raise RuntimeError('Log insert failed')
 
     def sync_file(self, path):
+        stat = path.stat()
+        identity = (stat.st_dev, stat.st_ino)
         offset = self.offsets.get(str(path), 0)
-        if path.stat().st_size < offset:
+        if self.identities.get(str(path), identity) != identity or stat.st_size < offset:
             offset = 0
         rows = []
         scanned = 0
@@ -120,18 +124,29 @@ class LogSync:
                 line = stream.readline()
                 if not line or not line.endswith(b'\n'):
                     break  # Writer may still be appending; retry the complete line next time.
-                event = json.loads(line)
-                row = event_row(event)
+                try:
+                    event = json.loads(line)
+                    if not isinstance(event, dict):
+                        raise ValueError('JSONL event must be an object')
+                    row = event_row(event)
+                except (ValueError, TypeError, KeyError) as error:
+                    # Keep the original journal; a malformed complete line must not
+                    # permanently block all subsequent robot events in the file.
+                    self.logger.warning(f'[log_sync] {path.name} byte {offset}: invalid log ({type(error).__name__}); skipped')
+                    row = None
                 if row is not None:
                     rows.append(row)
                 scanned += 1
                 offset = stream.tell()
         if rows:
             self.upload(rows)
+            self.logger.info(f'[log_sync] DB 반영 확인: {path.name}, {len(rows)}개 이벤트 처리 (기존 로그 중복 제외)')
         self.offsets[str(path)] = offset  # Filtered lines advance too; failed uploads never do.
+        self.identities[str(path)] = identity
         return scanned
 
     def run(self):
+        self.folder.mkdir(parents=True, exist_ok=True)
         self._lock_file = (self.folder / '.supabase-log-sync.lock').open('a')
         try:
             fcntl.flock(self._lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -150,10 +165,17 @@ class LogSync:
                     except Exception as error:
                         failures += 1
                         if failures == 1 or failures % 30 == 0:
-                            self.logger.warn(f'[log_sync] DB 저장 실패 ({type(error).__name__}, HTTP {getattr(error, "code", "-")}); log 테이블·서비스 키 확인. JSONL 유지 후 재시도')
+                            detail = ''
+                            if isinstance(error, HTTPError):
+                                try:
+                                    body = json.loads(getattr(error, 'log_sync_detail', None) or error.read())
+                                    detail = f" {body.get('code', '')}: {body.get('message', '')}"
+                                except (ValueError, OSError):
+                                    pass
+                            self.logger.warning(f'[log_sync] DB 저장 실패 ({type(error).__name__}, HTTP {getattr(error, "code", "-")}){detail}; JSONL 유지 후 재시도')
                 self.wake.wait(0.1 if backlog else 1.0)
             except Exception as error:
-                self.logger.warn(f'[log_sync] {type(error).__name__}; 5초 후 재시도')
+                self.logger.warning(f'[log_sync] {type(error).__name__}; 5초 후 재시도')
                 self.wake.wait(5.0)
 
 
@@ -171,7 +193,10 @@ def main():
     folder = Path(args.folder).expanduser()
     if not folder.is_dir():
         parser.error('Log folder does not exist')
-    url, key = os.environ.get('SUPABASE_URL', ''), os.environ.get('SUPABASE_SERVICE_KEY', '')
+    # The sidecar reads the existing server .env.local; only its public URL is
+    # reused. Writes ALWAYS require the private service key, never a browser key.
+    url = os.environ.get('SUPABASE_URL') or os.environ.get('NEXT_PUBLIC_SUPABASE_URL', '')
+    key = os.environ.get('SUPABASE_SERVICE_KEY', '')
     if not url or not key:
         parser.error('Set SUPABASE_URL and SUPABASE_SERVICE_KEY in the server environment')
     sync = LogSync(folder, url, key, logger)
