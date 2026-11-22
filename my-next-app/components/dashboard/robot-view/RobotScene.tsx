@@ -95,14 +95,10 @@ export default function RobotScene({ workspace, joints, counts, yaw, elevation, 
           <circle cx={xy[0]} cy={xy[1]} r="3" fill="#c4eee7"/>
         </g>;
       })}
-      {holding && box({position:points[points.length-1],color:"#e4a63b",key:"carried",width:24,height:24})}
     </g>}
     <foreignObject x="0" y="0" width="900" height="520" pointerEvents="none">
-      <M0609RobotMesh joints={joints} clip={clipMatrixFromProjection(project,depth)} muted={muted} gripperClosed={gripperClosed} onStatus={setMeshStatus}/>
+      <M0609RobotMesh joints={joints} clip={clipMatrixFromProjection(project,depth)} muted={muted} holding={holding} gripperClosed={gripperClosed} onStatus={setMeshStatus}/>
     </foreignObject>
-    {meshStatus === "ready" && <g opacity={muted ? .4 : 1}>
-      {holding && box({position:points[points.length-1],color:"#e4a63b",key:"carried",width:24,height:24})}
-    </g>}
     {/* Stock is an always-visible overlay at its actual world position. */}
     <g data-layer="stock-boxes">{orderedBoxes.map(box)}</g>
     <g data-layer="stock-outlines" fill="none" strokeWidth="1.1" opacity=".65" pointerEvents="none">

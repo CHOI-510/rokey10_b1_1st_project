@@ -1,9 +1,9 @@
-import { Color, DoubleSide, Euler, Group, Mesh, MeshStandardMaterial, Vector3, type Object3D, type Material } from "three";
+import { BoxGeometry, Color, DoubleSide, Euler, Group, Mesh, MeshStandardMaterial, Vector3, type Object3D, type Material } from "three";
 import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { ColladaLoader } from "three/addons/loaders/ColladaLoader.js";
 
 type Motor = { object: Group; axis: Vector3 };
-export type RobotMesh = { root: Group; joints: Motor[]; fingers: (Motor & { multiplier: number })[] };
+export type RobotMesh = { root: Group; joints: Motor[]; fingers: (Motor & { multiplier: number })[]; payload: { mesh: Mesh; left: Group; right: Group; base: Group } };
 const numbers = (text: string | null, fallback: number[]) => text ? text.trim().split(/\s+/).map(Number) : fallback;
 function origin(group: Group, element: Element | null) {
   if (!element) return;
@@ -95,12 +95,28 @@ export async function loadM0609(signal: AbortSignal): Promise<RobotMesh> {
     ...motors.get(joint.getAttribute("name")!)!,
     multiplier:Number(joint.querySelector("mimic")?.getAttribute("multiplier") ?? 1),
   }));
-  return {root,joints:joints as RobotMesh["joints"],fingers};
+  const base=links.get("rg2_base_link")!,left=links.get("rg2_left_inner_finger")!,right=links.get("rg2_right_inner_finger")!;
+  // Centered geometry follows the finger pads, including the RG2 mounting orientation.
+  const payload=new Mesh(new BoxGeometry(24,24,24),new MeshStandardMaterial({color:"#e4a63b",roughness:.65,side:DoubleSide}));
+  payload.name="held-object";payload.visible=false;base.add(payload);
+  return {root,joints:joints as RobotMesh["joints"],fingers,payload:{mesh:payload,left,right,base}};
 }
-export function setRobotJoints(robot: RobotMesh, degrees: number[], gripperClosed?: boolean) {
+export function setRobotJoints(robot: RobotMesh, degrees: number[], gripperClosed?: boolean, holding=false) {
   robot.joints.forEach((joint,i)=>joint.object.quaternion.setFromAxisAngle(joint.axis,degrees[i]*Math.PI/180));
   // UI poses only; no measured finger width is currently available from the API.
-  const fingerAngle=gripperClosed ? .785398 : -.558505;
+  // 24 mm demo object + pad offset, derived from rg2.urdf linkage dimensions.
+  // Stop fingers at the object surface instead of fully closing through the object.
+  const gripAngle=Math.atan2(39.592,38.177)+Math.asin((17.178-18-24/2)/Math.hypot(38.177,39.592));
+  const fingerAngle=holding ? gripAngle : gripperClosed ? .785398 : -.558505;
   robot.fingers.forEach(joint=>joint.object.quaternion.setFromAxisAngle(joint.axis,fingerAngle*joint.multiplier));
   robot.root.updateMatrixWorld(true);
+  const {mesh,left,right,base}=robot.payload;
+  mesh.visible=holding;
+  if (holding) {
+    // Inner pads face one another; their average is the visual grasp center.
+    const center=left.localToWorld(new Vector3(0,18,35))
+      .add(right.localToWorld(new Vector3(0,18,35))).multiplyScalar(.5);
+    mesh.position.copy(base.worldToLocal(center));
+    mesh.updateMatrixWorld(true);
+  }
 }
