@@ -1,6 +1,7 @@
 "use client";
-import { useRef } from "react";
-import { projectBasePoint } from "./projection";
+import { useRef, useState } from "react";
+import M0609RobotMesh from "./M0609RobotMesh";
+import { projectBasePoint, clipMatrixFromProjection } from "./projection";
 import { boxFaces, faceCenter, viewDepth, STOCK_FLOOR_Z, type BoxGeometry } from "./boxGeometry";
 import { armPoints, type Vec3 } from "./model";
 
@@ -13,6 +14,7 @@ type Props = {
   onRotate: (yaw: number) => void;
 };
 export default function RobotScene({ workspace, joints, counts, yaw, elevation, zoom, holding, muted, target, tcp, onRotate }: Props) {
+  const [meshStatus,setMeshStatus] = useState<"loading" | "ready" | "error">("loading");
   const drag = useRef<{ x: number; angle: number } | null>(null);
   const points = armPoints(joints);
   if (tcp) points[points.length - 1] = tcp;
@@ -80,7 +82,7 @@ export default function RobotScene({ workspace, joints, counts, yaw, elevation, 
       <line {...line([0,0,0],end)} stroke={["#e56464","#16a085","#598be1"][i]} strokeWidth="2"/>
       <text x={project(end)[0]+5} y={project(end)[1]} fontSize="13" fill={["#e56464","#16a085","#598be1"][i]}>{["+X","+Y","+Z"][i]}</text>
     </g>)}
-    <g opacity={muted ? .4 : 1}>
+    {meshStatus !== "ready" && <g opacity={muted ? .4 : 1}>
       <ellipse cx={project([0,0,0])[0]} cy={project([0,0,0])[1]+10} rx="45" ry="15" fill="#1e293b" opacity=".1"/>
       <line {...line([0,0,0],[0,0,85])} stroke="#78929a" strokeWidth="58" strokeLinecap="round"/>
       <line {...line([0,0,10],[0,0,80])} stroke="#127d75" strokeWidth="42" strokeLinecap="round"/>
@@ -94,7 +96,14 @@ export default function RobotScene({ workspace, joints, counts, yaw, elevation, 
         </g>;
       })}
       {holding && box({position:points[points.length-1],color:"#e4a63b",key:"carried",width:24,height:24})}
-    </g>
+    </g>}
+    <foreignObject x="0" y="0" width="900" height="520" pointerEvents="none">
+      <M0609RobotMesh joints={joints} clip={clipMatrixFromProjection(project,depth)} muted={muted} onStatus={setMeshStatus}/>
+    </foreignObject>
+    {meshStatus === "ready" && <g opacity={muted ? .4 : 1}>
+      <line {...line(points[points.length-2],points[points.length-1])} stroke="#667681" strokeWidth="8" strokeLinecap="round"/>
+      {holding && box({position:points[points.length-1],color:"#e4a63b",key:"carried",width:24,height:24})}
+    </g>}
     {/* Stock is an always-visible overlay at its actual world position. */}
     <g data-layer="stock-boxes">{orderedBoxes.map(box)}</g>
     <g data-layer="stock-outlines" fill="none" strokeWidth="1.1" opacity=".65" pointerEvents="none">
@@ -122,6 +131,7 @@ export default function RobotScene({ workspace, joints, counts, yaw, elevation, 
       })}
     </g>
     {tcp && <g><circle cx={project(tcp)[0]} cy={project(tcp)[1]} r="8" fill="none" stroke="#f59a08" strokeWidth="2"/><text x={project(tcp)[0]+12} y={project(tcp)[1]} fill="#ae6b00" fontSize="13">TCP</text></g>}
+    <text x="24" y="466" fill="#718096" fontSize="12">{meshStatus === "ready" ? "Doosan M0609 · URDF 모델" : meshStatus === "error" ? "3D 모델을 사용할 수 없어 관절 개념도를 표시합니다" : "M0609 3D 모델 불러오는 중…"}</text>
     <text x="24" y="486" fill="#8b99a7" fontSize="13">BASE · mm</text>
     <text x="24" y="507" fill="#8b99a7" fontSize="12">드래그하여 회전 · 버튼으로 확대</text>
   </svg>;
