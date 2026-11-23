@@ -10,6 +10,7 @@
 | --- | --- |
 | `README.md` | 시스템 소개, 구조, 실행 방법 (이 문서) |
 | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) | 팀 작업 규칙 — 처음 세팅, 파트별 구현 약속, Git 사용법 |
+| [`box_ui/README.md`](box_ui/README.md) | 웹 UI·API 경로와 실행 방법 |
 | [`docs/PROGRESS.md`](docs/PROGRESS.md) | 진행 현황 — 파트별 상태, 결정 사항, 남은 이슈 |
 
 ---

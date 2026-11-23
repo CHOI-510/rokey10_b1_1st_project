@@ -48,13 +48,13 @@ inventory에는 각 loc_id가 하나씩 있어야 한다. 자세한 조건은 SQ
 관제를 중지하지 않고 GitHub 관리용 소스의 파일 전송기를 독립 컨테이너로 실행할 수 있다.
 
 ```bash
-cd robot-api
+cd box_ui/robot-api
 docker compose up -d --no-deps log-sync
 docker logs --tail 30 -f robot-log-sync
 ```
 
 `robot-log-sync`는 `robot-fastapi:latest`의 Python 환경에서 소스 `log_sync.py`를 직접 실행한다.
-`my-next-app/.env.local`의 서버 서비스 키와 Supabase URL을 읽으며 브라우저 키로 INSERT하지 않는다.
+`box_ui/robot-ui/.env.local`의 서버 서비스 키와 Supabase URL을 읽으며 브라우저 키로 INSERT하지 않는다.
 호스트 `${HOME}/box_logs`를 `/logs`에 마운트하므로 작업자 이름을 하드코딩하지 않는다.
 다른 경로는 `BOX_LOG_DIR=/실제/box_logs docker compose up -d --no-deps log-sync`로 지정한다.
 호스트 UID/GID가 1000이 아니라면 `LOG_SYNC_UID=$(id -u) LOG_SYNC_GID=$(id -g)`도 지정한다.

@@ -4,7 +4,7 @@ services:
     build: .
     container_name: robot-project1
     env_file:
-      - ../my-next-app/.env.local
+      - ../robot-ui/.env.local
     restart: unless-stopped
     # Preserve the existing Docker Desktop API-to-host connection.
     ports:
@@ -26,11 +26,11 @@ services:
     restart: unless-stopped
     user: "${LOG_SYNC_UID:-1000}:${LOG_SYNC_GID:-1000}"
     env_file:
-      - ../my-next-app/.env.local
+      - ../robot-ui/.env.local
     environment:
       PYTHONUNBUFFERED: "1"
       PYTHONDONTWRITEBYTECODE: "1"
     volumes:
       - ${BOX_LOG_DIR:-${HOME}/box_logs}:/logs
-      - ../box_database/box_database/log_sync.py:/sync/log_sync.py:ro
+      - ../../box_database/box_database/log_sync.py:/sync/log_sync.py:ro
     command: ["python", "/sync/log_sync.py", "--folder", "/logs"]

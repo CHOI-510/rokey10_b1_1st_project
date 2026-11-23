@@ -1,7 +1,7 @@
 # UI ↔ FastAPI ↔ rosbridge ↔ ROS 2
 
 ```text
-브라우저 my-next-app :3000
+브라우저 robot-ui :3000
     │ HTTP /robot/start, /robot/cancel, /robot/stop, /robot/status
     ▼
 Docker Desktop의 robot-fastapi :8000
@@ -49,7 +49,7 @@ ros2 launch box_bringup system.launch.py fake:=true gui:=false db_store:=file st
 터미널 2 — API (Docker Desktop):
 
 ```bash
-cd ~/ros2_ws/src/robot-api
+cd ~/ros2_ws/src/rokey10_b1_1st_project/box_ui/robot-api
 docker context use desktop-linux
 docker --context desktop-linux compose up -d --build
 curl http://localhost:8000/health
@@ -67,7 +67,7 @@ docker --context desktop-linux compose start
 터미널 3 — UI:
 
 ```bash
-cd ~/ros2_ws/src/my-next-app
+cd ~/ros2_ws/src/rokey10_b1_1st_project/box_ui/robot-ui
 # .env.local: NEXT_PUBLIC_ROBOT_API_URL=http://localhost:8000
 npm run dev
 ```
@@ -128,10 +128,10 @@ bash scripts/run_real_robot.sh
 
 ### 2. FastAPI와 로그 전송 실행
 
-`my-next-app/.env.local`에 Supabase URL과 서버 전용 `SUPABASE_SERVICE_KEY`가 설정되어 있어야 합니다. 로그 기반 재고 갱신에는 Supabase 트리거와 관련 테이블도 필요합니다. 설정은 `../docs/LOG_INVENTORY_SYNC.md`를 참고합니다.
+`box_ui/robot-ui/.env.local`에 Supabase URL과 서버 전용 `SUPABASE_SERVICE_KEY`가 설정되어 있어야 합니다. 로그 기반 재고 갱신에는 Supabase 트리거와 관련 테이블도 필요합니다. 설정은 `../../docs/LOG_INVENTORY_SYNC.md`를 참고합니다.
 
 ```bash
-cd ~/ws_cobot_pjt/ws_dsr/src/rokey10_b1_1st_project/robot-api
+cd ~/ws_cobot_pjt/ws_dsr/src/rokey10_b1_1st_project/box_ui/robot-api
 docker --context desktop-linux compose up -d --no-build robot-fastapi log-sync
 curl http://localhost:8000/health
 curl http://localhost:8000/robot/status
@@ -145,7 +145,7 @@ API 컨테이너는 `robot-project1`, 로그 전송 컨테이너는 `robot-log-s
 ### 3. 웹 UI 실행 및 작업 시작
 
 ```bash
-cd ~/ws_cobot_pjt/ws_dsr/src/rokey10_b1_1st_project/my-next-app
+cd ~/ws_cobot_pjt/ws_dsr/src/rokey10_b1_1st_project/box_ui/robot-ui
 npm run dev
 ```
 
@@ -195,12 +195,12 @@ launch는 8765(DB HTTP, `BOX_DB_PORT`로 변경 가능)와 9090(rosbridge) 포�
 ## 검증
 
 ```bash
-cd ~/ros2_ws/src/robot-api
+cd ~/ros2_ws/src/rokey10_b1_1st_project/box_ui/robot-api
 docker --context desktop-linux run --rm --network none \
   --mount type=bind,source="$PWD/tests",target=/code/tests,readonly \
   robot-fastapi:latest python -m unittest discover -s tests -v
 
-cd ~/ros2_ws/src/my-next-app
+cd ~/ros2_ws/src/rokey10_b1_1st_project/box_ui/robot-ui
 npm run lint
 npx tsc --noEmit
 ```
@@ -253,7 +253,7 @@ source ~/ws_cobot_pjt/ws_dsr/src/rokey10_b1_1st_project/install/local_setup.bash
 ros2 launch box_bringup system.launch.py mode:=real bringup:=true inventory_check:=true start_delay:=30.0 db_store:=supabase
 ```
 
-현재 DB에 맞춘 조회/저장 계약은 `../docs/SUPABASE_DATABASE_MODE.md`를 참조한다.
+현재 DB에 맞춘 조회/저장 계약은 `../../docs/SUPABASE_DATABASE_MODE.md`를 참조한다.
 DB 노드는 서버 `.env.local`의 URL·서비스 키를 읽고 Python 표준 HTTP로 통신한다.
 별도 `state` 테이블이나 supabase Python SDK는 필요 없다.
 `product.len`은 가로·세로·높이(mm), `weight`는 g이며 NULL 무게는 미측정 0으로 전달한다.

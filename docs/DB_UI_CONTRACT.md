@@ -303,7 +303,7 @@ export SUPABASE_SERVICE_KEY=...
 ros2 run box_database database_main          # store:=auto (키가 있으면 Supabase, 없으면 파일)
 
 # 웹
-cd box_ui && npm run build && npm start        # 시연은 dev 말고 start
+cd box_ui/robot-ui && npm run build && npm start        # 시연은 dev 말고 start
 cloudflared tunnel --url http://localhost:3000 # 켤 때마다 주소가 바뀜 → 시연 직전 공유
 ```
 

@@ -1,3 +1,7 @@
+# robot-ui
+
+프로젝트 루트에서 `cd box_ui/robot-ui` 후 아래 명령을 실행합니다. API는 형제 디렉터리 `box_ui/robot-api`에서 실행합니다.
+
 ## ROS 2 로봇 연결
 
 `NEXT_PUBLIC_ROBOT_API_URL=http://localhost:8000`을 `.env.local`에 설정하고 API와 `box_bringup` launch를 함께 실행합니다. 시작·취소·정지는 `robot-api → rosbridge → ROS 2 관제`로 전달되며 카운트다운은 관제가 담당합니다. 시작 팝업은 실제 재고를 조회·저장합니다. 상세 실행 순서와 fake 시험 방법은 [robot-api README](../robot-api/README.md)를 참고하세요.

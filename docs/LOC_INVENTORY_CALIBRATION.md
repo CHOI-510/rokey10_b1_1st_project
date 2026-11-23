@@ -21,7 +21,7 @@ SQL에는 작업자가 제공한 실측값이 포함되며 최초 기본값이�
 단독 실행의 `inventory_calibration_source` 기본값은 `file`이고 real launch는 위 db_store 선택을 따른다.
 교정 모드는 기존과 같이 파일에 측정 결과를 저장한다. 이후 DB로 재등록해야 한다.
 
-FastAPI 컨테이너는 `my-next-app/.env.local`의 서버 키를 읽는다. UI에는 서비스 키를 전달하지 않는다.
+FastAPI 컨테이너는 `box_ui/robot-ui/.env.local`의 서버 키를 읽는다. UI에는 서비스 키를 전달하지 않는다.
 API 수정은 Docker 이미지 재빌드/컨테이너 교체가 필요하다. ROS2 box_place, box_bringup은
 프로젝트 overlay에 빌드한 다음 관제를 종료하고 해당 overlay로 재실행해야 적용된다.
 로봇 시작/교정 동작은 배포 과정에서 자동으로 실행하지 않는다.

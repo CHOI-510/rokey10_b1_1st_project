@@ -24,7 +24,7 @@ JSONL log 트리거도 기존대로 작동한다. 로봇이 관측한 최신 재
 영구 작업 이력은 log에 남고 실제 재고는 inventory에 유지된다. state 테이블은 필요 없다.
 
 서버 설정은 환경 변수 SUPABASE_URL/SUPABASE_SERVICE_KEY를 우선한다.
-없으면 현재 GitHub 프로젝트의 my-next-app/.env.local에서 URL과 서버 키를 읽는다.
+없으면 현재 GitHub 프로젝트의 box_ui/robot-ui/.env.local에서 URL과 서버 키를 읽는다.
 BOX_SERVER_ENV_FILE로 서버 설정 파일을 명시할 수 있다. 파일은 셸로 실행하지 않고 허용된 키만 읽는다.
 브라우저 publishable 키로 쓰지 않으며 키 값을 로그에 출력하지 않는다.
 Python 표준 urllib를 사용하므로 별도 supabase SDK 설치가 필요 없다.
