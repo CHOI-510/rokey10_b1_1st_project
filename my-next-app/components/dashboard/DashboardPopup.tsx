@@ -67,6 +67,7 @@ export default function DashboardPopup() {
   const clearStartingInventory = () => setStartingInventory({ a: 0, b: 0, c: 0, d: 0, unclassified: 0 });
   const openStartPopup = async () => {
     setInventoryLoaded(false);
+    setCommandMessage("");
     setStartPopupOpen(true);
     try {
       const response = await fetch(`${ROBOT_API_URL}/robot/inventory`, { cache: "no-store", signal: AbortSignal.timeout(12000) });
@@ -246,9 +247,16 @@ export default function DashboardPopup() {
             <p className="mb-0 mt-3 text-[18px] font-semibold leading-7 text-[#202936] max-[520px]:text-base">작업을 시작하시겠습니까?</p>
             <p className="mb-0 mt-1 text-[18px] leading-7 text-[#202936] max-[520px]:text-base">사전 점검 후 카운트다운이 끝나면 로봇이 움직입니다.</p>
 
+            {commandMessage && <p role="alert" className="mt-3 text-sm text-[#c9232b]">{commandMessage}</p>}
+            {!inventoryLoaded && (
+              <div className="mt-3 flex items-center gap-3 text-sm text-[#526073]">
+                <span>재고 정보를 불러와야 시작할 수 있습니다.</span>
+                <button type="button" className="underline" onClick={() => void openStartPopup()}>다시 불러오기</button>
+              </div>
+            )}
             <div className="mt-5 flex justify-end gap-2">
               <button
-                className="bg-[#117d75] px-4 py-2.5 text-[18px] font-bold text-white hover:bg-[#0e6e67] max-[520px]:text-base"
+                className="bg-[#117d75] px-4 py-2.5 text-[18px] font-bold text-white enabled:hover:bg-[#0e6e67] disabled:cursor-not-allowed disabled:opacity-50 max-[520px]:text-base"
                 type="button"
                 disabled={pending || !inventoryLoaded}
                 onClick={() => { setStartPopupOpen(false); void sendCommand("start"); }}

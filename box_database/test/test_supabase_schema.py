@@ -99,3 +99,13 @@ class ExistingSupabaseSchemaTests(unittest.TestCase):
             with patch.dict(os.environ,{'BOX_SERVER_ENV_FILE':str(path)},clear=True):
                 self.assertEqual(server_settings(),('https://db.example','sb_secret_test'))
                 self.assertNotIn('SUPABASE_SERVICE_KEY',os.environ)
+
+    def test_regular_colcon_install_finds_workspace_server_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            module = workspace / 'install/box_database/lib/python3.12/site-packages/box_database/server_settings.py'
+            config = workspace / 'src/project/my-next-app/.env.local'
+            config.parent.mkdir(parents=True)
+            config.write_text('NEXT_PUBLIC_SUPABASE_URL=https://db.example\nSUPABASE_SERVICE_KEY=sb_secret_test\n')
+            with patch('box_database.server_settings.__file__', str(module)), patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(server_settings(), ('https://db.example', 'sb_secret_test'))

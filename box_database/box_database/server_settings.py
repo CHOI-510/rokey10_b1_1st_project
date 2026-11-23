@@ -8,6 +8,15 @@ def server_settings():
     explicit = os.getenv('BOX_SERVER_ENV_FILE')
     candidates = [Path(explicit).expanduser()] if explicit else [
         root / 'my-next-app' / '.env.local' for root in Path(__file__).resolve().parents]
+    # A regular colcon install copies this module outside the source checkout.
+    # Find a single workspace checkout without copying server secrets into install/.
+    if not explicit and not any(path.is_file() for path in candidates):
+        install = next((p for p in Path(__file__).resolve().parents if p.name == 'install'), None)
+        if install is not None:
+            matches = sorted((install.parent / 'src').glob('*/my-next-app/.env.local'))
+            if len(matches) > 1:
+                raise RuntimeError('서버 설정 파일이 여러 개입니다. BOX_SERVER_ENV_FILE로 지정하세요.')
+            candidates.extend(matches)
     values = {}
     for path in candidates:
         if not path.is_file():
