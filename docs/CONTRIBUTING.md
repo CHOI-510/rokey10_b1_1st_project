@@ -3,6 +3,8 @@
 이 문서는 팀원이 **처음 세팅하고, 자기 파트를 구현하고, Git으로 올리는 방법**을 정리합니다.
 시스템 전체 구조는 [`README.md`](../README.md), 진행 상황은 [`PROGRESS.md`](PROGRESS.md)를 봅니다.
 
+> 마지막 갱신: **11/24**. 빌드는 저장소 안에서 overlay로 합니다(1-2, 11/23부터 `scripts/run_real_robot.sh`와 같은 방식).
+
 ---
 
 ## 1. 처음 세팅 (한 번만)
@@ -39,22 +41,39 @@ git clone https://github.com/CHOI-510/rokey10_b1_1st_project.git box_project
 cd box_project
 git config core.hooksPath .githooks   # 관제 전용 파일 보호 훅 켜기 (팀원 필수, 한 번만)
 
-cd ~/ws
-colcon build --symlink-install --packages-up-to box_control box_scan box_judge box_place box_database
-source install/setup.bash
-ros2 pkg list | grep box_       # 7개가 나오면 성공
+source /opt/ros/jazzy/setup.bash
+source ~/ws/install/setup.bash        # 두산 패키지가 빌드된 워크스페이스 (underlay)
+colcon build --symlink-install        # 저장소 안에 build/ install/ 생성. box_ui는 COLCON_IGNORE로 제외
+source install/local_setup.bash       # 이 프로젝트 (overlay) — 항상 마지막에
+ros2 pkg list | grep box_             # 8개가 나오면 성공
+bash scripts/run_real_robot.sh --check   # 패키지가 이 저장소 install에서 실행되는지 확인 (로봇은 움직이지 않음)
+```
+
+새 터미널마다 아래 세 줄을 먼저 실행합니다. `~/.bashrc`에 넣어 두면 편합니다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/ws/install/setup.bash
+source ~/ws/src/box_project/install/local_setup.bash
 ```
 
 - 폴더 이름은 모두 `box_project`로 맞춥니다. (`clone` 뒤에 `box_project`를 꼭 붙이기)
-- `core.hooksPath` 설정은 관제 전용 파일(`box_comm/`, `box_interfaces/`, `*_template.py`)을 실수로 commit하지 않게 막아 줍니다 (3-1 참고).
+- **예전처럼 `~/ws`에서 box 패키지를 빌드했다면** `~/ws/install`에도 옛 box 패키지가 남아 있습니다. 위 순서대로 이 저장소의 `local_setup.bash`를 마지막에 source하면 이 저장소 쪽이 우선합니다. `ros2 pkg prefix box_control`이 `box_project/install/...`인지 확인하세요.
+- `core.hooksPath` 설정은 관제 전용 파일(`box_comm/`, `box_interfaces/`, `box_bringup/`, `*_template.py`)을 실수로 commit하지 않게 막아 줍니다 (3-1 참고).
 - `--symlink-install`로 빌드하면 파이썬 파일을 고쳐도 다시 빌드하지 않아도 됩니다.
 - 빌드 중 `pytest-repeat` 관련 `UserWarning`은 시스템 경고이므로 무시합니다.
 
 ### 1-3. 동작 확인 (fake)
 
-터미널 하나로: `./scripts/fake_run.sh` (DB 노드 + fake 파트 3개 + 관제를 한 번에, 끝나면 정리).
+launch 하나로 (시연과 같은 구조, 관리자 GUI의 **시작** 버튼으로 시작):
 
-터미널을 따로 열 때는 5개를 열고, 각 터미널에서 먼저 `source ~/ws/install/setup.bash`를 합니다.
+```bash
+ros2 launch box_bringup system.launch.py fake:=true db_store:=file start_delay:=10.0
+```
+
+터미널 하나로 한 번만 돌리기: `./scripts/fake_run.sh` (DB 노드 + fake 파트 + 관제를 한 번에, 끝나면 정리).
+
+터미널을 따로 열 때는 6개를 열고, 각 터미널에서 먼저 1-2의 source 세 줄을 실행합니다.
 
 ```bash
 ros2 run box_database database_main --ros-args -p store:=file
@@ -97,15 +116,16 @@ def main():
 PY
 # setup.py의 console_scripts에 한 줄 추가:
 #     'scan_main = box_scan.scan_main:main',
-cd ~/ws && colcon build --symlink-install --packages-select box_scan && source install/setup.bash
+cd ~/ws/src/box_project && colcon build --symlink-install --packages-select box_scan && source install/local_setup.bash
 ros2 run box_scan scan_main
 ```
 
 | 파트 | 알고리즘 파일 (담당자) | 진입점 | 실제 예시 |
 | --- | --- | --- | --- |
-| 탐지 | `box_scan/scan_algorithm.py` (`ScanAlgorithm`) + 설정 `scan_config.py` | `scan_main.py` | 통합 (에뮬레이터 검증, 실물 확인 전) |
-| 판별 | `box_judge/judge_algorithm.py` (`JudgeAlgorithm`) | `judge_main.py` | — |
-| 적재 | `box_place/place_algorithm.py` (`PlaceAlgorithm`) | `place_main.py` | 완성 (실제 로봇 검증) |
+| 탐지 | `box_scan/scan_algorithm.py` (`ScanAlgorithm`) + 설정·보정표 `scan_config.py` | `scan_main.py` | 통합 완료 (실물 검증) |
+| 판별 | `box_judge/judge_algorithm.py` (`JudgeAlgorithm`) + 위상 정렬 `phase_plan.py` | `judge_main.py` | 통합 완료 (실물 검증) |
+| 적재 | `box_place/place_algorithm.py` (`PlaceAlgorithm`) + 설정 `config/place_config.json`, 시작 재고 실측 `inventory_check_algorithm.py` | `place_main.py`, `inventory_check_main.py` | 통합 완료 (실물 검증) |
+| DB·UI | `box_database/database_work.py` · `database_store.py`(Supabase/파일) · `log_sync.py`, 웹 `box_ui/robot-ui`·`box_ui/robot-api` | `database_main.py` | 통합 완료 |
 
 - 메인 코드의 `[FAKE]` 부분을 실제 동작으로 바꿔 갑니다.
 - **템플릿 노드와 내 노드를 동시에 켜지 마세요.** 서버 이름(`/scan` 등)이 같아서 관제가 엉뚱한 결과를 받습니다.
@@ -159,12 +179,13 @@ class PlaceAlgorithm:
 > 11/18부터 실행 방식은 알고리즘 방식 하나입니다 (예전 `run(self, report)` + `start(Work)` 방식은 없어짐).
 > `box_control`의 fake·`test_*_motion` 노드도 같은 방식으로 바꿨습니다. 로봇을 안 쓰는 fake는 `start_algorithm(Cls, use_robot=False)`.
 
-**DB — `database.py`**
+**DB — `box_database/database_work.py`** (11/22부터 저장소는 `database_store.py`의 `SupabaseStore` / `FileStore` 두 가지, 함수 약속은 같음)
 
 ```python
-def get_job_data(self) -> tuple:           # (specs, inventory) 반환
+def get_job_data(self) -> tuple:           # (specs, inventory) 반환 — product + inventory 읽기
 def update_inventory(self, box_id, inventory) -> None:
-    # 시작 실측값과 작업 종료·중단 최종 스냅샷만 기록 (박스마다 쓰지 않음)
+    # 박스 처리마다 + 작업 종료·중단 최종 스냅샷(box_id '<job_id>_final'), 시작 실측 시 '<job_id>_initial'
+    # Supabase 모드: inventory.cnt를 구역별 절대값으로 PATCH (+1 방식 아님). 저장 실패 시 모아 두었다가 재전송
 def set_job_status(self, status, reason) -> None:
     # status: 'BEFORE' / 'RUNNING' / 'DONE' / 'ERROR' / 'STOPPED'
     # reason: ERROR·STOPPED일 때 이유 ('Fail to pick', 'EMERGENCY STOP'), 그 밖에는 ''
@@ -175,7 +196,11 @@ def get_fixed_poses(self) -> dict:         # DB에 저장된 고정 좌표 (기�
     # 관제가 이 값을 모든 파트 Goal에 실어 보낸다. 없거나 구역이 빠지면 관제가 작업을 시작하지 않음
 # UI 적재 이미지: box_comm.common.stack_layout(수량) → 자리별 층 수 (예: 5 → [3, 2], 3층 x 2자리)
 # UI 비상정지 버튼: self.node.request_emergency_stop('ui')   (관제가 없으면 False)
+# UI 시작·취소·복구: self.node.request_job_command('start' | 'cancel' | 'recover', 'ui')
 ```
+
+- 웹 버튼은 두 경로가 있습니다: `robot-api → rosbridge → 관제`(기본) 또는 `robot-api → DB 노드 HTTP(127.0.0.1:8765) → 관제`. 실제 상태 판단(READY인지, 복구 가능한지)은 항상 관제가 합니다.
+- 이벤트 로그는 `~/box_logs/{job_id}.jsonl`에 원본으로 남고 `log_sync.py`가 Supabase `log`에 올립니다. Supabase 쪽 계약은 [`SUPABASE_DATABASE_MODE.md`](SUPABASE_DATABASE_MODE.md), [`LOG_INVENTORY_SYNC.md`](LOG_INVENTORY_SYNC.md)를 봅니다.
 
 ### 2-2-1. Feedback stage (필수)
 
@@ -212,8 +237,8 @@ def scan(self, poses, report) -> bool:
 ```
 
 - 판별의 길이 측정은 물품 방향에 따라 가로·세로·높이가 달라질 수 있어 번호로 구분합니다. 템플릿의 `classify()`는 측정한 길이 3개와 기준 W·D·H를 각각 **크기순으로 정렬해서** 비교하므로, 측정 순서가 바뀌어도 판별에는 영향이 없습니다.
-- 적재가 잰 수량은 관제가 검증합니다. 기대값(**적재 전 재고의 `result_class` 수량 + 1**)과 다르면 관제가 **측정값**으로 메모리 재고를 갱신하고 경고를 남깁니다 (v0.4: 실제 적재 상태가 기준). DB에는 시작 실측 후와 작업 종료·중단 때만 재고 스냅샷을 기록합니다.
-- 미분류 `U`(v0.5)는 매 작업 0부터 시작합니다. 판별 결과 U 또는 구역 만재로 U에 보낸 물품은 관제가 메모리에서 U를 +1 합니다.
+- 적재가 잰 수량은 관제가 검증합니다. 기대값(**적재 전 재고의 `result_class` 수량 + 1**)과 다르면 관제가 **측정값**으로 재고를 갱신하고 경고(`COUNT_MISMATCH`)를 남깁니다 (v0.4: 실제 적재 상태가 기준). DB에는 박스마다, 그리고 작업 종료·중단 때 최종 스냅샷을 기록합니다 (11/20 오후).
+- 미분류 `U`(v0.5)는 시작 재고 실측(`inventory_check:=true`)을 하면 0부터, 하지 않으면(기본) DB 값부터 셉니다. 판별 결과 U 또는 구역 만재로 U에 보낸 물품은 관제가 U를 +1 합니다.
 
 ### 2-3. 실패 처리
 
@@ -300,16 +325,16 @@ self.robot.movel(target, vel=60, acc=100)
 | 단계 | 누가 | 하는 일 |
 | --- | --- | --- |
 | ① 다시 집기 | 파트 | `res = self.robot.grip_close()` → `res.grabbed`가 False면 다시 시도. 시도마다 `report.log('집기 실패, 재시도 2/3', 'WARN')` (UI 로그). 최대 `common.GRIP_RETRY`(3)번. 그래도 안 되면 그리퍼를 열고 `raise PartError('GRASP_FAILED', '3회 실패')` |
-| ② 측정존 비우기 | **관제** (`box_control/recovery.py`, 판별·적재만) | 파트 Goal이 끝난 뒤 관제가 `recovery.TOOL_SWEEP`에 지정된 도구를 집어 측정존을 쓸고 반납. 도구 파지·모션 실패 시 `RECOVERY_FAILED`; 실패 중 자동 개방하지 않음. 동작 성공은 경로 완료를 뜻하며 잔류 물체는 다음 탐지에서 확인 |
+| ② 측정존 비우기 | **관제** (`box_control/recovery.py`, 판별·적재 실패와 판별 `NOT_FOUND`) | 파트 Goal이 끝난 뒤 관제가 `recovery.TOOL_SWEEP`에 지정된 도구를 집어 측정존을 쓸고 반납. 도구 파지·모션 실패 시 `RECOVERY_FAILED`; 실패 중 자동 개방하지 않음. 동작 성공은 경로 완료를 뜻하며 잔류 물체는 다음 탐지에서 확인 |
 | ③ 흐름 되돌리기 | 관제 | `GRASP_FAILED`면 작업을 끝내지 않고 **공간 스캔부터 다시** (재고·박스 번호 그대로, UI 로그 `BOX_RETRY`). 연속 `RECOVER_LIMIT`(3)번을 넘거나 `RECOVERY_FAILED`면 작업 종료(`ERROR`) |
 
 파트별 다시 집기 (11/17 정함)
 
 | 파트 | 다시 집는 방법 | 다 실패하면 |
 | --- | --- | --- |
-| 탐지 | 높이를 찾은 첫 지점에서 그리퍼 0° → 45° → 90°(원본 실로봇 시험값, `scan_config.GRIP_RETRY_ANGLES`) 돌려서 3번 | `GRASP_FAILED` → 관제가 공간 스캔부터 다시 (박스가 스캔 공간에 그대로라 밀어내기 없음, 탐지는 그 접촉점 −50mm부터 이어서) |
-| 판별 | 같은 자리·같은 자세로 다시 열고 내려가 sync 닫기 3번 (가로·세로, 11/18 구현 `_close_retry`). 가로 하강에서 핑거가 얹히면 다시 해도 같으므로 재시도 없이 바로 | `GRASP_FAILED` → 측정존 비우기(지금 fake) → 공간 스캔부터 다시 |
-| 적재 | 같은 자리·같은 자세로 sync 집기 3번 (11/18) | `GRASP_FAILED` → 측정존 비우기(지금 fake) → 공간 스캔부터 다시 |
+| 탐지 | 첫 윗면 탐침 지점에서 그리퍼 0° → 90° → 45°(`scan_config.GRIP_RETRY_ANGLES`) 돌려서 3번. 반원 탐침이 모두 실패하면 충돌 정지점에서 1번 | `GRASP_FAILED` → 관제가 공간 스캔부터 다시 (박스가 스캔 공간에 그대로라 밀어내기 없음, 탐지는 그 접촉점 −50mm부터 이어서) |
+| 판별 | 같은 자리·같은 자세로 다시 열고 내려가 sync 닫기 3번 (가로·세로, 11/18 구현 `_close_retry`). 가로 하강에서 핑거가 얹히면 다시 해도 같으므로 재시도 없이 바로 | `GRASP_FAILED` → 측정존 비우기(`TOOL_SWEEP`) → 공간 스캔부터 다시. 높이 하강이 바닥까지 가도 안 닿으면 `NOT_FOUND`(측정존 비었음, 11/20) → 같은 복구 |
+| 적재 | 같은 자리·같은 자세로 sync 집기 3번 (11/18) | `GRASP_FAILED` → 측정존 비우기(`TOOL_SWEEP`) → 공간 스캔부터 다시 |
 
 ```python
 from box_comm.common import GRIP_RETRY
@@ -331,7 +356,7 @@ else:
 
 - `GRASP_FAILED`는 **"다시 집어 보고 포기했다"는 뜻으로만** 씁니다. 예상 못 한 오류에 쓰면 관제가 재스캔을 반복합니다.
 - 측정존 도구 쓸기 경로는 `recovery.TOOL_SWEEP`의 고정 좌표와 `GripperDA_v1` TCP를 사용합니다. 실제 로봇에서는 검증된 좌표·도구만 사용하고, 복구 도구를 잡은 상태에서 실패하면 자동 개방하지 않으므로 수동 확인이 필요합니다.
-- 그리퍼는 세 파트 모두 **Modbus**(`box_comm/gripper.py`)입니다. Compute Box는 동시 접속이 1개라 `robot`이 Goal 동안만 접속을 열고 닫습니다. OnRobot 드라이버(`m0609_rg2_bringup mode:=real`)가 떠 있으면 접속이 안 되니 `pkill -f OnRobotRGControllerServer`로 끕니다. 에뮬레이터·fake 시험은 `BOX_GRIPPER=fake`(가짜 그리퍼, `fake_run.sh`가 설정).
+- 그리퍼는 세 파트 모두 **Modbus**(`box_comm/gripper.py`)입니다. Compute Box는 동시 접속이 1개라 `robot`이 Goal 동안만 접속을 열고 닫습니다. `system.launch.py`·`robot.launch.py`는 OnRobot 드라이버를 기본으로 끕니다(`gripper_driver:=false`). 수업 `m0609_rg2_bringup mode:=real`을 따로 띄웠다면 드라이버가 접속을 잡으므로 `pkill -f OnRobotRGControllerServer`로 끕니다. 에뮬레이터·fake 시험은 `BOX_GRIPPER=fake`(launch·`fake_run.sh`가 자동 설정).
 
 ### 2-4. 그 밖의 규칙
 
@@ -375,10 +400,10 @@ def scan(self, poses, report):
 
 | 파트 | 측정존에서 높이를 정하는 법 | 설정 |
 | --- | --- | --- |
-| 탐지 | 놓을 때: 예상 접촉 높이 위에서 천천히 내려가 닿으면 놓음 (하한 바닥 + 2mm). 집기(작업공간)는 윗면 − 15mm | `scan_config` `GRIP_DEPTH_FROM_TOP_MM`, `PLACE_*` |
+| 탐지 | 놓을 때: 예상 접촉 높이 20mm 위부터 순응·힘 제어로 내려가 3N 닿으면 놓음 (하한 바닥 + 2mm). 집기(작업공간)는 윗면 − 15mm | `scan_config` `GRIP_DEPTH_FROM_TOP_MM`, `PLACE_*` |
 | 판별 | 바닥 z를 테이블 기준으로 높이·폭 측정. 길이 측정 때문에 '들어 올리면서 집기'는 판별만 씀 | `judge_algorithm` `PARAMS` (`table_ref_file`로 실측값 대체 가능) |
 | 적재 | sync 집기 (11/18, 판별과 같은 `common.SYNC_GRIP`): 100mm로 열고 핑거 끝을 바닥 + 2.6mm에 둔 채 닫으면서 TCP를 올림 → 폭과 상관없이 박스 아래쪽을 잡음. 층 판단은 TCP Z − (집은 TCP − 바닥) | `common.SYNC_GRIP` (판별·적재 공용) |
-| 관제 (측정존 확인) | 바닥 + 5mm에서 닫아 봄 | `common.RECOVERY` `probe_above_floor_mm` |
+| 관제 (측정존 비우기) | 도구를 집어 고정 경로로 쓸고 반납 (높이는 경로에 포함, 11/20) | `box_control/recovery.py` `TOOL_SWEEP` |
 
 **집기 기준 (11/18 정리)** — 공통은 `box_comm`(관제 관리)에서 받아 쓰고, 나머지는 파트 몫입니다.
 
@@ -390,15 +415,15 @@ def scan(self, poses, report):
 | 닫는 힘 | `GRIPPER grip_force_n` 40 / `SYNC_GRIP close_force_n` 10 | 40 | 10 (폭 측정) | 10 → 40 조임 |
 | 들어 올리기 | `GRIPPER settle_after_grip_s` 0.5 · `lift_slow_mm` 15 · `lift_slow_vel` 20 | 0.5초 기다린 뒤 15mm 천천히 (11/18) | 3mm만 들어 돌림 | 0.5초 기다린 뒤 15mm 천천히 (11/18) |
 | 잡힘 판정 | `gripper.check_grip`/`holding` | 비트 + 범위 + 폭 변화 | 비트 + 빈손 + 폭 변화 (범위 안 봄 → U) | 비트 + 범위 + 폭 변화 |
-| 다시 집기 | `GRIP_RETRY` 3 | 각도 0/45/90° | 같은 자리 3번 | 같은 자리 3번 |
-| 최종 실패 | `PartError('GRASP_FAILED')` | 관제가 바로 재스캔 | 관제: 측정존 비우기(지금 fake) → 재스캔 | 같음 |
+| 다시 집기 | `GRIP_RETRY` 3 | 각도 0 → 90 → 45° | 같은 자리 3번 | 같은 자리 3번 |
+| 최종 실패 | `PartError('GRASP_FAILED')` | 관제가 바로 재스캔 | 관제: 측정존 비우기(`TOOL_SWEEP`) → 재스캔 | 같음 |
 | 내려놓기 | — | 닿을 때까지 내려놓기 | 정렬해서 제자리에 | 힘 제어로 층 접촉 → 재고 |
 
 내려가기 접촉 기준은 파트별 하강 방식과 접촉 신호에 맞춰 설정합니다. 재고 점검 접촉 감지는 3N 기준입니다. 공통 이동 고도 `TRAVEL_Z=160 mm`에서의 수평 이송만 `TRAVEL_SPEED_MM_S=100 mm/s`를 쓰며, 탐색 선 사이 이동에는 적용하지 않습니다.
 
 | 단계 | 누가 | 측정존에 남기는 상태 |
 | --- | --- | --- |
-| 탐지 → 판별 | 탐지 | 박스의 **일부가 측정존 중심에 걸치도록** 놓는다. 방향은 정해진 그리퍼 방향. 정확한 정렬은 하지 않는다 (11/17 구현: 집은 TCP를 측정존 x·y에 맞춰 바닥에 닿을 때까지 내려놓음. 집을 때 돌린 각도 0/45/90°가 그대로 남음) |
+| 탐지 → 판별 | 탐지 | 박스의 **일부가 측정존 중심에 걸치도록** 놓는다. 정확한 정렬은 하지 않는다. 이송 높이에서 HOME 기준 0° 자세로 정렬한 뒤 측정존 x·y로 옮겨 내려놓고 WAYPOINT로 복귀 |
 | 판별 → 적재 | 판별 | 측정·정렬(위상 정렬, 11/18 판별 `phase_plan.py`)을 끝낸 뒤 **측정존 중심 x·y**(DB `measure_zone`)에 놓는다. **L1(가장 긴 변) = 측정존 x, L2(두 번째) = 측정존 y, 가장 짧은 변 = 높이(바닥에 눕힘)**. 그리퍼를 열고 안전 높이로 빠진다 |
 | 적재 | 적재 | 위 상태를 **확정된 것으로 보고** 매번 같은 자세(`place_config.json` `pick_orientation`)로 sync 집기. 집은 폭이 L1·L2 중 어느 변인지 로그에 남기고(`= L1 60mm 면(측정존 x)`), 둘 다와 5mm 넘게 다르면 WARN (11/18 `_side_note`). 방향 값은 DB·관제로 전달하지 않는다 (관제는 A~D·U만 넘김) |
 
@@ -446,6 +471,11 @@ ros2 service call /set_job_status box_interfaces/srv/SetJobStatus "{status: 'RUN
 ros2 service call /set_job_status box_interfaces/srv/SetJobStatus "{status: 'ERROR', reason: 'Fail to pick'}"
 ros2 service call /update_inventory box_interfaces/srv/UpdateInventory \
   "{box_id: 'box_001', inventory: {a: 1, b: 0, c: 0, d: 0}}"
+
+# 관제 명령 (웹·관리자 GUI 버튼과 같은 서비스)
+ros2 service call /job_command box_interfaces/srv/JobCommand "{command: 'start', source: 'cli'}"     # READY에서만
+ros2 service call /job_command box_interfaces/srv/JobCommand "{command: 'recover', source: 'cli'}"   # READY에서 SAFE_OFF 복구
+ros2 service call /emergency_stop box_interfaces/srv/EmergencyStop "{source: 'cli'}"
 ```
 
 관제와 연결해 보려면 내 노드만 실제로, 나머지는 fake로 띄웁니다.
@@ -462,17 +492,17 @@ ros2 service call /update_inventory box_interfaces/srv/UpdateInventory \
 
 | 누가 | 고치는 폴더 |
 | --- | --- |
-| 관제 | `box_interfaces/`, `box_comm/`, `box_control/`, `README.md`, `docs/` |
+| 관제 | `box_interfaces/`, `box_comm/`, `box_control/`, `box_bringup/`, `scripts/`, `README.md`, `images/`, `docs/CONTRIBUTING.md`, `docs/PROGRESS.md` |
 | 탐지 | `box_scan/` |
 | 판별 | `box_judge/` |
 | 적재 | `box_place/` |
-| DB·UI | `box_database/` |
+| DB·UI | `box_database/`, `box_ui/`, `sql/`, `docs/DB_UI_CONTRACT.md`, `docs/SUPABASE_DATABASE_MODE.md`, `docs/LOG_INVENTORY_SYNC.md`, `docs/LOC_INVENTORY_CALIBRATION.md` |
 
 - **다른 사람의 폴더와 공용 파일은 건드리지 않습니다.**
 - 예외: 각 파트 폴더 안의 `*_template.py`는 **관제가 관리**합니다. 파트 담당은 템플릿을 고치지 않고, 관제는 파트 담당의 메인 코드를 고치지 않습니다.
-- `box_interfaces/`, `box_comm/` 변경이 필요하면 관제에게 요청합니다.
+- `box_interfaces/`, `box_comm/`, `box_bringup/` 변경이 필요하면 관제에게 요청합니다. DB·UI 작업이 관제 코드(`control.py` 등)를 바꿔야 하면 커밋 전에 관제와 먼저 맞춥니다.
 
-**관제 전용 파일 보호** — `box_comm/`, `box_interfaces/`, 각 폴더의 `*_template.py`
+**관제 전용 파일 보호** — `box_comm/`, `box_interfaces/`, `box_bringup/`(commit 훅만), 각 폴더의 `*_template.py`
 
 | 장치 | 동작 |
 | --- | --- |
@@ -483,7 +513,7 @@ ros2 service call /update_inventory box_interfaces/srv/UpdateInventory \
 
 ### 3-2. 매일 작업 루틴
 
-Git 명령은 항상 `box_project` 폴더 안에서 합니다. (빌드만 `~/ws`에서)
+Git 명령과 빌드 모두 `box_project` 폴더 안에서 합니다.
 
 ```bash
 cd ~/ws/src/box_project
@@ -507,7 +537,9 @@ git push                                  # ⑤ 업로드
 | `scan:` | `scan: 외력 감지로 물품 탐지 구현` |
 | `judge:` | `judge: 그리퍼 개구폭으로 W 측정` |
 | `place:` | `place: 클래스별 슬롯 좌표 추가` |
-| `db:` | `db: SQLite 저장 연동` |
+| `db:` | `db: Supabase inventory 절대값 갱신` |
+| `ui:` | `ui: 대시보드 복구 버튼 추가` |
+| `bringup:` | `bringup: inventory_check 인자 추가` |
 | `control:` | `control: 에러 시 재시도 1회 추가` |
 | `comm:` | `comm: 비상정지 서비스 추가` (전체 공지 필요) |
 | `docs:` | `docs: 진행 현황 업데이트` |
@@ -516,13 +548,13 @@ git push                                  # ⑤ 업로드
 
 ```bash
 cd ~/ws/src/box_project && git pull
-cd ~/ws
-colcon build --symlink-install --packages-up-to box_control box_scan box_judge box_place box_database
-source install/setup.bash
+colcon build --symlink-install
+source install/local_setup.bash
 ```
 
 - `box_comm`의 파이썬 내용만 바뀐 경우, `git pull`만 해도 반영됩니다.
-- `box_interfaces`가 바뀌었거나 파일이 추가된 경우에는 빌드가 필요합니다.
+- `box_interfaces`가 바뀌었거나 파일·실행 명령(`setup.py`)·launch·설정 파일이 추가된 경우에는 빌드가 필요합니다.
+- 웹(`box_ui`)이 바뀌었으면 `box_ui/README.md` 순서대로 API 컨테이너를 다시 빌드(`docker compose up -d --build`)하고 UI를 다시 실행합니다.
 - 작업 함수(`scan`·`judge`·`place`)의 입력/출력 형식이 바뀌는 변경은 관제가 미리 알리며, 이때는 해당 파트도 코드를 수정합니다.
 
 **템플릿이 바뀌었을 때** (공지에 "템플릿 업데이트"가 있으면)
