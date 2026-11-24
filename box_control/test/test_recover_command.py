@@ -9,7 +9,8 @@ class RecoverCommandTests(unittest.TestCase):
         control=Control.__new__(Control);control.state=state
         control._cmd_lock=threading.Lock();control._start_req=threading.Event()
         control.io=Mock();control.io.recover_safe_off.return_value=(True,'복구 완료')
-        control.publish_status=Mock();control.recovery_id=''
+        control.io.set_job_status.return_value=''  # 실제 계약: 빈 문자열 = 성공
+        control.publish_status=Mock();control.recovery_id='';control.log=Mock()
         return control
 
     def test_recovery_does_not_start_a_job(self):
@@ -30,3 +31,8 @@ class RecoverCommandTests(unittest.TestCase):
             control.io.recover_safe_off.assert_not_called()
         control=self.control();control._start_req.set()
         self.assertFalse(control.on_job_command('recover','ui')[0])
+
+    def test_db_status_reset_failure_is_logged(self):
+        control=self.control();control.io.set_job_status.return_value='DB 응답 없음'
+        self.assertTrue(control.on_job_command('recover','ui')[0])
+        control.log.warn.assert_called_once()

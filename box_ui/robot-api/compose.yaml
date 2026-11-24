@@ -12,11 +12,11 @@ services:
     environment:
       ROBOT_BACKEND: rosbridge
       ROSBRIDGE_URL: ws://host.docker.internal:9090
-      ROSBRIDGE_TIMEOUT: "8"
+      ROSBRIDGE_TIMEOUT: "12"   # recover(SAFE_OFF 해제) 최대 약 7초
       ROBOT_SERVICE_NS: ${ROBOT_SERVICE_NS:-/dsr01/dsr_controller2}
       ROBOT_TELEMETRY_PERIOD: ${ROBOT_TELEMETRY_PERIOD:-0.1}
       BOX_API_URL: http://host.docker.internal:8765
-      BOX_API_TIMEOUT: "8"
+      BOX_API_TIMEOUT: "12"     # DB 노드가 recover를 10초까지 기다림
       BOX_START_TOKEN: ${BOX_START_TOKEN:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
 

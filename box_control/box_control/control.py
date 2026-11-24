@@ -289,7 +289,7 @@ class Control:
         self.io.publish_status(
             state=self.state.value if self.state else '', job_id=self.job_id,
             robot_hardware_mode=self.robot_hardware_mode,
-            recovery_id=getattr(self, 'recovery_id', ''),
+            recovery_id=self.recovery_id,
             box_seq=self.box_seq, box_id=self._current_box, class_id=self._current_class,
             inventory=self.inventory, mismatches=len(self.count_mismatches),
             retries=self.recovery_retry_total,
@@ -694,7 +694,8 @@ class Control:
                 if ok:
                     self.recovery_id = str(time.time_ns())
                     self.publish_status(reason=message)
-                    self.io.set_job_status('BEFORE', '')
+                    if (db_err := self.io.set_job_status('BEFORE', '')):
+                        self.log.warn(f'[control] 복구 후 DB 상태 초기화 실패: {db_err}')
                     self.io.log_event('INFO', 'ROBOT_RECOVERED', message)
                 return ok, message
             if command == 'start':

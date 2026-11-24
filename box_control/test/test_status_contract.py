@@ -17,6 +17,7 @@ class StatusContractTests(unittest.TestCase):
                 control.inventory = dict.fromkeys('ABCDU', 0)
                 control.count_mismatches = []
                 control.recovery_retry_total = 0
+                control.recovery_id = ''
                 control._inventory_needs_recheck = False
                 control.publish_status()
                 fields = control.io.publish_status.call_args.kwargs

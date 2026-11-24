@@ -412,7 +412,9 @@ class DatabaseWork:
             if command == 'start' and self.stage != 'READY':
                 ok, msg = False, f'준비 안 됨 (지금 관제 단계: {self.stage or "알 수 없음"})'
             else:                               # cancel은 관제가 단계를 보고 판단
-                ok, msg = self.node.request_job_command(command, 'ui')
+                # recover는 SAFE_OFF 해제 + STANDBY 확인까지 최대 약 7초 → 응답을 더 기다린다
+                ok, msg = self.node.request_job_command(
+                    command, 'ui', timeout=10.0 if command == 'recover' else 3.0)
         else:
             return 404, {'ok': False, 'message': f'알 수 없는 명령: {command}'}
         self.log.warn(f'[database] UI {command} → {"OK" if ok else "거절"} {msg}')

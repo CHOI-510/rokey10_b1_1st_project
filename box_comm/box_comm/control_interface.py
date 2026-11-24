@@ -361,7 +361,8 @@ class ControlInterface(Node):
             return self._stop
 
     def arm_monitor(self, on: bool):
-        self._armed = bool(on)
+        with self._stop_lock:              # recover_safe_off가 같은 락 안에서 _armed를 확인
+            self._armed = bool(on)
         self._robot_lost = 0
 
     def robot_state(self):
